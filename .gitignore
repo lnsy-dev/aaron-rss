@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+prompts/
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Coverage / instrumentation
+coverage
+*.lcov
+.nyc_output
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Output of 'npm pack'
+*.tgz
+
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+# NOTE: docs/app/ is also build output (`npm run build:pages`) but is
+# intentionally tracked so GitHub Pages can serve /docs.
+
+# Electron packaging output
+release/
+
+# Playwright test artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
+# WebAssembly intermediate build artifacts (keep pre-built ones)
+*.o
+*.a
+src/wasm/rust/**/target/

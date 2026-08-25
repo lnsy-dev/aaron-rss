@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aaron RSS — Help</title>
+  <style>
+    :root {
+      --background-color: #f2ece2;
+      --foreground-color: #1a1a1a;
+      --secondary-color: #e6dfd3;
+      --trinary-color: #6b6b6b;
+      --notification-color: #0066cc;
+      --error-color: #cc0000;
+      --max-width: 70ch;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background-color: #1a1a1a;
+        --foreground-color: #f2ece2;
+        --secondary-color: #2a2a2a;
+        --trinary-color: #a0a0a0;
+        --notification-color: #4d9fff;
+        --error-color: #ff4d4d;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      line-height: 1.6;
+      color: var(--foreground-color);
+      background: var(--background-color);
+      margin: 0;
+      padding: 2rem 1rem;
+    }
+
+    main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 2rem;
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      border-bottom: 2px solid var(--notification-color);
+      padding-bottom: 0.5rem;
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      margin-top: 2.5rem;
+    }
+
+    p {
+      margin: 0.75rem 0;
+    }
+
+    a {
+      color: var(--notification-color);
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    ul, ol {
+      margin: 0.75rem 0;
+      padding-left: 1.5rem;
+    }
+
+    li {
+      margin: 0.35rem 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      background: var(--secondary-color);
+    }
+
+    th, td {
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--trinary-color);
+      vertical-align: top;
+    }
+
+    th {
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    kbd {
+      display: inline-block;
+      padding: 0.15rem 0.4rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85em;
+      background: var(--secondary-color);
+      border: 1px solid var(--trinary-color);
+      border-radius: 4px;
+      box-shadow: 0 1px 0 var(--trinary-color);
+      white-space: nowrap;
+    }
+
+    .note {
+      padding: 1rem;
+      background: var(--secondary-color);
+      border-left: 4px solid var(--notification-color);
+      border-radius: 0 4px 4px 0;
+      margin: 1rem 0;
+    }
+
+    .tip {
+      border-left-color: var(--notification-color);
+    }
+
+    .warning {
+      border-left-color: var(--error-color);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Aaron RSS — Help</h1>
+
+    <p><strong>Aaron RSS</strong> is a simple, local-first RSS reader for the desktop. It keeps your feeds and reading state in a private SQLite database stored on your computer, and it can fetch fresh articles automatically in the background.</p>
+
+    <h2>What you can do</h2>
+    <ul>
+      <li>Subscribe to RSS, Atom, and JSON feeds by URL.</li>
+      <li>Read articles in a clean in-app viewer.</li>
+      <li>Open the original website directly when a feed or article calls for it.</li>
+      <li>Mark articles read/unread and star the ones you want to keep.</li>
+      <li>Search inside articles with the find bar.</li>
+      <li>Export and import your subscription list as OPML.</li>
+      <li>Automatically download YouTube videos from feeds that have the option enabled.</li>
+    </ul>
+
+    <h2>Getting around</h2>
+    <p>Most actions can be reached from the <strong>command panel</strong> or the <strong>footer buttons</strong>. The command panel is opened with the keyboard shortcut shown below.</p>
+
+    <h2>Keyboard shortcuts</h2>
+
+    <h3>Global</h3>
+    <table>
+      <thead>
+        <tr><th>Shortcut</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd></td><td>Open the command panel</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Open the find bar to search articles</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close the find bar, close a modal/article viewer, or jump to the top of the feed list</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Feed list</h3>
+    <table>
+      <thead>
+        <tr><th>Shortcut</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Select the previous/next article</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>↑</kbd> / <kbd>Shift</kbd>+<kbd>↓</kbd></td><td>Jump to the first article of the previous/next feed</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Open the selected article</td></tr>
+        <tr><td><kbd>M</kbd></td><td>Mark the selected article as read and move to the next one</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Find bar</h3>
+    <table>
+      <thead>
+        <tr><th>Shortcut</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>Enter</kbd></td><td>Find next match</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>Enter</kbd></td><td>Find previous match</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Close the find bar</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Article viewer</h3>
+    <table>
+      <thead>
+        <tr><th>Shortcut</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><kbd>Esc</kbd></td><td>Close the viewer and return to the feed, selecting the next article</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Feeds</h2>
+    <p>Each feed is shown as a collapsible block. The number next to the feed title is the count of unread articles. Click the feed title to expand or collapse it.</p>
+    <p>Click the <strong>⋯</strong> kebab menu on a feed to:</p>
+    <ul>
+      <li>Mark all articles read or unread</li>
+      <li>Refresh just that feed</li>
+      <li>Toggle <strong>Open Original by Default</strong></li>
+      <li>Toggle <strong>Auto Download YouTube Videos</strong></li>
+      <li>Visit the feed's website</li>
+      <li>Delete the feed</li>
+    </ul>
+
+    <div class="note tip">
+      <strong>Tip:</strong> "Open Original by Default" makes every article in that feed open the publisher's website instead of the extracted reading view.
+    </div>
+
+    <h2>YouTube videos</h2>
+    <p>Articles that link to YouTube videos are marked with a <strong>▶ YouTube</strong> badge. Clicking them opens an embedded player.</p>
+    <ul>
+      <li>A <strong>Delete Video</strong> button is visible while the video plays.</li>
+      <li>When the video ends, choose <strong>Save</strong> to keep the article in your feed or <strong>Delete</strong> to remove the downloaded file and mark the article read.</li>
+      <li>Feeds with <strong>Auto Download YouTube Videos</strong> enabled will download YouTube videos in the background during refresh.</li>
+      <li>YouTube live streams and <code>gaming.youtube.com</code> links are ignored.</li>
+    </ul>
+
+    <h2>Settings</h2>
+    <p>Open Settings from the command panel or hamburger menu to adjust:</p>
+    <ul>
+      <li><strong>Max articles per feed</strong> — how many unread articles to show at once</li>
+      <li><strong>Auto-refresh interval</strong> — how often feeds refresh automatically (set to 0 to disable)</li>
+      <li><strong>Show unread articles only</strong> — hide read articles from the list</li>
+      <li><strong>Custom theme CSS</strong> — personalize colors and typography</li>
+    </ul>
+
+    <h2>Data and privacy</h2>
+    <p>Your feeds, articles, read state, and settings are stored locally in a SQLite database using the browser's Origin Private File System (OPFS). Nothing is sent to a central server. You can export your subscriptions as OPML from the command panel to back them up or move them to another reader.</p>
+
+    <div class="note warning">
+      <strong>Note:</strong> If you clear site data for this app, your local database will be removed. Use <strong>Export OPML</strong> to keep your subscription list safe.
+    </div>
+  </main>
+</body>
+</html>

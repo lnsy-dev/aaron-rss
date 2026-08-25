@@ -1,0 +1,107 @@
+{
+  "name": "aaron-rss",
+  "version": "0.6.2",
+  "description": "A simple RSS reader as an Electron App",
+  "main": "electron/main.js",
+  "type": "module",
+  "author": "LNSY <lnsy.strs@proton.me>",
+  "license": "Unlicense",
+  "keywords": [
+    "electron",
+    "sqlite",
+    "sqlite-wasm",
+    "opfs",
+    "file-system-access-api",
+    "webassembly",
+    "custom-elements",
+    "vanilla-js",
+    "dataroom-js",
+    "webpack"
+  ],
+  "scripts": {
+    "start": "webpack serve",
+    "build": "NODE_ENV=production webpack build",
+    "build:pages": "NODE_ENV=production PUBLIC_PATH=/aaron-rss/app/ webpack build && rm -rf docs/app && cp -R dist docs/app",
+    "electron": "electron .",
+    "electron:build": "npm run build && electron-builder",
+    "docs:version": "node scripts/update-docs-version.js",
+    "docs:version:check": "node scripts/update-docs-version.js --check",
+    "build:wasm:cpp": "cd src/wasm/cpp && make",
+    "convert:synthetic-social-feeds": "node scripts/convert-synthetic-social-feeds.js",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "^2.18.2",
+    "@lnsy/command-panel": "^0.1.0",
+    "@sqlite.org/sqlite-wasm": "3.53.0-build1",
+    "dataroom-js": "^1.0.1",
+    "defuddle": "^0.19.2",
+    "dompurify": "^3.4.13",
+    "marked": "^18.0.9",
+    "rss-parser": "^3.13.0",
+    "yt-dlp-wrap-plus": "^2.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@swc/core": "^1.9.3",
+    "copy-webpack-plugin": "^14.0.0",
+    "css-loader": "^7.1.2",
+    "cssnano": "^8.0.1",
+    "dotenv": "17.4.2",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "html-webpack-plugin": "^5.6.7",
+    "mini-css-extract-plugin": "^2.9.2",
+    "postcss": "^8.5.15",
+    "postcss-loader": "^8.2.0",
+    "style-loader": "^4.0.0",
+    "swc-loader": "^0.2.6",
+    "vitest": "^3.2.4",
+    "webpack": "^5.107.0",
+    "webpack-cli": "^7.0.2",
+    "webpack-dev-server": "^5.2.4"
+  },
+  "build": {
+    "appId": "com.aaronrss.app",
+    "productName": "Aaron RSS",
+    "directories": {
+      "output": "release"
+    },
+    "icon": "assets/logo.png",
+    "files": [
+      "dist/**",
+      "electron/**",
+      "src/lib/youtube.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/",
+        "to": ".",
+        "filter": [
+          "qjs",
+          "qjs.exe"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lnsy-dev/aaron-rss.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lnsy-dev/aaron-rss/issues"
+  },
+  "homepage": "https://github.com/lnsy-dev/aaron-rss#readme"
+}

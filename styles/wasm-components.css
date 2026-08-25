@@ -1,0 +1,58 @@
+/**
+ * WebAssembly Component Styles
+ *
+ * Shared styles for both the C++ and Rust WebAssembly demo components.
+ *
+ * For LLMs: When you have multiple related components that share visual
+ * patterns, create a shared CSS file like this one rather than duplicating
+ * rules across multiple files.
+ */
+
+wasm-cpp-component,
+wasm-rust-component {
+  display: block;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 2px solid var(--trinary-color);
+  border-radius: 8px;
+  background-color: var(--background-color);
+}
+
+wasm-cpp-component h2,
+wasm-rust-component h2 {
+  margin-top: 0;
+  color: var(--foreground-color);
+}
+
+wasm-cpp-component input,
+wasm-rust-component input {
+  padding: 0.5rem;
+  font-size: 1rem;
+  border: 2px solid var(--quaternary-color);
+  border-radius: 4px;
+  margin-right: 0.5rem;
+  width: 120px;
+}
+
+wasm-cpp-component button,
+wasm-rust-component button {
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  cursor: pointer;
+  border: 2px solid var(--foreground-color);
+  background-color: var(--secondary-color);
+  color: var(--foreground-color);
+  border-radius: 4px;
+}
+
+wasm-cpp-component button:hover,
+wasm-rust-component button:hover {
+  background-color: var(--highlight-color);
+}
+
+wasm-cpp-component p,
+wasm-rust-component p {
+  margin-top: 0.75rem;
+  font-family: monospace;
+  color: var(--neutral-color);
+}

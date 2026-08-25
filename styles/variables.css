@@ -1,0 +1,40 @@
+/*
+  *** begin ascii art ***
+
+   _    _____    ____  _______    ____  __    ___________
+  | |  / /   |  / __ \/  _/   |  / __ )/ /   / ____/ ___/
+  | | / / /| | / /_/ // // /| | / __  / /   / __/  \__ \
+  | |/ / ___ |/ _, _// // ___ |/ /_/ / /___/ /___ ___/ /
+  |___/_/  |_/_/ |_/___/_/  |_/_____/_____/_____//____/
+
+  *** end ascii art ***
+
+  Most aesthethic options should live here for adjustment
+*/
+
+
+:root {
+  /* Palette — warm paper, from archive-consulting-site/docs/styles.css */
+  --background-color: #f2ece2;
+  --foreground-color: #444;
+  --highlight-color: rgba(0, 0, 0, 0.12);
+  --secondary-color: rgba(0, 0, 0, 0.02);
+  --trinary-color: #666;
+  --quaternary-color: rgba(0, 0, 0, 0.12);
+  --confirmation-color: #E4191C;
+  --notification-color: #E4191C;
+  --inactive-color: #cccccc;
+  --warning-color: #9F1113;
+  --error-color: #9F1113;
+  --neutral-color: #555;
+
+  /* Typography — Atkinson Hyperlegible body, Roboto Condensed headings */
+  --type-body: 1.25rem;
+  --type-h3: 1.5rem;
+  --type-h2: 1.8rem;
+  --type-h1: 2.16rem;
+  --h1-font-size: var(--type-h1);
+  --h2-font-size: var(--type-h2);
+  --h3-font-size: var(--type-h3);
+
+}

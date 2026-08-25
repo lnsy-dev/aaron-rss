@@ -1,0 +1,90 @@
+/*
+
+  Aaron RSS — The CSS file
+
+  A lot of people get into months long javascript framework
+  boondoggles for reasons they could have solved in 5 minutes
+  fiddling with the humble CSS file.
+
+  Design is about application of material facts (and yes,
+  HTML/CSS is a material fact on screen in browser), so start
+  applying the materials.
+
+  LNSY
+
+*/
+
+/**
+ * Global CSS Imports
+ *
+ * For LLMs: Every component that needs styles should have its own file
+ * in the styles/ directory. Import them here in index.css so webpack's
+ * css-loader can process them into the bundle.
+ */
+
+/* Theme fonts — Atkinson Hyperlegible body, Roboto Condensed headings */
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Roboto+Condensed:ital,wght@0,100..900;1,100..900&display=swap');
+
+/* Theme variables: colors, fonts, spacing tokens */
+@import './styles/variables.css';
+
+/* Component-specific styles */
+@import './styles/db-component.css';
+@import './styles/file-storage-component.css';
+@import './styles/rss-feed-component.css';
+/* <WASM> */
+@import './styles/wasm-components.css';
+/* </WASM> */
+
+/* Global base styles */
+body {
+  background-color: var(--background-color);
+  color: var(--foreground-color);
+  font-family: 'Atkinson Hyperlegible', sans-serif;
+  font-size: var(--type-body);
+  line-height: 1.4;
+  margin: 0;
+  padding: 1rem 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Letterpress engrave effect */
+  text-shadow:
+    -0.5px -0.5px 0 rgba(0, 0, 0, 0.40),
+     0.5px  0.5px 0 rgba(255, 255, 255, 1);
+
+  /* OpenType features */
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures discretionary-ligatures historical-ligatures;
+  font-feature-settings:
+    'kern' 1,
+    'liga' 1,
+    'dlig' 1,
+    'calt' 1,
+    'cswh' 1,
+    'hlig' 1,
+    'ss01' 1,
+    'cv01' 1,
+    'opct' 1;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Roboto Condensed', sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  line-height: 1.15;
+  color: var(--foreground-color);
+}
+
+h1 {
+  font-size: var(--h1-font-size);
+}
+
+h2 {
+  font-size: var(--h2-font-size);
+}
+
+h3 {
+  font-size: var(--h3-font-size);
+}

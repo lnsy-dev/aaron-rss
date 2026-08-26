@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>Aaron RSS — A simple RSS reader for macOS</title>
-  <meta name="description" content="Aaron RSS is a simple, local-first RSS reader for macOS. Download the .dmg.">
+  <meta name="description" content="Aaron RSS is a simple, local-first RSS reader for macOS. Clone the repo and run it yourself.">
   <meta property="og:title" content="Aaron RSS">
   <meta property="og:type" content="website">
   <meta property="og:description" content="A simple RSS reader as an Electron App">
@@ -14,11 +14,6 @@
   <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/lnsy-dev/aaron-rss/main/assets/logo.svg">
   <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/lnsy-dev/aaron-rss/main/assets/logo.png">
 
-  <!--
-    Version numbers below are kept in sync with package.json automatically:
-    run `npm run docs:version` after bumping the version (CI uses --check).
-    The "latest/download" links always resolve to the newest matching release asset.
-  -->
   <style>
     :root {
       --background-color: #f2ece2;
@@ -72,48 +67,36 @@
       margin-bottom: 2.25rem;
     }
 
-    .download-button {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.65rem;
-      background-color: var(--accent-color);
-      color: #fff;
-      text-decoration: none;
-      font-size: 1.15rem;
-      font-weight: 600;
-      padding: 0.9rem 2rem;
-      border-radius: 999px;
-      border: 1px solid rgba(0, 0, 0, 0.15);
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
-      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    .install-steps {
+      list-style: none;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      overflow-x: auto;
     }
 
-    .download-button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+    .install-steps li {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+      white-space: nowrap;
     }
 
-    .download-button svg { width: 22px; height: 22px; fill: currentColor; }
+    .install-steps li::before {
+      content: "$ ";
+      color: var(--accent-color);
+      font-weight: 700;
+    }
 
-    .download-meta {
+    .install-meta {
       margin-top: 0.75rem;
       font-size: 0.9rem;
       color: var(--trinary-color);
     }
-
-    .platform-note {
-      display: none;
-      margin-top: 1rem;
-      padding: 0.6rem 1rem;
-      background: var(--secondary-color);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      font-size: 0.9rem;
-      color: var(--trinary-color);
-    }
-
-    .platform-note.visible { display: block; }
-    .platform-note a { color: var(--accent-color); }
 
     .features {
       margin-top: 3.5rem;
@@ -164,20 +147,16 @@
     <h1>Aaron RSS</h1>
     <p class="tagline">A simple, local-first RSS reader. Your feeds, your machine — stored in SQLite on your own disk, no accounts, no cloud.</p>
 
-    <!-- Direct download of the latest release's arm64 .dmg -->
-    <a class="download-button" id="dmg-download"
-       href="https://github.com/lnsy-dev/aaron-rss/releases/latest/download/Aaron%20RSS-0.6.2-arm64.dmg"
-       download>
-      <svg viewBox="0 0 384 512" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>
-      Download for Mac
-    </a>
+    <!-- Build from source: clone the repo and install manually -->
+    <ol class="install-steps">
+      <li>git clone https://github.com/lnsy-dev/aaron-rss.git</li>
+      <li>cd aaron-rss</li>
+      <li>npm install</li>
+      <li>npm run build</li>
+      <li>npm run electron</li>
+    </ol>
 
-    <p class="download-meta">Version 0.6.2 &middot; macOS (Apple Silicon) &middot; .dmg</p>
-
-    <!-- Shown only when visited from a non-macOS platform -->
-    <div class="platform-note" id="platform-note">
-      This download is for macOS only. You appear to be browsing on another platform.
-    </div>
+    <p class="install-meta">Requires Node.js and npm. Built and tested on macOS (Apple Silicon).</p>
 
     <section class="features">
       <div class="feature">
@@ -197,16 +176,7 @@
 
   <footer>
     Aaron RSS is <a href="https://github.com/lnsy-dev/aaron-rss">open source</a> under the Unlicense.
-    See all releases on the
-    <a href="https://github.com/lnsy-dev/aaron-rss/releases">releases page</a>.
+    Grab the source on GitHub and run it locally.
   </footer>
-
-  <script>
-    // Show a gentle notice if the visitor is not on macOS.
-    // (User-agent sniffing is unreliable; this is only a hint, not a gate.)
-    if (!/Mac|iPhone|iPad|iPod/.test(navigator.userAgent) || /Android/.test(navigator.userAgent)) {
-      document.getElementById('platform-note').classList.add('visible');
-    }
-  </script>
 </body>
 </html>

@@ -1,0 +1,36 @@
+/*
+  Scrollbar styling — matched to the warm paper theme.
+
+  Uses the standard `scrollbar-color` / `scrollbar-width` properties
+  (Firefox, Chrome 121+) plus the ::-webkit-scrollbar pseudo-elements
+  (older Chromium/Safari/Electron) as a fallback.
+*/
+
+/* Standard syntax */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--quaternary-color) transparent;
+}
+
+/* WebKit fallback */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--secondary-color);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--highlight-color);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--trinary-color);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

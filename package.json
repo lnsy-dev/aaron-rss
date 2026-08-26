@@ -25,8 +25,6 @@
     "build:pages": "NODE_ENV=production PUBLIC_PATH=/aaron-rss/app/ webpack build && rm -rf docs/app && cp -R dist docs/app",
     "electron": "electron .",
     "electron:build": "npm run build && electron-builder",
-    "docs:version": "node scripts/update-docs-version.js",
-    "docs:version:check": "node scripts/update-docs-version.js --check",
     "build:wasm:cpp": "cd src/wasm/cpp && make",
     "convert:synthetic-social-feeds": "node scripts/convert-synthetic-social-feeds.js",
     "test": "playwright test",

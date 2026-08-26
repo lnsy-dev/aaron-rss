@@ -28,6 +28,9 @@
 /* Theme variables: colors, fonts, spacing tokens */
 @import './styles/variables.css';
 
+/* Scrollbar styling matched to theme */
+@import './styles/scrollbar.css';
+
 /* Component-specific styles */
 @import './styles/db-component.css';
 @import './styles/file-storage-component.css';

@@ -32,6 +32,14 @@ body command-panel dialog {
   -webkit-app-region: drag;
 }
 
+.rss-logo {
+  height: 1.4rem;
+  width: auto;
+  align-self: center;
+  pointer-events: none;
+  user-select: none;
+}
+
 .rss-refresh-all-button,
 .rss-add-feed-button {
   background: var(--background-color);

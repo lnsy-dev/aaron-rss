@@ -48,3 +48,11 @@ playwright/.cache/
 *.o
 *.a
 src/wasm/rust/**/target/
+
+# Generated application icons (npm run build:icons, from assets/logo.svg)
+assets/logo.png
+assets/favicon.svg
+assets/favicon-16x16.png
+assets/favicon-32x32.png
+assets/favicon.ico
+assets/apple-touch-icon.png

@@ -181,6 +181,12 @@ class RSSFeedComponent extends DataroomElement {
   renderHeader() {
     const header = this.create('header', { class: 'rss-header' });
 
+    const logo = document.createElement('img');
+    logo.className = 'rss-logo';
+    logo.src = './logo.png';
+    logo.alt = 'Aaron RSS';
+    header.appendChild(logo);
+
     const menuButton = document.createElement('button');
     menuButton.className = 'rss-hamburger';
     menuButton.setAttribute('aria-label', 'Commands');

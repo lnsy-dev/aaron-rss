@@ -94,7 +94,8 @@ class FileStorageComponent extends DataroomElement {
 
   /**
    * Pick an OPML file from disk and add each subscription as a feed.
-   * Afterwards, refreshes <rss-feed-component> if one is on the page.
+   * Afterwards, refreshes <rss-feed-component> and triggers a full feed
+   * refresh from the network if one is on the page.
    *
    * @async
    * @returns {Promise<void>}
@@ -125,6 +126,9 @@ class FileStorageComponent extends DataroomElement {
       const rssComponent = document.querySelector('rss-feed-component');
       if (rssComponent && typeof rssComponent.refreshFeeds === 'function') {
         await rssComponent.refreshFeeds();
+        if (typeof rssComponent.handleRefreshAll === 'function') {
+          await rssComponent.handleRefreshAll();
+        }
       }
     } catch (error) {
       if (isUserCancellation(error)) {

@@ -181,12 +181,6 @@ class RSSFeedComponent extends DataroomElement {
   renderHeader() {
     const header = this.create('header', { class: 'rss-header' });
 
-    const logo = document.createElement('img');
-    logo.className = 'rss-logo';
-    logo.src = './logo.png';
-    logo.alt = 'Aaron RSS';
-    header.appendChild(logo);
-
     const menuButton = document.createElement('button');
     menuButton.className = 'rss-hamburger';
     menuButton.setAttribute('aria-label', 'Commands');
@@ -239,13 +233,17 @@ class RSSFeedComponent extends DataroomElement {
 
     const refreshButton = document.createElement('button');
     refreshButton.className = 'rss-refresh-all-button';
-    refreshButton.textContent = 'Refresh All Feeds';
+    refreshButton.textContent = '↻';
+    refreshButton.title = 'Refresh all feeds';
+    refreshButton.setAttribute('aria-label', 'Refresh all feeds');
     refreshButton.addEventListener('click', () => this.handleRefreshAll());
     footer.appendChild(refreshButton);
 
     const addFeedButton = document.createElement('button');
     addFeedButton.className = 'rss-add-feed-button';
-    addFeedButton.textContent = 'Add RSS Feed';
+    addFeedButton.textContent = '⊕';
+    addFeedButton.title = 'Add RSS feed';
+    addFeedButton.setAttribute('aria-label', 'Add RSS feed');
     addFeedButton.addEventListener('click', () => this.openAddFeedModal());
     footer.appendChild(addFeedButton);
   }
@@ -300,7 +298,14 @@ class RSSFeedComponent extends DataroomElement {
    */
   _updateViewToggleText() {
     if (this.viewToggleText) {
-      this.viewToggleText.textContent = this.viewMode === 'feeds' ? 'Feeds' : 'Timeline';
+      const isFeeds = this.viewMode === 'feeds';
+      const label = isFeeds ? 'Feeds view' : 'Timeline view';
+      this.viewToggleText.textContent = isFeeds ? '▤' : '◴';
+      this.viewToggleText.title = label;
+      this.viewToggleText.setAttribute('aria-label', label);
+      if (this.viewToggleInput) {
+        this.viewToggleInput.setAttribute('aria-label', label);
+      }
     }
   }
 
@@ -750,6 +755,21 @@ class RSSFeedComponent extends DataroomElement {
     return empty;
   }
 
+
+
+  /**
+   * Build a centered loading spinner for empty states during refresh.
+   *
+   * @returns {HTMLElement}
+   */
+  _createSpinnerElement() {
+    const spinner = document.createElement('div');
+    spinner.className = 'rss-spinner';
+    spinner.setAttribute('role', 'status');
+    spinner.setAttribute('aria-label', 'Loading feeds');
+    return spinner;
+  }
+
   /**
    * Render the Timeline view: every feed's unread articles in one flat,
    * chronologically ordered list regardless of which feed they came from.
@@ -759,15 +779,25 @@ class RSSFeedComponent extends DataroomElement {
   renderTimeline() {
     this.contentArea.innerHTML = '';
 
-    if (this.feeds.length === 0) {
+    const hasFeeds = this.feeds.length > 0;
+    const items = hasFeeds
+      ? buildTimelineItems(this.feeds, this.settings.maxArticlesPerFeed)
+      : [];
+
+    // While a refresh is running and nothing is visible yet, show a spinner
+    // instead of a static "empty" message so the user knows work is in progress.
+    if (items.length === 0 && this.isRefreshing) {
+      this.contentArea.appendChild(this._createSpinnerElement());
+      return;
+    }
+
+    if (!hasFeeds) {
       this.contentArea.appendChild(this._createEmptyStateElement());
       return;
     }
 
     const container = document.createElement('div');
     container.className = 'rss-timeline';
-
-    const items = buildTimelineItems(this.feeds, this.settings.maxArticlesPerFeed);
 
     if (items.length === 0) {
       const empty = document.createElement('div');
@@ -1967,6 +1997,10 @@ class RSSFeedComponent extends DataroomElement {
       this._hideRefreshProgress();
       this.isRefreshing = false;
     }
+
+    // Re-render now that refreshing is false so any spinner shown for an
+    // empty timeline is replaced by the final content or empty state.
+    this.renderFeeds();
   }
 
   /**
@@ -3145,8 +3179,9 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Import a subscription list from an OPML file on disk.
    *
-   * Each discovered subscription is added as a feed and the feed list
-   * is refreshed when finished.
+   * Each discovered subscription is added as a feed. Once all feeds are
+   * loaded, all feeds are refreshed from the network so the imported
+   * subscriptions populate immediately.
    *
    * @async
    * @returns {Promise<void>}
@@ -3178,6 +3213,7 @@ class RSSFeedComponent extends DataroomElement {
 
       this.showToast(`Imported ${added}/${subscriptions.length} subscriptions from ${name}`);
       await this.refreshFeeds();
+      await this.handleRefreshAll();
     } catch (error) {
       if (isUserCancellation(error)) return;
       this.showToast(`Import failed: ${error.message}`, 'error');

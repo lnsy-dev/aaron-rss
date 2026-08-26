@@ -32,14 +32,6 @@ body command-panel dialog {
   -webkit-app-region: drag;
 }
 
-.rss-logo {
-  height: 1.4rem;
-  width: auto;
-  align-self: center;
-  pointer-events: none;
-  user-select: none;
-}
-
 .rss-refresh-all-button,
 .rss-add-feed-button {
   background: var(--background-color);
@@ -115,8 +107,29 @@ body command-panel dialog {
 }
 
 .rss-content-area {
+  position: relative;
   flex: 1;
   padding: 1.5rem 1rem 4rem;
+}
+
+.rss-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2rem;
+  height: 2rem;
+  margin-top: -1rem;
+  margin-left: -1rem;
+  border: 3px solid var(--quaternary-color);
+  border-top-color: var(--foreground-color);
+  border-radius: 50%;
+  animation: rss-spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes rss-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .rss-footer {

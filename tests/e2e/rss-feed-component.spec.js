@@ -39,7 +39,8 @@ test.describe('Aaron RSS', () => {
 
     const refreshButton = page.locator('.rss-footer .rss-refresh-all-button');
     await expect(refreshButton).toBeVisible();
-    await expect(refreshButton).toHaveText('Refresh All Feeds');
+    await expect(refreshButton).toHaveText('↻');
+    await expect(refreshButton).toHaveAttribute('title', 'Refresh all feeds');
   });
 
   test('renders an Add RSS Feed button next to Refresh All Feeds', async ({ page }) => {
@@ -48,7 +49,8 @@ test.describe('Aaron RSS', () => {
 
     const addButton = page.locator('.rss-footer .rss-add-feed-button');
     await expect(addButton).toBeVisible();
-    await expect(addButton).toHaveText('Add RSS Feed');
+    await expect(addButton).toHaveText('⊕');
+    await expect(addButton).toHaveAttribute('title', 'Add RSS feed');
   });
 
   test('renders a view toggle switch at the bottom left before the action buttons', async ({ page }) => {
@@ -60,7 +62,8 @@ test.describe('Aaron RSS', () => {
     const toggle = page.locator('.rss-footer .rss-view-toggle');
     await expect(toggle).toBeVisible();
     await expect(toggle.locator('.rss-view-toggle-input')).toBeChecked();
-    await expect(toggle.locator('.rss-view-toggle-text')).toHaveText('Timeline');
+    await expect(toggle.locator('.rss-view-toggle-text')).toHaveText('◴');
+    await expect(toggle.locator('.rss-view-toggle-text')).toHaveAttribute('title', 'Timeline view');
 
     // The switch sits to the left of Refresh All / Add Feed in the footer.
     const order = await page.evaluate(() => {
@@ -133,6 +136,28 @@ test.describe('Aaron RSS', () => {
     expect(feedNames).toEqual(['Newer Feed', 'Older Feed']);
   });
 
+  test('shows a centered spinner in timeline view while refreshing and empty', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+
+    await component.evaluate((el) => {
+      el.viewMode = 'timeline';
+      el.feeds = [];
+      el.isRefreshing = true;
+      el.renderTimeline();
+    });
+
+    const spinner = page.locator('.rss-content-area .rss-spinner');
+    await expect(spinner).toBeVisible();
+
+    await component.evaluate((el) => {
+      el.isRefreshing = false;
+      el.renderTimeline();
+    });
+
+    await expect(spinner).toHaveCount(0);
+    await expect(page.locator('.rss-content-area .rss-empty-state')).toBeVisible();
+  });
+
   test('flipping the view toggle switches between timeline and grouped feeds views', async ({ page }) => {
     const component = page.locator('rss-feed-component');
 
@@ -169,7 +194,8 @@ test.describe('Aaron RSS', () => {
 
     await expect(page.locator('.rss-timeline')).toHaveCount(0);
     await expect(page.locator('.rss-feed')).toBeVisible();
-    await expect(page.locator('.rss-footer .rss-view-toggle-text')).toHaveText('Feeds');
+    await expect(page.locator('.rss-footer .rss-view-toggle-text')).toHaveText('▤');
+    await expect(page.locator('.rss-footer .rss-view-toggle-text')).toHaveAttribute('title', 'Feeds view');
   });
 
   test('keyboard navigation selects articles in the timeline view', async ({ page }) => {

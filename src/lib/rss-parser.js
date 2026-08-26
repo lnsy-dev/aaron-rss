@@ -32,6 +32,11 @@ const FEED_TYPES = {
 export async function parseFeedText(feedContent, feedURL) {
   try {
     const type = detectFeedType(feedContent);
+
+    if (type === FEED_TYPES.JSON) {
+      return parseJSONFeed(feedContent, feedURL);
+    }
+
     const parsed = await parser.parseString(feedContent);
 
     return {
@@ -49,6 +54,102 @@ export async function parseFeedText(feedContent, feedURL) {
     console.error('Feed parsing failed:', error);
     return null;
   }
+}
+
+/**
+ * Parse a JSON Feed 1.0/1.1 document into the app's ParsedFeed shape.
+ *
+ * @param {string} feedContent - Raw JSON feed body
+ * @param {string} feedURL - The feed URL
+ * @returns {object|null} ParsedFeed or null on failure
+ */
+function parseJSONFeed(feedContent, feedURL) {
+  const json = JSON.parse(feedContent);
+
+  if (!json || typeof json !== 'object' || !Array.isArray(json.items)) {
+    return null;
+  }
+
+  const feedAuthors = extractJSONAuthors(json.authors || json.author);
+
+  return {
+    type: FEED_TYPES.JSON,
+    title: typeof json.title === 'string' ? decodeHTMLEntities(json.title).trim() : '',
+    homePageURL: json.home_page_url,
+    feedURL: json.feed_url || feedURL,
+    feedDescription: typeof json.description === 'string' ? stripHTML(json.description) : '',
+    iconURL: json.icon,
+    faviconURL: json.favicon || extractFaviconURL(feedURL),
+    authors: feedAuthors,
+    items: json.items.map((item) => convertJSONItem(item, feedAuthors)),
+  };
+}
+
+/**
+ * Convert a JSON Feed item into the app's ParsedItem shape.
+ *
+ * @param {object} item
+ * @param {Array<object>} feedAuthors - Feed-level authors to fall back to
+ * @returns {object}
+ */
+function convertJSONItem(item, feedAuthors) {
+  const contentHTML = typeof item.content_html === 'string' ? item.content_html : '';
+  const contentText = typeof item.content_text === 'string'
+    ? item.content_text
+    : stripHTML(contentHTML);
+  let title = typeof item.title === 'string' ? decodeHTMLEntities(item.title).trim() : '';
+
+  if (!title || title.toLowerCase() === 'untitled') {
+    title = truncateText(contentText, 300);
+  }
+
+  const itemURL = item.url && isURL(item.url) ? item.url : undefined;
+  const uniqueID = typeof item.id === 'string' ? item.id : (itemURL || simpleHash(title + contentText));
+  const itemAuthors = extractJSONAuthors(item.authors || item.author);
+
+  return {
+    uniqueID,
+    title,
+    contentHTML: contentHTML || item.content_text,
+    contentText,
+    url: itemURL,
+    externalURL: item.external_url && isURL(item.external_url) ? item.external_url : itemURL,
+    summary: typeof item.summary === 'string' ? stripHTML(item.summary) : truncateText(contentText, 200),
+    imageURL: item.image || item.banner_image,
+    datePublished: item.date_published ? new Date(item.date_published) : undefined,
+    dateModified: item.date_modified ? new Date(item.date_modified) : undefined,
+    authors: itemAuthors.length > 0 ? itemAuthors : feedAuthors,
+    tags: Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string') : [],
+  };
+}
+
+/**
+ * Extract authors from JSON Feed author/authors fields.
+ *
+ * Handles both JSON Feed 1.0 (`author` string/object) and 1.1
+ * (`authors` array of {name, url, avatar}).
+ *
+ * @param {string|object|Array<object>} value
+ * @returns {Array<object>}
+ */
+function extractJSONAuthors(value) {
+  if (!value) return [];
+
+  if (typeof value === 'string') {
+    return [{ name: decodeHTMLEntities(value) }];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .filter((author) => author && typeof author.name === 'string')
+      .map((author) => ({ name: decodeHTMLEntities(author.name) }));
+  }
+
+  if (value && typeof value.name === 'string') {
+    return [{ name: decodeHTMLEntities(value.name) }];
+  }
+
+  return [];
 }
 
 /**

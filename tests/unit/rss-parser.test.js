@@ -124,4 +124,106 @@ describe('rss-parser', () => {
     expect(item.externalURL).toBe('https://jacobin.com/2026/08/example-article');
     expect(item.uniqueID).toBe('https://jacobin.com/2026/08/example-article');
   });
+
+  it('parses a JSON Feed 1.1 document', async () => {
+    const json = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1.1',
+      title: 'JSON Feed &amp; Demo',
+      home_page_url: 'https://example.com',
+      feed_url: 'https://example.com/feed.json',
+      description: 'A <em>demo</em> feed',
+      icon: 'https://example.com/icon.png',
+      favicon: 'https://example.com/favicon.png',
+      authors: [{ name: 'Alice &amp; Bob' }],
+      items: [
+        {
+          id: 'post-1',
+          title: 'Hello &amp; Welcome',
+          url: 'https://example.com/post-1',
+          external_url: 'https://external.example.com/post-1',
+          content_html: '<p>Body &amp; more</p>',
+          summary: 'Summary text',
+          image: 'https://example.com/image.png',
+          date_published: '2026-01-01T00:00:00Z',
+          date_modified: '2026-01-02T00:00:00Z',
+          authors: [{ name: 'Carol' }],
+          tags: ['news', 'tech'],
+        },
+      ],
+    });
+
+    const feed = await parseFeedText(json, 'https://example.com/feed.json');
+
+    expect(feed.type).toBe('jsonFeed');
+    expect(feed.title).toBe('JSON Feed & Demo');
+    expect(feed.homePageURL).toBe('https://example.com');
+    expect(feed.feedURL).toBe('https://example.com/feed.json');
+    expect(feed.feedDescription).toBe('A demo feed');
+    expect(feed.iconURL).toBe('https://example.com/icon.png');
+    expect(feed.faviconURL).toBe('https://example.com/favicon.png');
+    expect(feed.authors).toEqual([{ name: 'Alice & Bob' }]);
+
+    expect(feed.items).toHaveLength(1);
+    const [item] = feed.items;
+    expect(item.uniqueID).toBe('post-1');
+    expect(item.title).toBe('Hello & Welcome');
+    expect(item.url).toBe('https://example.com/post-1');
+    expect(item.externalURL).toBe('https://external.example.com/post-1');
+    expect(item.contentHTML).toBe('<p>Body &amp; more</p>');
+    expect(item.contentText).toBe('Body & more');
+    expect(item.summary).toBe('Summary text');
+    expect(item.imageURL).toBe('https://example.com/image.png');
+    expect(item.datePublished).toEqual(new Date('2026-01-01T00:00:00Z'));
+    expect(item.dateModified).toEqual(new Date('2026-01-02T00:00:00Z'));
+    expect(item.authors).toEqual([{ name: 'Carol' }]);
+    expect(item.tags).toEqual(['news', 'tech']);
+  });
+
+  it('parses a JSON Feed 1.0 document with a string author', async () => {
+    const json = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1',
+      title: 'Legacy Feed',
+      author: 'Legacy Author',
+      items: [
+        {
+          id: 'legacy-1',
+          content_text: 'Plain text content',
+        },
+      ],
+    });
+
+    const feed = await parseFeedText(json, 'https://example.com/legacy.json');
+
+    expect(feed.title).toBe('Legacy Feed');
+    expect(feed.authors).toEqual([{ name: 'Legacy Author' }]);
+    expect(feed.items[0].authors).toEqual([{ name: 'Legacy Author' }]);
+    expect(feed.items[0].contentText).toBe('Plain text content');
+  });
+
+  it('falls back to content text when a JSON Feed item has no title', async () => {
+    const json = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1.1',
+      title: 'Untitled Items',
+      items: [
+        {
+          id: 'no-title',
+          content_text: 'This is the content that becomes the title when truncated.',
+        },
+      ],
+    });
+
+    const feed = await parseFeedText(json, 'https://example.com/untitled.json');
+
+    expect(feed.items[0].title).toBe('This is the content that becomes the title when truncated.');
+  });
+
+  it('returns null for invalid JSON feed content', async () => {
+    const feed = await parseFeedText('not json', 'https://example.com/feed.json');
+    expect(feed).toBeNull();
+  });
+
+  it('returns null for JSON without an items array', async () => {
+    const feed = await parseFeedText('{"version":"1.1","title":"No Items"}', 'https://example.com/feed.json');
+    expect(feed).toBeNull();
+  });
 });

@@ -40,7 +40,7 @@ describe('cleanLogoSvg', () => {
     const out = cleanLogoSvg(fs.readFileSync(svgPath, 'utf8'));
     expect(out).not.toContain('var(');
     expect(out).not.toContain('style=');
-    expect(out).toContain('viewBox="176 36 48 77"');
+    expect(out).toContain('viewBox="141 28 63 88"');
   });
 });
 

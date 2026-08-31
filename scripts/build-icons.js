@@ -12,14 +12,16 @@
  * - favicon.ico         multi-resolution ICO (16/32/48)
  * - apple-touch-icon.png 180x180 PNG
  *
- * Rasterization uses ImageMagick (`magick`), which must be on PATH.
+ * Rasterization uses `sharp` (bundled librsvg) and ICO assembly uses
+ * `png-to-ico`, so the build needs no system-level tools.
  */
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFileSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
+import sharp from 'sharp';
+import pngToIco from 'png-to-ico';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +33,8 @@ const SOURCE_SVG = path.join(ASSETS, 'logo.svg');
 const MASTER_SIZE = 1024;
 /** Logo content fills this much of the square canvas (rest is padding). */
 const CONTENT_RATIO = 0.82;
+/** Density used when rasterizing the source SVG (keeps downscales crisp). */
+const RASTER_DENSITY = 600;
 
 /**
  * Clean the source SVG so it rasterizes identically everywhere:
@@ -49,61 +53,77 @@ export function cleanLogoSvg(svg) {
 }
 
 /**
- * Run ImageMagick with the given arguments.
+ * Generate the icon set from an SVG source into an output directory.
  *
- * @param {string[]} args Arguments passed to `magick`
- * @returns {void}
+ * @param {object} [options]
+ * @param {string} [options.sourceSvg] Path to the source SVG
+ *        (defaults to assets/logo.svg)
+ * @param {string} [options.outputDir] Directory to write icons into
+ *        (defaults to assets/)
+ * @returns {Promise<void>}
  */
-function magick(args) {
-  execFileSync('magick', args, { stdio: 'inherit' });
-}
-
-/**
- * Generate the icon set from assets/logo.svg.
- *
- * @returns {void}
- */
-export function buildIcons() {
-  const raw = fs.readFileSync(SOURCE_SVG, 'utf8');
+export async function buildIcons({ sourceSvg = SOURCE_SVG, outputDir = ASSETS } = {}) {
+  const raw = fs.readFileSync(sourceSvg, 'utf8');
   const cleaned = cleanLogoSvg(raw);
 
   // Cleaned SVG doubles as the scalable web favicon.
-  fs.writeFileSync(path.join(ASSETS, 'favicon.svg'), cleaned);
+  fs.writeFileSync(path.join(outputDir, 'favicon.svg'), cleaned);
 
-  // Rasterize from a hi-res temp render so downscales stay crisp.
-  // Use ImageMagick's internal MSVG renderer (prefix "msvg:") so the build
-  // does not depend on an external Inkscape/librsvg delegate being configured.
-  const tmpSvg = path.join(os.tmpdir(), 'aaron-rss-logo-clean.svg');
-  fs.writeFileSync(tmpSvg, cleaned);
-  const tmpRender = path.join(os.tmpdir(), 'aaron-rss-logo-hires.png');
-  magick(['-background', 'none', '-density', '600', `msvg:${tmpSvg}`, tmpRender]);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aaron-rss-icons-'));
+  try {
+    const contentSize = Math.round(MASTER_SIZE * CONTENT_RATIO);
 
-  // Square master: hi-res render centered on a transparent canvas.
-  const contentSize = Math.round(MASTER_SIZE * CONTENT_RATIO);
-  magick([
-    tmpRender,
-    '-resize', `${contentSize}x${contentSize}`,
-    '-gravity', 'center',
-    '-background', 'none',
-    '-extent', `${MASTER_SIZE}x${MASTER_SIZE}`,
-    path.join(ASSETS, 'logo.png'),
-  ]);
+    // Rasterize from a hi-res render so downscales stay crisp.
+    const hires = await sharp(Buffer.from(cleaned), { density: RASTER_DENSITY })
+      .resize(contentSize, contentSize, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
 
-  // PNG favicons derived from the master.
-  const appleTouch = path.join(ASSETS, 'apple-touch-icon.png');
-  magick([path.join(ASSETS, 'logo.png'), '-resize', '180x180', appleTouch]);
-  const f32 = path.join(ASSETS, 'favicon-32x32.png');
-  const f16 = path.join(ASSETS, 'favicon-16x16.png');
-  const f48 = path.join(os.tmpdir(), 'aaron-rss-favicon-48.png');
-  magick([path.join(ASSETS, 'logo.png'), '-resize', '32x32', f32]);
-  magick([path.join(ASSETS, 'logo.png'), '-resize', '16x16', f16]);
-  magick([path.join(ASSETS, 'logo.png'), '-resize', '48x48', f48]);
+    // Square master: hi-res render centered on a transparent canvas.
+    const masterPath = path.join(tmpDir, 'master.png');
+    await sharp({
+      create: {
+        width: MASTER_SIZE,
+        height: MASTER_SIZE,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([{ input: hires, gravity: 'centre' }])
+      .png()
+      .toFile(masterPath);
 
-  // Multi-resolution ICO for browsers/platforms that want one.
-  magick([f16, f32, f48, path.join(ASSETS, 'favicon.ico')]);
+    // Master doubles as the electron-builder app icon.
+    fs.copyFileSync(masterPath, path.join(outputDir, 'logo.png'));
+
+    // PNG favicons derived from the master.
+    await sharp(masterPath).resize(180, 180).png()
+      .toFile(path.join(outputDir, 'apple-touch-icon.png'));
+    const f32Path = path.join(outputDir, 'favicon-32x32.png');
+    const f16Path = path.join(outputDir, 'favicon-16x16.png');
+    await sharp(masterPath).resize(32, 32).png().toFile(f32Path);
+    await sharp(masterPath).resize(16, 16).png().toFile(f16Path);
+
+    // Multi-resolution ICO for browsers/platforms that want one.
+    const f48 = await sharp(masterPath).resize(48, 48).png().toBuffer();
+    const icoBuffer = await pngToIco([
+      await fs.promises.readFile(f16Path),
+      await fs.promises.readFile(f32Path),
+      f48,
+    ]);
+    fs.writeFileSync(path.join(outputDir, 'favicon.ico'), icoBuffer);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 // Only run when invoked directly (not when imported by tests).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  buildIcons();
+  buildIcons().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
 }

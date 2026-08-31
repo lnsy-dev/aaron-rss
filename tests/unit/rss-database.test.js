@@ -491,4 +491,57 @@ describe('rss database helpers', () => {
     expect(message.params.sql).toContain('LEFT JOIN articles a ON a.feed_id = f.feed_id AND a.read = 0');
     expect(message.params.sql).toContain('ORDER BY f.name');
   });
+
+  describe('write amplification analysis', () => {
+    it('saveArticles performs one worker round-trip per article', async () => {
+      const db = await importDatabaseModule();
+      const articles = [
+        { articleID: 'art1', uniqueID: 'u1', dateArrived: new Date('2026-01-01T00:00:00.000Z') },
+        { articleID: 'art2', uniqueID: 'u2', dateArrived: new Date('2026-01-02T00:00:00.000Z') },
+        { articleID: 'art3', uniqueID: 'u3', dateArrived: new Date('2026-01-03T00:00:00.000Z') },
+      ];
+
+      await db.saveArticles('feed123', articles);
+
+      expect(FakeWorker.instance.messages).toHaveLength(articles.length);
+      FakeWorker.instance.messages.forEach((message) => {
+        expect(message.action).toBe('exec');
+        expect(message.params.sql).toContain('INSERT INTO articles');
+      });
+    });
+
+    it('saveSettings performs one worker round-trip per setting', async () => {
+      const db = await importDatabaseModule();
+      await db.saveSettings({ a: '1', b: '2', c: '3' });
+
+      expect(FakeWorker.instance.messages).toHaveLength(3);
+      FakeWorker.instance.messages.forEach((message) => {
+        expect(message.action).toBe('exec');
+        expect(message.params.sql).toContain('INSERT INTO settings');
+      });
+    });
+
+    it('saveFeed rewrites every article with one exec per article', async () => {
+      const db = await importDatabaseModule();
+      const feed = {
+        feedID: 'feed123',
+        url: 'https://example.com/feed',
+        name: 'Example Feed',
+        homePageURL: 'https://example.com',
+        lastFetchWasSuccessful: true,
+        synthetic: false,
+        articles: [
+          { articleID: 'art1', uniqueID: 'u1', dateArrived: new Date('2026-01-01T00:00:00.000Z') },
+          { articleID: 'art2', uniqueID: 'u2', dateArrived: new Date('2026-01-02T00:00:00.000Z') },
+        ],
+      };
+
+      await db.saveFeed(feed);
+
+      // One feed upsert, one bulk delete of existing articles, then one
+      // insert per article. This documents the current per-article write
+      // cost; a future batch-exec worker action could reduce it.
+      expect(FakeWorker.instance.messages).toHaveLength(1 + 1 + feed.articles.length);
+    });
+  });
 });

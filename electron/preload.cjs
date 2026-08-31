@@ -12,7 +12,7 @@
  * from the page JavaScript.
  */
 
-const { contextBridge, ipcRenderer, shell } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
   /**
@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('electron', {
    * @param {string} url - The URL to open
    * @returns {Promise<void>}
    */
-  openExternal: (url) => shell.openExternal(url),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   /**
    * Subscribe to Escape presses forwarded from the main process.

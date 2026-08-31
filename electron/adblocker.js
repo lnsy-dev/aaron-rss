@@ -37,6 +37,32 @@ export async function initializeAdBlocker(fetchImpl = globalThis.fetch) {
     write: writeFile,
   });
 
+  // YouTube's embedded player and its API endpoints (youtubei, googlevideo,
+  // ytimg, etc.) are brittle when ad/tracker filters cancel their requests.
+  // Blocking them produces ERR_BLOCKED_BY_CLIENT and "Error 153: Video Player
+  // Configuration Error". Allow all YouTube-family requests to pass through.
+  const originalOnBeforeRequest = blocker.onBeforeRequest.bind(blocker);
+  blocker.onBeforeRequest = (details, callback) => {
+    const hostname = details.url ? new URL(details.url).hostname : '';
+    const allowed =
+      hostname === 'www.youtube.com' ||
+      hostname === 'youtube.com' ||
+      hostname === 'm.youtube.com' ||
+      hostname === 'music.youtube.com' ||
+      hostname === 'youtu.be' ||
+      hostname === 'www.youtu.be' ||
+      hostname.endsWith('.youtube.com') ||
+      hostname.endsWith('.ytimg.com') ||
+      hostname.endsWith('.googlevideo.com') ||
+      hostname.endsWith('.gvt2.com');
+
+    if (allowed) {
+      callback({});
+      return;
+    }
+    return originalOnBeforeRequest(details, callback);
+  };
+
   blocker.enableBlockingInSession(session.defaultSession);
 
   return blocker;

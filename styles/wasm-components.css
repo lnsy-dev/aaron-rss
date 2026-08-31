@@ -53,6 +53,6 @@ wasm-rust-component button:hover {
 wasm-cpp-component p,
 wasm-rust-component p {
   margin-top: 0.75rem;
-  font-family: monospace;
+  font-family: var(--font-mono);
   color: var(--neutral-color);
 }

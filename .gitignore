@@ -36,7 +36,7 @@ dist/
 # NOTE: docs/app/ is also build output (`npm run build:pages`) but is
 # intentionally tracked so GitHub Pages can serve /docs.
 
-
+release/
 
 # Playwright test artifacts
 test-results/

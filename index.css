@@ -22,9 +22,6 @@
  * css-loader can process them into the bundle.
  */
 
-/* Theme fonts — Atkinson Hyperlegible body, Roboto Condensed headings */
-@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=Roboto+Condensed:ital,wght@0,100..900;1,100..900&display=swap');
-
 /* Theme variables: colors, fonts, spacing tokens */
 @import './styles/variables.css';
 
@@ -39,12 +36,28 @@
 @import './styles/wasm-components.css';
 /* </WASM> */
 
+/* Prevent any small-caps rendering. If something explicitly asks for
+   small caps, switch it to Atkynson Hyperlegible Mono all-caps instead. */
+* {
+  font-variant-caps: normal;
+}
+
+[style*="font-variant: small-caps"],
+[style*="font-variant-caps: small-caps"],
+.small-caps,
+.all-caps {
+  font-variant: normal !important;
+  font-variant-caps: normal !important;
+  text-transform: uppercase !important;
+  font-family: var(--font-ui) !important;
+}
+
 /* Global base styles */
 body {
-  background-color: var(--background-color);
-  color: var(--foreground-color);
-  font-family: 'Atkinson Hyperlegible', sans-serif;
-  font-size: var(--type-body);
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-body);
+  font-size: var(--font-size-body);
   line-height: 1.4;
   margin: 0;
   padding: 1rem 0;
@@ -53,9 +66,7 @@ body {
   text-rendering: optimizeLegibility;
 
   /* Letterpress engrave effect */
-  text-shadow:
-    -0.5px -0.5px 0 rgba(0, 0, 0, 0.40),
-     0.5px  0.5px 0 rgba(255, 255, 255, 1);
+  text-shadow: var(--text-shadow);
 
   /* OpenType features */
   font-kerning: normal;
@@ -73,21 +84,103 @@ body {
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Roboto Condensed', sans-serif;
+  font-family: var(--font-header);
   font-optical-sizing: auto;
   font-weight: 400;
   line-height: 1.15;
-  color: var(--foreground-color);
+  color: var(--foreground);
 }
 
 h1 {
-  font-size: var(--h1-font-size);
+  font-size: var(--font-size-h1);
 }
 
 h2 {
-  font-size: var(--h2-font-size);
+  font-size: var(--font-size-h2);
 }
 
 h3 {
-  font-size: var(--h3-font-size);
+  font-size: var(--font-size-h3);
+}
+
+.rss-article-link, .rss-article-title {
+  font-family: var(--font-ui) !important;
+}
+
+.rss-article-meta, .rss-article-viewer-meta {
+  font-family: var(--font-ui);
+  font-size: 1rem;
+}
+.rss-social-header {
+    font-family: var(--font-ui);
+
+}
+
+.rss-social-comment-header {
+  font-family: var(--font-ui);
+}
+
+.rss-social-text, .rss-social-embed, .rss-social-comment-text {
+  font-feature-settings: "kern" 1,"liga" 1;
+}
+
+.rss-article-feed-name,  {
+  font-weight: 400;
+}
+
+.rss-article-date {
+  font-family: var(--font-ui);
+}
+
+.rss-modal-body label, .rss-modal-help, .rss-menu-item {
+  font-family: var(--font-ui);
+}
+
+.rss-modal-header h2 {
+  padding-top: 2em;
+}
+
+.rss-modal-close {
+  position: fixed;
+  right: 0;
+  top: 0;
+}
+
+.rss-article-summary {
+  color: var(--foreground);
+  font-size: 1em;
+  padding: 1em 0;
+  font-family: var(--font-body);
+}
+
+.rss-article-selected {
+  outline: 1px solid var(--neutral-2) !important;
+}
+
+.rss-article {
+  padding: 1em;
+}
+
+.rss-no-articles {
+  font-family: var(--font-ui);
+  text-transform: uppercase;
+  font-style: normal;
+}
+
+.rss-article.rss-article-unread {
+  outline: none;
+  border: none;
+}
+
+span.rss-unread-count {
+  font-family: var(--font-ui);
+}
+
+.rss-empty-state, .rss-refresh-progress, .rss-toast-container {
+  font-family: var(--font-ui);
+}
+
+
+.command-list {
+  font-family: var(--font-ui);
 }

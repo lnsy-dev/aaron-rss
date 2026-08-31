@@ -30,7 +30,7 @@ import { extractPageLinks, extractPageTitle } from './page-snapshot-feed.js';
 import { processNewArticles } from './article-processor.js';
 import { refreshFeedInWorker } from './feed-refresh-bridge.js';
 import { enrichBlueskyFeedItems } from './social-post.js';
-import { downloadYouTubeVideo } from './youtube-bridge.js';
+import { downloadYouTubeVideo, deleteDownloadedVideo } from './youtube-bridge.js';
 import { isYouTubeURL, isYouTubeStream } from './youtube.js';
 
 /**
@@ -448,12 +448,25 @@ export function loadFeed(feedID) {
 }
 
 /**
- * Delete a feed and its articles.
+ * Delete a feed and its articles, cleaning up any downloaded YouTube
+ * video files so they do not linger on disk.
  *
  * @param {string} feedID
  * @returns {Promise<void>}
  */
 export async function deleteFeed(feedID) {
+  const feed = await dbLoadFeed(feedID);
+  if (feed?.articles) {
+    for (const article of feed.articles) {
+      if (article.downloadPath) {
+        try {
+          await deleteDownloadedVideo(article.downloadPath);
+        } catch (error) {
+          console.error('Failed to delete downloaded video for article:', article.articleID, error);
+        }
+      }
+    }
+  }
   await dbDeleteFeed(feedID);
 }
 

@@ -415,6 +415,7 @@ async function fetchBinary(url) {
 
 ipcMain.handle('fetch-text', async (_, url) => fetchText(url));
 ipcMain.handle('fetch-binary', async (_, url) => fetchBinary(url));
+ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));
 ipcMain.handle('download-youtube-video', async (_, url) => downloadYouTubeVideo(url));
 ipcMain.handle('delete-downloaded-video', async (_, filePath) => deleteDownloadedVideo(filePath));
 

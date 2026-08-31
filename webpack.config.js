@@ -252,6 +252,15 @@ export default {
               {
                 from: 'assets',
                 to: '.',
+                /**
+                 * Font files referenced via CSS url() are already copied and
+                 * hashed by the css-loader/asset pipeline. Copying the raw
+                 * font files again here would bloat the bundle with unused
+                 * faces (the AtkinsonHyperlegibleMono folder alone is ~60 MB).
+                 */
+                globOptions: {
+                  ignore: ['**/*.ttf', '**/*.otf', '**/*.woff', '**/*.woff2', '**/*.md', '**/*.txt'],
+                },
               },
             ],
           }),

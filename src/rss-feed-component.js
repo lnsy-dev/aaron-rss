@@ -112,6 +112,7 @@ class RSSFeedComponent extends DataroomElement {
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
+    this._articleViewerOverlay = null;
     this._scrollLockCount = 0;
     this._previousBodyOverflow = '';
     this._previousHtmlOverflow = '';
@@ -129,7 +130,7 @@ class RSSFeedComponent extends DataroomElement {
     this.renderHeader();
     this.renderFooter();
     this.initializeCommandPanel();
-    this.statusLine = this.create('p', { class: 'rss-status' });
+    this.statusLine = this.create('p', { class: 'rss-status' }, this.footer);
     this.statusFadeTimeout = null;
     this.contentArea = this.create('div', { class: 'rss-content-area' });
     this.toastContainer = this.create('div', { class: 'rss-toast-container' });
@@ -192,6 +193,12 @@ class RSSFeedComponent extends DataroomElement {
       }
     });
     header.appendChild(menuButton);
+
+    this.unreadCountBadge = document.createElement('span');
+    this.unreadCountBadge.className = 'rss-unread-count';
+    this.unreadCountBadge.setAttribute('aria-live', 'polite');
+    this.unreadCountBadge.title = 'Unread articles';
+    header.appendChild(this.unreadCountBadge);
   }
 
   /**
@@ -200,7 +207,8 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {void}
    */
   renderFooter() {
-    const footer = this.create('footer', { class: 'rss-footer' });
+    this.footer = this.create('footer', { class: 'rss-footer' });
+    const footer = this.footer;
 
     const viewToggleLabel = document.createElement('label');
     viewToggleLabel.className = 'rss-view-toggle';
@@ -319,14 +327,14 @@ class RSSFeedComponent extends DataroomElement {
     this.commandPanel.setAttribute('open-keys', 'ctrl+shift+p');
 
     const commands = [
-      { name: 'Add RSS Feed', icon: '➕', action: () => this.openAddFeedModal() },
-      { name: 'Manage Feeds', icon: '📂', action: () => this.openManageFeedsModal() },
-      { name: 'Refresh All Feeds', icon: '🔄', action: () => this.handleRefreshAll() },
-      { name: 'Mark All Read', icon: '✓', action: () => this.handleMarkAllRead() },
-      { name: 'Settings', icon: '⚙️', action: () => this.openSettingsModal() },
-      { name: 'Export OPML', icon: '📤', action: () => this.handleExportOPML() },
-      { name: 'Import OPML', icon: '📥', action: () => this.handleImportOPML() },
-      { name: 'Help', icon: '❓', action: () => window.open('/help.html', '_blank') },
+      { name: 'Add RSS Feed', action: () => this.openAddFeedModal() },
+      { name: 'Manage Feeds', action: () => this.openManageFeedsModal() },
+      { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
+      { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
+      { name: 'Settings', action: () => this.openSettingsModal() },
+      { name: 'Export OPML', action: () => this.handleExportOPML() },
+      { name: 'Import OPML', action: () => this.handleImportOPML() },
+      { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
     for (const command of commands) {
@@ -689,6 +697,25 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Update the header badge that shows the total number of unread articles.
+   *
+   * @returns {void}
+   */
+  _updateUnreadCount() {
+    if (!this.unreadCountBadge) {
+      return;
+    }
+
+    const feeds = this.feeds || [];
+    const count = feeds.reduce((total, feed) => {
+      return total + (feed.articles || []).filter((article) => !article.read).length;
+    }, 0);
+
+    this.unreadCountBadge.textContent = String(count);
+    this.unreadCountBadge.setAttribute('aria-label', `${count} unread articles`);
+  }
+
+  /**
    * Render the feed list into the content area.
    *
    * `this.feeds` is expected to already be in the desired order.
@@ -696,6 +723,8 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {void}
    */
   renderFeeds() {
+    this._updateUnreadCount();
+
     // Cancel any pending animation-frame render so direct renders always
     // win and never get overwritten by a stale scheduled render.
     this._cancelScheduledRender();
@@ -1591,8 +1620,17 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {{overlay: HTMLElement, body: HTMLElement}}
    */
   createModal(title, options = {}) {
-    this.closeModal();
     this._closeFind();
+
+    // Regular modals stack on top of article viewers so a user can add a
+    // feed without losing the article they were reading. Other regular
+    // modals are replaced so only one small dialog is open at a time.
+    if (this.activeModal && this._isArticleViewerModal(this.activeModal)) {
+      this._articleViewerOverlay = this.activeModal;
+    } else {
+      this.closeModal();
+      this._articleViewerOverlay = null;
+    }
 
     const overlay = document.createElement('div');
     overlay.className = options.fullPage
@@ -1668,7 +1706,17 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     overlay.remove();
-    this.activeModal = null;
+
+    if (wasArticleViewer) {
+      this._articleViewerOverlay = null;
+      this.activeModal = null;
+    } else if (this._articleViewerOverlay) {
+      this.activeModal = this._articleViewerOverlay;
+      this._articleViewerOverlay = null;
+    } else {
+      this.activeModal = null;
+    }
+
     this.unlockBackgroundScroll();
 
     if (wasArticleViewer && this._findBar?.classList.contains('rss-find-bar--visible')) {
@@ -2226,11 +2274,16 @@ class RSSFeedComponent extends DataroomElement {
    * fallback opens a new tab so the app window is never navigated away.
    *
    * @param {string} url
-   * @returns {void}
+   * @returns {Promise<void>}
    */
-  openExternalURL(url) {
+  async openExternalURL(url) {
     if (window.electron?.openExternal) {
-      window.electron.openExternal(url);
+      try {
+        await window.electron.openExternal(url);
+      } catch (error) {
+        console.error('Failed to open external URL:', error);
+        window.open(url, '_blank');
+      }
       return;
     }
     window.open(url, '_blank');
@@ -2311,6 +2364,7 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     this.closeModal();
+    this._articleViewerOverlay = null;
 
     const overlay = document.createElement('div');
     overlay.className = 'rss-article-viewer-overlay rss-original-viewer-overlay';
@@ -2351,6 +2405,13 @@ class RSSFeedComponent extends DataroomElement {
     shareButton.addEventListener('click', () => this.shareArticle(article));
     actions.appendChild(shareButton);
 
+    const openExternalButton = document.createElement('button');
+    openExternalButton.className = 'rss-action-button';
+    openExternalButton.setAttribute('data-action', 'open-external');
+    openExternalButton.textContent = 'Open in Browser';
+    openExternalButton.addEventListener('click', () => this.openExternalURL(article.url));
+    actions.appendChild(openExternalButton);
+
     dialog.appendChild(actions);
 
     const frame = document.createElement('iframe');
@@ -2360,10 +2421,14 @@ class RSSFeedComponent extends DataroomElement {
       'allow-scripts allow-same-origin allow-forms allow-popups'
     );
     frame.title = 'Original article';
-    frame.src = article.url;
     frame.style.display = 'block';
 
     dialog.appendChild(frame);
+
+    // Sites such as Slashdot send CSP frame-ancestors 'self', which blocks
+    // the iframe. Detect a blank load and fall back to the default browser
+    // so the user is not left staring at an error.
+    this._navigateOriginalFrame(frame, article.url);
     overlay.appendChild(dialog);
     this.appendChild(overlay);
 
@@ -2884,6 +2949,7 @@ class RSSFeedComponent extends DataroomElement {
    */
   createArticleViewer(article, feed) {
     this.closeModal();
+    this._articleViewerOverlay = null;
 
     const overlay = document.createElement('div');
     overlay.className = 'rss-article-viewer-overlay';
@@ -3007,6 +3073,37 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Navigate an original-view iframe to a URL and fall back to the default
+   * browser if the site blocks framing via CSP.
+   *
+   * @param {HTMLIFrameElement} frame - The iframe to navigate
+   * @param {string} url - The original article URL
+   * @returns {void}
+   */
+  _navigateOriginalFrame(frame, url) {
+    frame.addEventListener(
+      'load',
+      () => {
+        setTimeout(() => {
+          try {
+            const location = frame.contentWindow.location.href;
+            if (location === 'about:blank' || location === window.location.href) {
+              this.closeModal();
+              this.openExternalURL(url);
+            }
+          } catch {
+            // Cross-origin successful loads throw SecurityError when reading
+            // location.href from the parent. That means the frame loaded,
+            // so no fallback is needed.
+          }
+        }, 500);
+      },
+      { once: true }
+    );
+    frame.src = url;
+  }
+
+  /**
    * Switch the article viewer to the original website view.
    *
    * Hides the extracted Markdown body and shows an iframe loaded with the
@@ -3019,8 +3116,8 @@ class RSSFeedComponent extends DataroomElement {
   _showOriginalView(overlay, url) {
     overlay._viewerMode = 'original';
     overlay._articleBody.style.display = 'none';
-    overlay._originalFrame.src = url;
     overlay._originalFrame.style.display = 'block';
+    this._navigateOriginalFrame(overlay._originalFrame, url);
 
     // The back button now always closes the viewer, so expose a way back
     // to the extracted article through the "Open Original" action instead.
@@ -3341,9 +3438,9 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Update the status tag and reset its fade-out timer.
    *
-   * The status tag sits in the lower-right corner and disappears after
-   * 10 seconds of inactivity. Calling this method with new text makes
-   * the tag visible again and restarts the timer.
+   * The status tag sits in the right side of the footer and disappears
+   * after 10 seconds of inactivity. Calling this method with new text
+   * makes the tag visible again and restarts the timer.
    *
    * @param {string} text
    * @returns {void}

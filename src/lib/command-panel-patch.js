@@ -71,6 +71,31 @@ customElements.define = function (name, constructor, options) {
         },
         true
       );
+
+      // The base component only supports a single shortcut via its
+      // `open-keys` attribute. Bind an additional Cmd+P (macOS) / Ctrl+P
+      // shortcut so the panel can be opened without the Shift modifier.
+      // preventDefault stops the browser's default Print dialog.
+      this._commandPanelExtraListener = (event) => {
+        if (event.key.toLowerCase() !== 'p') return;
+        if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey) {
+          event.preventDefault();
+          if (!this.dialog.open) {
+            this.openPanel();
+          }
+        }
+      };
+      document.addEventListener('keydown', this._commandPanelExtraListener);
+    }
+
+    disconnectedCallback() {
+      if (this._commandPanelExtraListener) {
+        document.removeEventListener('keydown', this._commandPanelExtraListener);
+        this._commandPanelExtraListener = null;
+      }
+      if (super.disconnectedCallback) {
+        super.disconnectedCallback();
+      }
     }
   }
 

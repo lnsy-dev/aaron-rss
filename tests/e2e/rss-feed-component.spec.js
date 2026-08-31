@@ -32,6 +32,41 @@ test.describe('Aaron RSS', () => {
     await expect(page.locator('.rss-hamburger')).toBeVisible();
   });
 
+  test('renders an unread article count in the upper left', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-1',
+          url: 'https://example.com/feed.xml',
+          name: 'Example Feed',
+          articles: [
+            { articleID: 'a1', title: 'Read post', read: true },
+            { articleID: 'a2', title: 'Unread post', read: false },
+            { articleID: 'a3', title: 'Another unread', read: false },
+          ],
+        },
+        {
+          feedID: 'feed-2',
+          url: 'https://other.example.com/feed.xml',
+          name: 'Other Feed',
+          articles: [
+            { articleID: 'a4', title: 'Unread in other', read: false },
+          ],
+        },
+      ];
+      el.renderFeeds();
+    });
+
+    const badge = page.locator('.rss-header .rss-unread-count');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText('3');
+    await expect(badge).toHaveAttribute('aria-label', '3 unread articles');
+  });
+
   test('renders a Refresh All Feeds button in the lower left', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toBeVisible();
@@ -354,6 +389,30 @@ test.describe('Aaron RSS', () => {
       return document.activeElement === panel.searchInput;
     });
     expect(focused).toBe(true);
+
+    // Close so the next shortcut test starts from a clean state.
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  });
+
+  test('Cmd+P / Ctrl+P opens the command panel', async ({ page }) => {
+    // Meta+P is the macOS binding; Playwright maps Meta to the platform
+    // modifier. Press both variants to cover the Ctrl path too.
+    await page.keyboard.press('Control+p');
+    const dialog = page.locator('command-panel dialog');
+    await expect(dialog).toBeVisible();
+
+    const focused = await page.evaluate(() => {
+      const panel = document.querySelector('command-panel');
+      return document.activeElement === panel.searchInput;
+    });
+    expect(focused).toBe(true);
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+
+    await page.keyboard.press('Meta+p');
+    await expect(dialog).toBeVisible();
   });
 
   test('command panel stays on top when the article viewer is open', async ({ page }) => {
@@ -809,6 +868,38 @@ test.describe('Aaron RSS', () => {
     await expect(viewer).not.toBeVisible();
   });
 
+  test('original viewer has an Open in Browser button', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await page.evaluate(() => {
+      window.__openedExternalUrls = [];
+      window.electron = {
+        openExternal: async (url) => {
+          window.__openedExternalUrls.push(url);
+        },
+      };
+    });
+
+    await component.evaluate((el) => {
+      el.openOriginalViewer(
+        { title: 'Sample Article', url: 'https://example.com/post' },
+        { feedID: 'feed-1', name: 'Example Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-original-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    const openButton = viewer.locator('button', { hasText: 'Open in Browser' });
+    await expect(openButton).toBeVisible();
+    await openButton.click();
+
+    const openedUrls = await page.evaluate(() => window.__openedExternalUrls);
+    expect(openedUrls).toEqual(['https://example.com/post']);
+  });
+
   test('clicking an article title opens the in-app article viewer', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toBeVisible();
@@ -1002,6 +1093,38 @@ test.describe('Aaron RSS', () => {
     // Back must close the whole viewer, not just toggle views.
     await viewer.locator('.rss-article-viewer-back').click();
     await expect(viewer).not.toBeVisible();
+  });
+
+  test('Open on YouTube button opens the video in the default browser', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await page.evaluate(() => {
+      window.__openedExternalUrls = [];
+      window.electron = {
+        openExternal: async (url) => {
+          window.__openedExternalUrls.push(url);
+        },
+      };
+    });
+
+    await component.evaluate((el) => {
+      el.openYouTubeViewer(
+        { title: 'YouTube Test', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+        { name: 'YouTube Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    const openButton = viewer.locator('button', { hasText: 'Open on YouTube' });
+    await expect(openButton).toBeVisible();
+    await openButton.click();
+
+    const openedUrls = await page.evaluate(() => window.__openedExternalUrls);
+    expect(openedUrls).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
   });
 
   test('relative links in article content resolve against the article URL and open externally', async ({ page }) => {
@@ -2340,6 +2463,96 @@ test.describe('Aaron RSS', () => {
 
     // Wait out the discovery round trip; success must stay silent.
     await page.waitForTimeout(3000);
+    await expect(page.locator('.rss-toast-error')).toHaveCount(0);
+  });
+
+  test('adding a feed keeps an open article viewer visible', async ({ page }) => {
+    test.setTimeout(30000);
+
+    const feedXML = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<rss version="2.0"><channel>',
+      '<title>Background Add Feed</title>',
+      '<link>https://bg-add.example.com/</link>',
+      '<description>test</description>',
+      '<item><title>New Item</title><link>https://bg-add.example.com/post-1</link>',
+      '<guid>post-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+      '</channel></rss>',
+    ].join('');
+
+    await page.route('https://bg-add.example.com/**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/rss+xml',
+        headers: { 'Access-Control-Allow-Origin': '*' },
+        body: feedXML,
+      });
+    });
+
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    // Seed a feed with an article and open it in the viewer.
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-article-open',
+          url: 'https://example.com/feed.xml',
+          name: 'Example Feed',
+          homePageURL: 'https://example.com',
+          articles: [
+            {
+              articleID: 'article-open',
+              title: 'Currently Reading',
+              url: 'https://example.com/post',
+              datePublished: new Date('2024-01-01T00:00:00Z'),
+              authors: [{ name: 'Jane Doe' }],
+              read: false,
+              starred: false,
+              tags: [],
+            },
+          ],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    await page.locator('.rss-article-title strong').click();
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator('.rss-article-viewer-header h2')).toHaveText('Currently Reading');
+
+    // Open the Add Feed modal on top of the article viewer via the command
+    // palette, since the article viewer overlay covers the footer buttons.
+    await page.keyboard.press('Control+Shift+p');
+    await page.locator('command-panel .command-item', { hasText: 'Add RSS Feed' }).click();
+    const modal = page.locator('.rss-modal-dialog');
+    await expect(modal).toBeVisible();
+
+    // The article viewer should stay visible behind the modal.
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator('.rss-article-viewer-header h2')).toHaveText('Currently Reading');
+
+    // The modal overlay is translucent, not opaque.
+    const overlay = page.locator('.rss-modal-overlay');
+    const beforeOpacity = await overlay.evaluate((el) => {
+      return parseFloat(window.getComputedStyle(el, '::before').opacity);
+    });
+    expect(beforeOpacity).toBeLessThan(1);
+
+    // Submitting closes only the modal; the article remains open.
+    await modal.locator('input[type="url"]').fill('https://bg-add.example.com/feed.xml');
+    await modal.locator('.rss-button-primary').click();
+
+    await expect(modal).not.toBeVisible({ timeout: 2000 });
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator('.rss-article-viewer-header h2')).toHaveText('Currently Reading');
+
+    // Wait for the background discovery to finish and confirm the article
+    // viewer is still the active modal.
+    await page.waitForTimeout(3000);
+    await expect(viewer).toBeVisible();
     await expect(page.locator('.rss-toast-error')).toHaveCount(0);
   });
 });

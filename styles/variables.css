@@ -1,40 +1,34 @@
 /*
-  *** begin ascii art ***
+  Theme variables for Aaron RSS.
 
-   _    _____    ____  _______    ____  __    ___________
-  | |  / /   |  / __ \/  _/   |  / __ )/ /   / ____/ ___/
-  | | / / /| | / /_/ // // /| | / __  / /   / __/  \__ \
-  | |/ / ___ |/ _, _// // ___ |/ /_/ / /___/ /___ ___/ /
-  |___/_/  |_/_/ |_/___/_/  |_/_____/_____/_____//____/
-
-  *** end ascii art ***
-
-  Most aesthethic options should live here for adjustment
+  The default theme lives in dataroom-theme.css. This file adds
+  backward-compatible aliases so the rest of the app can keep using
+  the legacy variable names defined in component stylesheets.
 */
 
+@import './dataroom-theme.css';
 
 :root {
-  /* Palette — warm paper, from archive-consulting-site/docs/styles.css */
-  --background-color: #f2ece2;
-  --foreground-color: #444;
-  --highlight-color: rgba(0, 0, 0, 0.12);
-  --secondary-color: rgba(0, 0, 0, 0.02);
-  --trinary-color: #666;
-  --quaternary-color: rgba(0, 0, 0, 0.12);
-  --confirmation-color: #E4191C;
-  --notification-color: #E4191C;
-  --inactive-color: #cccccc;
-  --warning-color: #9F1113;
-  --error-color: #9F1113;
-  --neutral-color: #555;
+  /* Legacy palette aliases */
+  --background-color: var(--background);
+  --foreground-color: var(--foreground);
+  --highlight-color: color-mix(in srgb, var(--foreground) 12%, var(--background));
+  --secondary-color: color-mix(in srgb, var(--foreground) 4%, var(--background));
+  --trinary-color: var(--muted);
+  --quaternary-color: var(--neutral-3);
+  --confirmation-color: var(--accent);
+  --notification-color: var(--accent);
+  --inactive-color: var(--muted);
+  --warning-color: var(--accent);
+  --error-color: var(--accent);
+  --neutral-color: var(--muted);
 
-  /* Typography — Atkinson Hyperlegible body, Roboto Condensed headings */
-  --type-body: 1.25rem;
-  --type-h3: 1.5rem;
-  --type-h2: 1.8rem;
-  --type-h1: 2.16rem;
-  --h1-font-size: var(--type-h1);
-  --h2-font-size: var(--type-h2);
-  --h3-font-size: var(--type-h3);
-
+  /* Legacy typography aliases */
+  --type-body: var(--font-size-body);
+  --type-h1: var(--font-size-h1);
+  --type-h2: var(--font-size-h2);
+  --type-h3: var(--font-size-h3);
+  --h1-font-size: var(--font-size-h1);
+  --h2-font-size: var(--font-size-h2);
+  --h3-font-size: var(--font-size-h3);
 }

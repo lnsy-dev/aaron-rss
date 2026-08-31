@@ -500,6 +500,48 @@ describe('youtube download backend', () => {
     });
   });
 
+  describe('deleteDownloadedVideo', () => {
+    it('deletes an existing file and returns true', async () => {
+      mockUnlink.mockResolvedValue(undefined);
+
+      const { deleteDownloadedVideo } = await importYoutubeDownload();
+      const result = await deleteDownloadedVideo('/downloads/Aaron-RSS-YouTube/video.mp4');
+
+      expect(result).toBe(true);
+      expect(mockUnlink).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/video.mp4');
+    });
+
+    it('returns true when the file has already been removed', async () => {
+      const notFound = new Error('no such file');
+      notFound.code = 'ENOENT';
+      mockUnlink.mockRejectedValue(notFound);
+
+      const { deleteDownloadedVideo } = await importYoutubeDownload();
+      const result = await deleteDownloadedVideo('/downloads/Aaron-RSS-YouTube/missing.mp4');
+
+      expect(result).toBe(true);
+    });
+
+    it('returns false when deletion fails for a reason other than ENOENT', async () => {
+      const permissionDenied = new Error('permission denied');
+      permissionDenied.code = 'EACCES';
+      mockUnlink.mockRejectedValue(permissionDenied);
+
+      const { deleteDownloadedVideo } = await importYoutubeDownload();
+      const result = await deleteDownloadedVideo('/downloads/Aaron-RSS-YouTube/locked.mp4');
+
+      expect(result).toBe(false);
+    });
+
+    it('returns true early when no path is provided', async () => {
+      const { deleteDownloadedVideo } = await importYoutubeDownload();
+      const result = await deleteDownloadedVideo('');
+
+      expect(result).toBe(true);
+      expect(mockUnlink).not.toHaveBeenCalled();
+    });
+  });
+
   describe('static build provisioning helpers', () => {
     it('platformTriple maps platform/arch pairs to asset triples', async () => {
       const { platformTriple } = await importYoutubeDownload();

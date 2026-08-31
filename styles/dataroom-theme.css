@@ -1,0 +1,222 @@
+/* Local font files — copied from assets/ by webpack's css-loader/url() handling. */
+
+/* EB Garamond — variable font, weight range 400–800 */
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/EBGaramond-VariableFont_wght.ttf') format('truetype-variations');
+}
+
+@font-face {
+  font-family: 'EB Garamond';
+  font-style: italic;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url('../assets/EBGaramond-Italic-VariableFont_wght.ttf') format('truetype-variations');
+}
+
+/* Roboto Condensed — variable font, weight range 100–900 */
+@font-face {
+  font-family: 'Roboto Condensed';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/RobotoCondensed-VariableFont_wght.ttf') format('truetype-variations');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-Light.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-LightItalic.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-Regular.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-Italic.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-Medium.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-MediumItalic.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-Bold.otf') format('opentype');
+}
+
+@font-face {
+  font-family: 'Atkynson Hyperlegible Mono';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../assets/AtkinsonHyperlegibleMono/AtkynsonMonoNerdFont-BoldItalic.otf') format('opentype');
+}
+
+:root {
+  color-scheme: light;
+
+  /* Colors */
+  --foreground: #1a1812;
+  --background: #f2ece2;
+  --accent: #9f1113;
+  --secondary: #6b0c0e;
+  --surface: #f2ece2;
+  --surface-alt: #d2cec0;
+  --muted: #6b6759;
+  --border: rgba(0,0,0,0.2);
+  --highlight: #9f1113;
+  --neutral-1: #6b6759;
+  --neutral-2: #8f8b7d;
+  --neutral-3: #f2ece2;
+  --foreground-dim: #000000;
+  --background-light: #ffffff;
+  --background-dark: #e2d5bf;
+  --highlight-bright: #b00002;
+  --highlight-dim: #8d2324;
+  --secondary-bright: #740305;
+  --secondary-dim: #621517;
+  --neutral-1-lighter: #878270;
+  --neutral-3-darker: #e2d5bf;
+  --accent-red: #9f1111;
+  --accent-green: #119f11;
+  --accent-blue: #11119f;
+  --accent-yellow: #9f9f11;
+  --accent-purple: #70119f;
+  --accent-cyan: #119f9f;
+
+  /* Semantic aliases — referenced directly by layout.css */
+  --color-heading: var(--foreground);
+
+  /* Input icons — chevron colored with the theme's --foreground
+     (SVG data URIs can't reference CSS variables, so it's defined here) */
+  --input-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%231a1812' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+
+  /* Native date/time picker icon, colored with the theme's --foreground */
+  --input-icon-calendar: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='M1.5 3.5h11v9h-11zM4 1v4M10 1v4M1.5 6.5h11' stroke='%231a1812' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --color-link: var(--accent);
+  --color-link-hover: var(--secondary);
+
+  /* Shadows
+     Letterpress text effect on body text, plus bevel-style box
+     shadows for dialogs and inset-style for form inputs. */
+  --text-shadow:
+    -0.5px -0.5px 0 rgba(0, 0, 0, 0.20),
+     0.5px  0.5px 0 rgba(255, 255, 255, 0.3);
+  --box-shadow:
+    0.5px 0.5px 0 rgba(0, 0, 0, 0.40),
+    -0.5px -0.5px 0 rgba(255, 255, 255, 0.7);
+  --box-shadow-inset:
+    inset 0.5px 0.5px 1px rgba(0, 0, 0, 0.20),
+    inset -0.5px -0.5px 3px 1px rgba(255, 255, 255, 0.6);
+
+  /* Fonts */
+  --font-header: 'Roboto Condensed', sans-serif;
+  --font-ui: 'Roboto Condensed', sans-serif;
+  --font-mono: 'Atkynson Hyperlegible Mono', monospace;
+  --font-body: 'EB Garamond', serif;
+  --font-weight-h1: 400;
+  --font-weight-h2: 400;
+  --font-weight-h3: 400;
+  --font-weight-body: 400;
+  --font-size-h1: 38.4px;
+  --font-size-h2: 28.8px;
+  --font-size-h3: 21.6px;
+  --font-size-body: 21.2px;
+}
+
+/* Dark theme — applied when the user's device requests a dark
+   color scheme. Values mirror dataroom-dark-theme.css; fonts are
+   identical between the two themes so they are not repeated. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    /* Colors */
+    --foreground: #e5c7a9;
+    --background: #1b1c25;
+    --accent: #ffe6bd;
+    --secondary: #8b7963;
+    --surface: #1b1c25;
+    --surface-alt: #1b1c25;
+    --muted: #aa9d7e;
+    --border: #e5c7a9;
+    --highlight: #d9d3c9;
+    --neutral-1: #868074;
+    --neutral-2: #22242f;
+    --neutral-3: #1b1c25;
+    --foreground-dim: #bc7b39;
+    --background-light: #3b3d51;
+    --background-dark: #050608;
+    --highlight-bright: #e2d5c0;
+    --highlight-dim: #d1d1d1;
+    --secondary-bright: #c4ad92;
+    --secondary-dim: #ababab;
+    --neutral-1-lighter: #9e998f;
+    --neutral-3-darker: #050608;
+    --accent-red: #d9c9c9;
+    --accent-green: #c9d9c9;
+    --accent-blue: #c9c9d9;
+    --accent-yellow: #d9d9c9;
+    --accent-purple: #d4c9d9;
+    --accent-cyan: #c9d9d9;
+
+    /* Input icons — chevron colored with the theme's --foreground
+       (SVG data URIs can't reference CSS variables, so it's defined here) */
+    --input-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23e5c7a9' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+
+    /* Native date/time picker icon, colored with the theme's --foreground */
+    --input-icon-calendar: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='M1.5 3.5h11v9h-11zM4 1v4M10 1v4M1.5 6.5h11' stroke='%23e5c7a9' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+    /* Shadows
+       Letterpress effect adapted for a dark surface: the dark
+       shadow is deepened and the light highlight is softened so
+       the engrave stays subtle instead of glowing. */
+    --text-shadow:
+      -0.5px -0.5px 0 rgba(0, 0, 0, 0.60),
+       0.5px  0.5px 0 rgba(255, 255, 255, 0.12);
+    --box-shadow:
+      0.5px 0.5px 0 rgba(0, 0, 0, 0.60),
+      -0.5px -0.5px 0 rgba(255, 255, 255, 0.12);
+    --box-shadow-inset:
+      inset 0.5px 0.5px 1px rgba(0, 0, 0, 0.50),
+      inset -0.5px -0.5px 3px 1px rgba(255, 255, 255, 0.10);
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "aaron-rss",
-  "version": "0.6.3",
+  "version": "0.6.8",
   "description": "A simple RSS reader as an Electron App",
   "main": "electron/main.js",
   "type": "module",
@@ -23,7 +23,7 @@
     "build": "npm run build:icons && NODE_ENV=production webpack build",
     "build:icons": "node scripts/build-icons.js",
     "build:pages": "NODE_ENV=production PUBLIC_PATH=/aaron-rss/app/ webpack build && rm -rf docs/app && cp -R dist docs/app",
-    "electron": "electron .",
+    "electron": "node scripts/electron-dev.js",
     "electron:build": "npm run build && electron-builder",
     "build:wasm:cpp": "cd src/wasm/cpp && make",
     "convert:synthetic-social-feeds": "node scripts/convert-synthetic-social-feeds.js",

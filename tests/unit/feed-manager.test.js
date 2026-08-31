@@ -65,6 +65,7 @@ import {
   runDatabaseMaintenance,
   savePageSnapshot,
   loadPageSnapshot,
+  deleteFeed as dbDeleteFeed,
 } from '../../src/lib/database.js';
 import { fetchText } from '../../src/lib/rss-network.js';
 import { parseFeedText } from '../../src/lib/rss-parser.js';
@@ -74,7 +75,7 @@ import {
   mergeArticles,
 } from '../../src/lib/article-processor.js';
 import { refreshFeedInWorker } from '../../src/lib/feed-refresh-bridge.js';
-import { downloadYouTubeVideo } from '../../src/lib/youtube-bridge.js';
+import { downloadYouTubeVideo, deleteDownloadedVideo } from '../../src/lib/youtube-bridge.js';
 
 async function importFeedManager() {
   return await import('../../src/lib/feed-manager.js');
@@ -530,5 +531,72 @@ describe('feed manager', () => {
     await refreshAllFeeds(50);
 
     expect(runDatabaseMaintenance).toHaveBeenCalledTimes(1);
+  });
+
+  describe('deleteFeed (storage cleanup)', () => {
+    it('deletes downloaded YouTube videos before removing the feed from the database', async () => {
+      const feed = {
+        feedID: 'feed-yt',
+        url: 'https://example.com/feed',
+        name: 'YouTube Feed',
+        articles: [
+          { articleID: 'art1', downloadPath: '/downloads/Aaron-RSS-YouTube/video1.mp4' },
+          { articleID: 'art2', downloadPath: '/downloads/Aaron-RSS-YouTube/video2.mp4' },
+          { articleID: 'art3' },
+        ],
+      };
+
+      loadFeed.mockResolvedValue(feed);
+      dbDeleteFeed.mockResolvedValue(undefined);
+      deleteDownloadedVideo.mockResolvedValue(true);
+
+      const { deleteFeed } = await importFeedManager();
+      await deleteFeed('feed-yt');
+
+      expect(loadFeed).toHaveBeenCalledWith('feed-yt');
+      expect(deleteDownloadedVideo).toHaveBeenCalledTimes(2);
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/video1.mp4');
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/video2.mp4');
+      expect(dbDeleteFeed).toHaveBeenCalledWith('feed-yt');
+    });
+
+    it('continues deleting the feed even when video deletion fails', async () => {
+      const feed = {
+        feedID: 'feed-yt',
+        url: 'https://example.com/feed',
+        name: 'YouTube Feed',
+        articles: [
+          { articleID: 'art1', downloadPath: '/downloads/Aaron-RSS-YouTube/video1.mp4' },
+        ],
+      };
+
+      loadFeed.mockResolvedValue(feed);
+      dbDeleteFeed.mockResolvedValue(undefined);
+      deleteDownloadedVideo.mockRejectedValue(new Error('disk busy'));
+
+      const { deleteFeed } = await importFeedManager();
+      await expect(deleteFeed('feed-yt')).resolves.toBeUndefined();
+
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/video1.mp4');
+      expect(dbDeleteFeed).toHaveBeenCalledWith('feed-yt');
+    });
+
+    it('removes the feed from the database when there are no downloaded videos', async () => {
+      const feed = {
+        feedID: 'feed-text',
+        url: 'https://example.com/feed',
+        name: 'Text Feed',
+        articles: [{ articleID: 'art1' }],
+      };
+
+      loadFeed.mockResolvedValue(feed);
+      dbDeleteFeed.mockResolvedValue(undefined);
+
+      const { deleteFeed } = await importFeedManager();
+      await deleteFeed('feed-text');
+
+      expect(deleteDownloadedVideo).not.toHaveBeenCalled();
+      expect(dbDeleteFeed).toHaveBeenCalledWith('feed-text');
+    });
   });
 });

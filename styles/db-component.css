@@ -37,7 +37,7 @@
 
 .db-indexes {
   font-size: 0.85rem;
-  font-family: monospace;
+  font-family: var(--font-mono);
   opacity: 0.8;
 }
 

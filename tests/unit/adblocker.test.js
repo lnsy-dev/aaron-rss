@@ -10,11 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const enableBlockingInSession = vi.fn();
+  const onBeforeRequest = vi.fn((_details, callback) => callback({}));
 
   return {
     enableBlockingInSession,
+    onBeforeRequest,
     fromPrebuiltAdsAndTracking: vi.fn().mockResolvedValue({
       enableBlockingInSession,
+      onBeforeRequest,
     }),
     getPath: vi.fn(() => '/fake/user-data'),
     defaultSession: { id: 'default-session' },
@@ -82,5 +85,45 @@ describe('initializeAdBlocker', () => {
     const blocker = await initializeAdBlocker(vi.fn());
 
     expect(blocker).toHaveProperty('enableBlockingInSession', mocks.enableBlockingInSession);
+  });
+
+  it('allows YouTube API and media requests to bypass the blocker', async () => {
+    const blocker = await initializeAdBlocker(vi.fn());
+    const callback = vi.fn();
+
+    blocker.onBeforeRequest({ url: 'https://www.youtube.com/youtubei/v1/log_event?alt=json' }, callback);
+
+    expect(callback).toHaveBeenCalledWith({});
+    expect(mocks.onBeforeRequest).not.toHaveBeenCalled();
+  });
+
+  it('allows YouTube media domains (ytimg, googlevideo) to bypass the blocker', async () => {
+    const blocker = await initializeAdBlocker(vi.fn());
+
+    const cases = [
+      'https://i.ytimg.com/vi/abc123/default.jpg',
+      'https://rr1---sn-abc.googlevideo.com/videoplayback?id=xyz',
+      'https://youtu.be/dQw4w9WgXcQ',
+    ];
+
+    for (const url of cases) {
+      const callback = vi.fn();
+      blocker.onBeforeRequest({ url }, callback);
+      expect(callback).toHaveBeenCalledWith({});
+    }
+
+    expect(mocks.onBeforeRequest).not.toHaveBeenCalled();
+  });
+
+  it('still blocks non-YouTube requests through the original handler', async () => {
+    const blocker = await initializeAdBlocker(vi.fn());
+    const callback = vi.fn();
+
+    blocker.onBeforeRequest({ url: 'https://ads.example.com/tracker.js' }, callback);
+
+    expect(mocks.onBeforeRequest).toHaveBeenCalledWith(
+      { url: 'https://ads.example.com/tracker.js' },
+      callback
+    );
   });
 });

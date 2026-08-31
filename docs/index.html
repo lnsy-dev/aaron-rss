@@ -68,7 +68,6 @@
     }
 
     .install-steps {
-      list-style: none;
       background: var(--card-bg);
       border: 1px solid var(--border-color);
       border-radius: 10px;
@@ -77,19 +76,19 @@
       display: flex;
       flex-direction: column;
       gap: 0.6rem;
-      overflow-x: auto;
     }
 
-    .install-steps li {
+    .install-steps p { font-size: 0.95rem; }
+
+    .install-steps a { color: var(--accent-color); }
+
+    .install-meta code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.9rem;
-      white-space: nowrap;
-    }
-
-    .install-steps li::before {
-      content: "$ ";
-      color: var(--accent-color);
-      font-weight: 700;
+      font-size: 0.85rem;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 0.1rem 0.3rem;
     }
 
     .install-meta {
@@ -145,18 +144,16 @@
          alt="Aaron RSS logo" width="96" height="96">
 
     <h1>Aaron RSS</h1>
-    <p class="tagline">A simple, local-first RSS reader. Your feeds, your machine — stored in SQLite on your own disk, no accounts, no cloud.</p>
+    <p class="tagline">Minimalist RSS Reader.</p>
 
-    <!-- Build from source: clone the repo and install manually -->
-    <ol class="install-steps">
-      <li>git clone https://github.com/lnsy-dev/aaron-rss.git</li>
-      <li>cd aaron-rss</li>
-      <li>npm install</li>
-      <li>npm run build</li>
-      <li>npm run electron</li>
-    </ol>
+    <!-- Grab a release build instead of building from source -->
+    <div class="install-steps">
+      <p><strong>1.</strong> Go to the <a href="https://github.com/lnsy-dev/aaron-rss/releases">releases page</a>.</p>
+      <p><strong>2.</strong> Download the latest release for your platform.</p>
+      <p><strong>3.</strong> Install and run Aaron RSS.</p>
+    </div>
 
-    <p class="install-meta">Requires Node.js and npm. Built and tested on macOS (Apple Silicon).</p>
+    <p class="install-meta">Prefer building from source? Clone the repo, run <code>npm install</code>, <code>npm run build</code>, then <code>npm run electron</code>.</p>
 
     <section class="features">
       <div class="feature">

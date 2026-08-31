@@ -83,6 +83,11 @@ body {
     'opct' 1;
 }
 
+a, .rss-article-link {
+  text-decoration-color: var(--neutral-2) !important;  /* Sets the underline color */
+
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-header);
   font-optical-sizing: auto;

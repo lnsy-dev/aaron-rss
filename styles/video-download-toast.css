@@ -1,0 +1,75 @@
+/*
+  Video download toast
+
+  Bottom-right toast with a status line and progress bar, shown while
+  a YouTube video downloads. Created and driven by
+  src/lib/video-download-toast.js.
+*/
+
+.video-download-toast-container {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  z-index: 600;
+}
+
+.video-download-toast {
+  background: var(--notification-color);
+  color: var(--background-color);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 240px;
+  max-width: 360px;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+/* Status line describing the current download state */
+.video-download-toast-text {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  word-break: break-word;
+}
+
+.video-download-toast-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--background-color) 40%, transparent);
+  overflow: hidden;
+}
+
+.video-download-toast-progress-fill {
+  height: 100%;
+  width: var(--video-download-toast-progress, 0%);
+  background: var(--background-color);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+/* Indeterminate sweep: no percent known yet, so glide back and forth */
+.video-download-toast-progress-fill.video-download-toast-indeterminate {
+  width: 30%;
+  animation: video-download-toast-sweep 1.2s linear infinite alternate;
+}
+
+@keyframes video-download-toast-sweep {
+  from {
+    margin-left: 0%;
+  }
+  to {
+    margin-left: 70%;
+  }
+}
+
+.video-download-toast-error {
+  background: var(--error-color);
+}
+
+.video-download-toast-fade {
+  opacity: 0;
+}

@@ -109,7 +109,7 @@ let binaryReadyPromise = null;
  *
  * @returns {string}
  */
-function getDownloadDirectory() {
+export function getDownloadDirectory() {
   return path.join(app.getPath('downloads'), DOWNLOAD_DIR_NAME);
 }
 
@@ -977,6 +977,64 @@ async function findDownloadedFile(videoID) {
 }
 
 /**
+ * Report a download progress update to an optional listener.
+ *
+ * Listener failures are swallowed so a broken UI channel can never
+ * abort an in-flight download.
+ *
+ * @param {Function|null} onProgress - Progress callback, if any
+ * @param {{stage: string, percent?: number|null, totalSize?: string, currentSpeed?: string, eta?: string}} payload
+ * @returns {void}
+ */
+function reportDownloadProgress(onProgress, payload) {
+  if (typeof onProgress !== 'function') {
+    return;
+  }
+  try {
+    onProgress(payload);
+  } catch {
+    // Never let a listener error kill the download.
+  }
+}
+
+/**
+ * Run yt-dlp and stream its progress to an optional listener.
+ *
+ * Uses the event-emitter form of yt-dlp-wrap-plus (exec) instead of
+ * execPromise so the [download] percent lines parsed from yt-dlp's
+ * --newline output surface as live progress updates.
+ *
+ * @param {YTDlpWrap} ytDlpWrap
+ * @param {string[]} args
+ * @param {Function|null} onProgress - Progress callback, if any
+ * @returns {Promise<void>} Resolves on clean exit, rejects otherwise
+ */
+function runYtDlpWithProgress(ytDlpWrap, args, onProgress) {
+  return new Promise((resolve, reject) => {
+    const emitter = ytDlpWrap.exec(args);
+
+    emitter.on('progress', (progress) => {
+      const percent = Number(progress?.percent);
+      reportDownloadProgress(onProgress, {
+        stage: 'downloading',
+        percent: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null,
+        totalSize: progress?.totalSize,
+        currentSpeed: progress?.currentSpeed,
+        eta: progress?.eta,
+      });
+    });
+    emitter.on('error', reject);
+    emitter.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`yt-dlp exited with code ${code ?? 'unknown'}`));
+      }
+    });
+  });
+}
+
+/**
  * Download a YouTube video to disk.
  *
  * Skips live streams and URLs that are not YouTube watch/short/embed
@@ -984,14 +1042,19 @@ async function findDownloadedFile(videoID) {
  * object on failure.
  *
  * @param {string} url
+ * @param {Function|null} [onProgress] - Optional progress callback; receives
+ *   { stage, percent?, totalSize?, currentSpeed?, eta? } updates where
+ *   stage is 'starting' | 'downloading' | 'processing'
  * @returns {Promise<{filePath?: string, error?: string}>}
  */
-export async function downloadYouTubeVideo(url) {
+export async function downloadYouTubeVideo(url, onProgress = null) {
   if (isYouTubeStream(url)) {
     return { error: 'Live streams are not downloaded' };
   }
 
   try {
+    reportDownloadProgress(onProgress, { stage: 'starting', percent: null });
+
     await ensureDownloadDirectory();
     const ytDlpWrap = await ensureBinary();
 
@@ -1018,7 +1081,9 @@ export async function downloadYouTubeVideo(url) {
       ...(ffmpegPath ? ['--merge-output-format', 'mp4'] : []),
       '--newline',
     );
-    await ytDlpWrap.execPromise(args);
+    await runYtDlpWithProgress(ytDlpWrap, args, onProgress);
+
+    reportDownloadProgress(onProgress, { stage: 'processing', percent: 100 });
 
     const info = await fetchVideoInfo(ytDlpWrap, url);
     const videoID = info?.id;

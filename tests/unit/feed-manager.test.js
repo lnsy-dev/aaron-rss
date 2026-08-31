@@ -12,15 +12,20 @@ vi.mock('../../src/lib/database.js', () => ({
   saveArticles: vi.fn(),
   deleteArticlesNotInSet: vi.fn(),
   purgeOldReadArticles: vi.fn(),
+  listPrunableDownloadedVideos: vi.fn(),
   runDatabaseMaintenance: vi.fn(),
   loadAllFeeds: vi.fn(),
   loadFeedsForDisplay: vi.fn(),
+  loadDownloadedArticles: vi.fn(),
   loadFeed: vi.fn(),
   deleteFeed: vi.fn(),
   updateArticleStatus: vi.fn(),
   markAllArticlesAsRead: vi.fn(),
   savePageSnapshot: vi.fn(),
   loadPageSnapshot: vi.fn(),
+  recordDownloadedVideo: vi.fn(),
+  deleteDownloadedVideosForArticle: vi.fn(),
+  deleteDownloadedVideosForFeed: vi.fn(),
 }));
 
 vi.mock('../../src/lib/rss-network.js', () => ({
@@ -366,6 +371,118 @@ describe('feed manager', () => {
       expect(result.error).toBe('boom');
       expect(updateArticleStatus).not.toHaveBeenCalled();
       expect(article.downloadPath).toBeUndefined();
+    });
+
+    it('records a downloaded_videos queue row on success', async () => {
+      const { recordDownloadedVideo } = await import('../../src/lib/database.js');
+      const { downloadArticleYouTubeVideo } = await importFeedManager();
+
+      const feed = { feedID: 'feed-yt' };
+      const article = {
+        articleID: 'art1',
+        title: 'My Video',
+        url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      };
+
+      await downloadArticleYouTubeVideo(feed, article);
+
+      expect(recordDownloadedVideo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          feedID: 'feed-yt',
+          articleID: 'art1',
+          youtubeURL: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          filePath: '/downloads/Aaron-RSS-YouTube/video.mp4',
+          title: 'My Video',
+        })
+      );
+    });
+
+    it('does not record a queue row when the download fails', async () => {
+      const { recordDownloadedVideo } = await import('../../src/lib/database.js');
+      const { downloadArticleYouTubeVideo } = await importFeedManager();
+
+      downloadYouTubeVideo.mockResolvedValue({ error: 'boom' });
+      const feed = { feedID: 'feed-yt' };
+      const article = {
+        articleID: 'art1',
+        url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      };
+
+      const result = await downloadArticleYouTubeVideo(feed, article);
+
+      expect(result.error).toBe('boom');
+      expect(recordDownloadedVideo).not.toHaveBeenCalled();
+    });
+
+    it('deleteArticleYouTubeVideo removes file, record, and clears the article pointer', async () => {
+      const { deleteDownloadedVideosForArticle, updateArticleStatus } = await import(
+        '../../src/lib/database.js'
+      );
+      const { deleteArticleYouTubeVideo } = await importFeedManager();
+
+      await deleteArticleYouTubeVideo('feed-yt', 'art1', '/downloads/Aaron-RSS-YouTube/video.mp4');
+
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/video.mp4');
+      expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith('feed-yt', 'art1');
+      expect(updateArticleStatus).toHaveBeenCalledWith('feed-yt', 'art1', { downloadPath: null });
+    });
+
+    it('deleteFeed removes downloaded_videos records for the feed', async () => {
+      const { deleteDownloadedVideosForFeed } = await import('../../src/lib/database.js');
+      const { deleteFeed } = await importFeedManager();
+
+      await deleteFeed('feed-yt');
+
+      expect(deleteDownloadedVideosForFeed).toHaveBeenCalledWith('feed-yt');
+    });
+
+    it('purgeOldReadArticles deletes pruned videos (file + record) before purging articles', async () => {
+      const { listPrunableDownloadedVideos, deleteDownloadedVideosForArticle, purgeOldReadArticles } =
+        await import('../../src/lib/database.js');
+      const { purgeOldReadArticles: purgeWithCleanup } = await importFeedManager();
+
+      listPrunableDownloadedVideos.mockResolvedValue([
+        { articleID: 'art1', downloadPath: '/downloads/a.mp4' },
+        { articleID: 'art2', downloadPath: '/downloads/b.mp4' },
+      ]);
+
+      await purgeWithCleanup('feed-yt', 45);
+
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/a.mp4');
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/b.mp4');
+      expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith('feed-yt', 'art1');
+      expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith('feed-yt', 'art2');
+      expect(purgeOldReadArticles).toHaveBeenCalledWith('feed-yt', 45);
+    });
+
+    it('purgeOldReadArticles still purges articles when a video file delete fails', async () => {
+      const { listPrunableDownloadedVideos, deleteDownloadedVideosForArticle, purgeOldReadArticles } =
+        await import('../../src/lib/database.js');
+      const { purgeOldReadArticles: purgeWithCleanup } = await importFeedManager();
+
+      listPrunableDownloadedVideos.mockResolvedValue([
+        { articleID: 'art1', downloadPath: '/downloads/a.mp4' },
+      ]);
+      deleteDownloadedVideo.mockRejectedValue(new Error('ENOENT'));
+
+      await purgeWithCleanup('feed-yt');
+
+      expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith('feed-yt', 'art1');
+      expect(purgeOldReadArticles).toHaveBeenCalledWith('feed-yt');
+    });
+
+    it('purgeOldReadArticles purges articles when no videos are prunable', async () => {
+      const { listPrunableDownloadedVideos, purgeOldReadArticles } = await import(
+        '../../src/lib/database.js'
+      );
+      const { purgeOldReadArticles: purgeWithCleanup } = await importFeedManager();
+
+      listPrunableDownloadedVideos.mockResolvedValue([]);
+
+      await purgeWithCleanup('feed-yt');
+
+      expect(deleteDownloadedVideo).not.toHaveBeenCalled();
+      expect(purgeOldReadArticles).toHaveBeenCalledWith('feed-yt');
     });
   });
 

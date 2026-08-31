@@ -298,6 +298,36 @@ export async function initRSSSchema() {
       captured_at TEXT NOT NULL
     )`,
   });
+
+  // Downloaded video queue: one row per successfully downloaded YouTube
+  // video. feed_id/article_id are soft references — they may dangle
+  // after feed pruning or deletion, at which point the row is cleaned up
+  // together with the file on disk.
+  await callWorker('exec', {
+    sql: `CREATE TABLE IF NOT EXISTS downloaded_videos (
+      video_id TEXT PRIMARY KEY,
+      feed_id TEXT,
+      article_id TEXT NOT NULL,
+      youtube_url TEXT NOT NULL,
+      file_path TEXT NOT NULL UNIQUE,
+      title TEXT,
+      downloaded_at TEXT NOT NULL,
+      file_size_bytes INTEGER,
+      UNIQUE (feed_id, article_id)
+    )`,
+  });
+
+  // One-time backfill migration: queue rows for videos downloaded before
+  // the downloaded_videos table existed. The UNIQUE constraints make this
+  // idempotent — paths/records already in the table are skipped, so it can
+  // run on every startup without duplicating rows.
+  await callWorker('exec', {
+    sql: `INSERT OR IGNORE INTO downloaded_videos
+      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)
+      SELECT lower(hex(randomblob(16))), feed_id, article_id, url, download_path, title, date_arrived, NULL
+      FROM articles
+      WHERE download_path IS NOT NULL AND download_path != ''`,
+  });
 }
 
 /**
@@ -569,6 +599,33 @@ export async function purgeOldReadArticles(feedID, retentionDays = DEFAULT_READ_
 }
 
 /**
+ * List read, unstarred articles older than the retention window that
+ * have a downloaded video. The prune flow uses this to clean up the
+ * video files and downloaded_videos records BEFORE the articles
+ * themselves are deleted by purgeOldReadArticles.
+ *
+ * @param {string} feedID
+ * @param {number} [retentionDays=DEFAULT_READ_ARTICLE_RETENTION_DAYS]
+ * @returns {Promise<Array<{articleID: string, downloadPath: string}>>}
+ */
+export async function listPrunableDownloadedVideos(feedID, retentionDays = DEFAULT_READ_ARTICLE_RETENTION_DAYS) {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const rows = (await callWorker('query', {
+    sql: `SELECT article_id, download_path FROM articles
+      WHERE feed_id = ?
+        AND read = 1
+        AND starred = 0
+        AND date_arrived < ?
+        AND download_path IS NOT NULL
+        AND download_path != ''`,
+    params: [feedID, cutoff],
+  })) || [];
+
+  return rows.map((row) => ({ articleID: row.article_id, downloadPath: row.download_path }));
+}
+
+/**
  * Run SQLite maintenance (WAL checkpoint and optimize).
  *
  * @returns {Promise<void>}
@@ -592,9 +649,11 @@ export function loadFeedsForDisplay() {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.download_path, a.date_arrived
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id AND a.read = 0
+      LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
       ORDER BY f.name, a.date_published DESC, a.date_arrived DESC`,
   }).then(rowsToFeeds);
 }
@@ -611,9 +670,11 @@ export function loadAllFeeds() {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.download_path, a.date_arrived
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
+      LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
       ORDER BY f.name`,
   }).then(rowsToFeeds);
 }
@@ -631,9 +692,11 @@ export function loadFeed(feedID) {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.download_path, a.date_arrived
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
+      LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
       WHERE f.feed_id = ?`,
     params: [feedID],
   }).then((rows) => {
@@ -779,6 +842,192 @@ export async function updateArticleStatus(feedID, articleID, updates) {
   await callWorker('exec', {
     sql: `UPDATE articles SET ${fields.join(', ')} WHERE feed_id = ? AND article_id = ?`,
     params,
+  });
+}
+
+/**
+ * Map a downloaded_videos row to a camelCase object.
+ *
+ * @param {object} row - Raw row from the downloaded_videos table
+ * @returns {{videoID: string, feedID: string|null, articleID: string, youtubeURL: string, filePath: string, title: string|null, downloadedAt: string, fileSizeBytes: number|null}}
+ */
+function downloadedVideoFromRow(row) {
+  return {
+    videoID: row.video_id,
+    feedID: row.feed_id,
+    articleID: row.article_id,
+    youtubeURL: row.youtube_url,
+    filePath: row.file_path,
+    title: row.title,
+    downloadedAt: row.downloaded_at,
+    fileSizeBytes: row.file_size_bytes,
+  };
+}
+
+/**
+ * Generate a unique ID for a downloaded_videos row. Uses the standard
+ * crypto API when available and falls back to a random string otherwise.
+ *
+ * @returns {string}
+ */
+function generateDownloadedVideoID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Insert or replace the downloaded_videos row for an article's video.
+ *
+ * Re-recording the same (feed_id, article_id) pair replaces the stale
+ * row, keeping one record per article.
+ *
+ * @param {object} video
+ * @param {string|null} video.feedID
+ * @param {string} video.articleID
+ * @param {string} video.youtubeURL
+ * @param {string} video.filePath
+ * @param {string|null} video.title
+ * @param {Date} [video.downloadedAt] - Defaults to now
+ * @param {number|null} [video.fileSizeBytes]
+ * @returns {Promise<void>}
+ */
+export async function recordDownloadedVideo(video) {
+  const downloadedAt = video.downloadedAt || new Date();
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO downloaded_videos
+      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: [
+      generateDownloadedVideoID(),
+      video.feedID || null,
+      video.articleID,
+      video.youtubeURL,
+      video.filePath,
+      video.title || null,
+      downloadedAt.toISOString(),
+      video.fileSizeBytes ?? null,
+    ],
+  });
+}
+
+/**
+ * List every downloaded video, newest first.
+ *
+ * @returns {Promise<Array<object>>} See downloadedVideoFromRow for shape
+ */
+export function listDownloadedVideos() {
+  return callWorker('query', {
+    sql: `SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC`,
+  }).then((rows) => (rows || []).map(downloadedVideoFromRow));
+}
+
+/**
+ * Fetch the downloaded video record for an article.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<object|null>} Record or null when not downloaded
+ */
+export async function getDownloadedVideoForArticle(feedID, articleID) {
+  const rows = (await callWorker('query', {
+    sql: `SELECT * FROM downloaded_videos
+      WHERE feed_id = ? AND article_id = ?`,
+    params: [feedID, articleID],
+  })) || [];
+  return rows.length > 0 ? downloadedVideoFromRow(rows[0]) : null;
+}
+
+/**
+ * Load every article that has a downloaded video (Videos view data).
+ *
+ * Joins the downloaded_videos queue with the feeds and articles tables so
+ * each result is a display-ready {feed, article} pair. dangling queue rows
+ * (their article row was deleted, e.g. by an external purge) are skipped;
+ * videos for deleted feeds surface as entries with feed === null so the
+ * view can still show their titles.
+ *
+ * @returns {Promise<Array<{feed: object|null, article: object}>>} Newest download first
+ */
+export function loadDownloadedArticles() {
+  return callWorker('query', {
+    sql: `SELECT
+        f.feed_id, f.url AS feed_url, f.name, f.home_page_url, f.icon_url, f.favicon_url,
+        f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
+        a.article_id, a.unique_id, COALESCE(a.title, v.title) AS title, a.content_html, a.content_text,
+        COALESCE(a.url, v.youtube_url) AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
+      FROM downloaded_videos v
+      LEFT JOIN feeds f ON f.feed_id = v.feed_id
+      LEFT JOIN articles a ON a.feed_id = v.feed_id AND a.article_id = v.article_id
+      WHERE v.file_path IS NOT NULL AND v.file_path != ''
+        AND (a.article_id IS NOT NULL OR (v.title IS NOT NULL AND v.title != ''))
+      ORDER BY v.downloaded_at DESC`,
+  }).then((rows) => (rows || []).map((row) => {
+    // Reuse rowsToFeeds for one row to get consistent feed/article mapping.
+    // rowsToFeeds always builds a shell feed, so normalize a NULL feed_id
+    // (LEFT JOIN missed) back to a null feed.
+    const feeds = rowsToFeeds([row]);
+    const feed = feeds.length > 0 && feeds[0].feedID ? feeds[0] : null;
+    const article = feed && feed.articles.length > 0 ? feed.articles[0] : null;
+    if (article) {
+      return { feed, article };
+    }
+    // Dangling entry: article row gone but video row + file remain. The
+    // title/URL fall back to the video queue's own metadata via COALESCE.
+    return {
+      feed,
+      article: {
+        articleID: row.article_id,
+        feedURL: row.feed_url,
+        uniqueID: row.unique_id,
+        title: row.title,
+        contentHTML: row.content_html,
+        contentText: row.content_text,
+        url: row.article_url,
+        externalURL: row.external_url,
+        summary: row.summary,
+        imageURL: row.image_url,
+        bannerImageURL: row.banner_image_url,
+        datePublished: row.date_published ? new Date(row.date_published) : undefined,
+        dateModified: row.date_modified ? new Date(row.date_modified) : undefined,
+        authors: row.authors ? JSON.parse(row.authors) : [],
+        tags: row.tags ? JSON.parse(row.tags) : [],
+        read: Boolean(row.read),
+        starred: Boolean(row.starred),
+        downloadPath: row.download_path || undefined,
+        dateArrived: new Date(row.date_arrived),
+      },
+    };
+  }));
+}
+
+/**
+ * Delete the downloaded_videos record for an article.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteDownloadedVideosForArticle(feedID, articleID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM downloaded_videos WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  });
+}
+
+/**
+ * Delete every downloaded_videos record for a feed (used on feed delete).
+ *
+ * @param {string} feedID
+ * @returns {Promise<void>}
+ */
+export async function deleteDownloadedVideosForFeed(feedID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM downloaded_videos WHERE feed_id = ?',
+    params: [feedID],
   });
 }
 

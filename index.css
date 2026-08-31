@@ -32,6 +32,7 @@
 @import './styles/db-component.css';
 @import './styles/file-storage-component.css';
 @import './styles/rss-feed-component.css';
+@import './styles/video-download-toast.css';
 /* <WASM> */
 @import './styles/wasm-components.css';
 /* </WASM> */

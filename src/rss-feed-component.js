@@ -31,7 +31,10 @@ import {
   toggleArticleStarred,
   markAllArticlesAsRead,
   downloadArticleYouTubeVideo,
+  deleteArticleYouTubeVideo,
+  loadDownloadedArticles,
 } from './lib/feed-manager.js';
+import { showVideoDownloadToast } from './lib/video-download-toast.js';
 import {
   isFileSystemAccessSupported,
   isUserCancellation,
@@ -55,7 +58,7 @@ import {
 } from './lib/social-post.js';
 import { highlightMatches, clearHighlights } from './lib/find-highlights.js';
 import { isYouTubeURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
-import { deleteDownloadedVideo } from './lib/youtube-bridge.js';
+import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
 import {
   getUsableImageURL,
   deriveImageFilename,
@@ -106,9 +109,12 @@ class RSSFeedComponent extends DataroomElement {
 
     this.settings = { ...DEFAULT_SETTINGS };
     // Timeline is the default view; a saved setting can switch to feeds.
+    // 'videos' is an overlay state driven by the footer Videos button.
     this.viewMode = this.settings.viewMode === 'feeds' ? 'feeds' : 'timeline';
-    this.viewToggleInput = null;
-    this.viewToggleText = null;
+    this._videosReturnMode = this.viewMode === 'feeds' ? 'feeds' : 'timeline';
+    // Radio group of view-mode icons in the footer (timeline / feeds / videos).
+    this.viewModeInputs = {};
+    this.videosButton = null;
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
@@ -139,7 +145,15 @@ class RSSFeedComponent extends DataroomElement {
       const status = await getStatus();
       await initRSSSchema();
       this.settings = { ...DEFAULT_SETTINGS, ...(await loadSettings()) };
-      this.viewMode = this.settings.viewMode === 'feeds' ? 'feeds' : 'timeline';
+      const savedMode = this.settings.viewMode;
+      if (savedMode === 'videos') {
+        // Videos is a transient overlay; land on the return mode instead.
+        this.viewMode = this._videosReturnMode;
+        this.settings.viewMode = this.viewMode;
+      } else {
+        this.viewMode = savedMode === 'feeds' ? 'feeds' : 'timeline';
+        this._videosReturnMode = this.viewMode;
+      }
       this._syncViewToggle();
 
       this.setStatus(
@@ -202,7 +216,7 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
-   * Render a fixed footer with the view toggle and primary action buttons.
+   * Render a fixed footer with the view radio menu and primary action buttons.
    *
    * @returns {void}
    */
@@ -210,34 +224,62 @@ class RSSFeedComponent extends DataroomElement {
     this.footer = this.create('footer', { class: 'rss-footer' });
     const footer = this.footer;
 
-    const viewToggleLabel = document.createElement('label');
-    viewToggleLabel.className = 'rss-view-toggle';
-    viewToggleLabel.title = 'Switch between the Timeline view and the grouped Feeds view';
+    // The view switcher is a radio menu: one icon per view mode, with the
+    // active option highlighted. Icons come from assets/solid and are
+    // colored through CSS masks (fill follows --foreground-color).
+    const viewToggle = document.createElement('div');
+    viewToggle.className = 'rss-view-toggle';
+    viewToggle.setAttribute('role', 'radiogroup');
+    viewToggle.setAttribute('aria-label', 'View');
+    viewToggle.title = 'Switch between the Timeline, Feeds, and Videos views';
 
-    const viewToggle = document.createElement('input');
-    viewToggle.type = 'checkbox';
-    viewToggle.className = 'rss-view-toggle-input';
-    viewToggle.setAttribute('aria-label', 'Timeline view');
-    viewToggle.checked = this.viewMode !== 'feeds';
-    viewToggle.addEventListener('change', () => this._handleViewToggle(viewToggle));
-    viewToggleLabel.appendChild(viewToggle);
+    const options = [
+      { mode: 'timeline', label: 'Timeline view' },
+      { mode: 'feeds', label: 'Feeds view' },
+      { mode: 'videos', label: 'Videos view' },
+    ];
 
-    const track = document.createElement('span');
-    track.className = 'rss-view-toggle-track';
-    const thumb = document.createElement('span');
-    thumb.className = 'rss-view-toggle-thumb';
-    track.appendChild(thumb);
-    viewToggleLabel.appendChild(track);
+    this.viewModeInputs = {};
+    this.videosButton = null;
 
-    const viewToggleText = document.createElement('span');
-    viewToggleText.className = 'rss-view-toggle-text';
-    viewToggleLabel.appendChild(viewToggleText);
+    for (const option of options) {
+      const optionWrap = document.createElement('span');
+      // Keep the rss-videos-view-button class so the videos option can be
+      // targeted programmatically (command panel, tests) like before.
+      optionWrap.className = `rss-view-toggle-option rss-view-toggle-option--${option.mode}`
+        + (option.mode === 'videos' ? ' rss-videos-view-button' : '');
 
-    this.viewToggleInput = viewToggle;
-    this.viewToggleText = viewToggleText;
-    this._updateViewToggleText();
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'rss-view-mode';
+      input.value = option.mode;
+      input.className = 'rss-view-toggle-input';
+      input.id = `rss-view-mode-${option.mode}`;
+      input.checked = this.viewMode === option.mode;
+      input.addEventListener('change', () => this._handleViewModeSelect(option.mode));
 
-    footer.appendChild(viewToggleLabel);
+      const label = document.createElement('label');
+      label.className = 'rss-view-toggle-option-label';
+      label.htmlFor = input.id;
+      label.title = option.label;
+      label.setAttribute('aria-label', option.label);
+
+      const icon = document.createElement('span');
+      icon.className = `rss-view-toggle-icon rss-view-toggle-icon--${option.mode}`;
+      label.appendChild(icon);
+
+      optionWrap.appendChild(input);
+      optionWrap.appendChild(label);
+      viewToggle.appendChild(optionWrap);
+
+      this.viewModeInputs[option.mode] = input;
+      if (option.mode === 'videos') {
+        this.videosButton = optionWrap;
+      }
+    }
+
+    footer.appendChild(viewToggle);
+    this._syncViewToggle();
 
     const refreshButton = document.createElement('button');
     refreshButton.className = 'rss-refresh-all-button';
@@ -257,64 +299,96 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
-   * Handle the footer view-mode switch being flipped.
+   * Handle a view-mode radio being selected in the footer.
    *
-   * Persists the new mode to the settings table and re-renders.
+   * Persists timeline/feeds modes to the settings table and re-renders;
+   * videos remains a transient overlay (see _videosReturnMode).
    *
-   * @param {HTMLInputElement} input - The checkbox backing the switch
+   * @param {string} mode - One of 'timeline', 'feeds', 'videos'
    * @returns {Promise<void>}
    */
-  async _handleViewToggle(input) {
-    const mode = input.checked ? 'timeline' : 'feeds';
+  async _handleViewModeSelect(mode) {
     if (mode === this.viewMode) {
       return;
     }
 
+    // Entering the Videos view records the mode to return to.
+    if (mode === 'videos' && this.viewMode !== 'videos') {
+      this._videosReturnMode = this.viewMode;
+    }
+
     this.viewMode = mode;
     this.settings.viewMode = mode;
-    this._updateViewToggleText();
+    this._syncViewToggle();
 
-    try {
-      await saveSettings({ viewMode: mode });
-    } catch (error) {
-      console.error('Failed to save view mode:', error);
-      this.showToast(`Could not save view preference: ${error.message}`, 'error');
+    if (mode !== 'videos') {
+      try {
+        await saveSettings({ viewMode: mode });
+      } catch (error) {
+        console.error('Failed to save view mode:', error);
+        this.showToast(`Could not save view preference: ${error.message}`, 'error');
+      }
     }
 
     this.renderFeeds();
   }
 
   /**
-   * Re-apply the saved view mode to the footer switch after startup.
+   * Sync the footer view radio menu to the current view state.
    *
-   * The switch is rendered before settings load, so it may need a sync.
+   * Checks the radio for the active mode (rendering happens before
+   * settings load, so the menu may need a sync) and highlights it.
    *
    * @returns {void}
    */
   _syncViewToggle() {
-    if (!this.viewToggleInput) {
+    if (!this.viewModeInputs) {
       return;
     }
-    this.viewToggleInput.checked = this.viewMode !== 'feeds';
-    this._updateViewToggleText();
+    const labels = {
+      timeline: 'Timeline view',
+      feeds: 'Feeds view',
+      videos: 'Videos view',
+    };
+    for (const [mode, input] of Object.entries(this.viewModeInputs)) {
+      input.checked = this.viewMode === mode;
+      input.setAttribute('aria-label', labels[mode]);
+    }
+    if (this.videosButton) {
+      const isVideos = this.viewMode === 'videos';
+      this.videosButton.classList.toggle('rss-videos-view-button--active', isVideos);
+    }
   }
 
   /**
-   * Update the label text next to the view switch.
+   * Enter or leave the Videos view programmatically.
    *
-   * @returns {void}
+   * Enters the Videos view from the current mode; calling again returns
+   * to the prior timeline/feeds mode. Used by the command panel; the
+   * footer radio menu itself switches views directly. The Videos mode
+   * is transient (not persisted) so a restart lands the user on their
+   * regular view.
+   *
+   * @returns {Promise<void>}
    */
-  _updateViewToggleText() {
-    if (this.viewToggleText) {
-      const isFeeds = this.viewMode === 'feeds';
-      const label = isFeeds ? 'Feeds view' : 'Timeline view';
-      this.viewToggleText.textContent = isFeeds ? '▤' : '◴';
-      this.viewToggleText.title = label;
-      this.viewToggleText.setAttribute('aria-label', label);
-      if (this.viewToggleInput) {
-        this.viewToggleInput.setAttribute('aria-label', label);
+  async _handleVideosViewButton() {
+    if (this.viewMode === 'videos') {
+      const mode = this._videosReturnMode || 'timeline';
+      this.viewMode = mode;
+      this.settings.viewMode = mode;
+      this._syncViewToggle();
+      try {
+        await saveSettings({ viewMode: mode });
+      } catch (error) {
+        console.error('Failed to save view mode:', error);
       }
+      this.renderFeeds();
+      return;
     }
+
+    this.viewMode = 'videos';
+    this._syncViewToggle();
+    this.renderFeeds();
   }
 
   /**
@@ -331,6 +405,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Manage Feeds', action: () => this.openManageFeedsModal() },
       { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
+      { name: 'Videos', action: () => this._handleVideosViewButton() },
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
       { name: 'Import OPML', action: () => this.handleImportOPML() },
@@ -466,6 +541,9 @@ class RSSFeedComponent extends DataroomElement {
         break;
       case 'download-youtube':
         this._downloadYouTubeVideo(article, feed, actionEl);
+        break;
+      case 'delete-youtube':
+        this._deleteYouTubeVideoFromList(article, feed, actionEl);
         break;
       default:
         // Clicks on non-action parts of the article do nothing.
@@ -686,6 +764,13 @@ class RSSFeedComponent extends DataroomElement {
    */
   async refreshFeeds() {
     try {
+      // In the Videos view the list comes straight from downloaded_videos;
+      // refresh it in place instead of switching back to the main list.
+      if (this.viewMode === 'videos') {
+        await this.renderVideosView();
+        return;
+      }
+
       // Only unread articles are needed for the main list, so avoid loading
       // potentially large read-article bodies into the renderer.
       this.feeds = sortFeedsByUnreadCount(await loadFeedsForDisplay());
@@ -732,6 +817,12 @@ class RSSFeedComponent extends DataroomElement {
     // The timeline view flattens all articles into one chronological list.
     if (this.viewMode === 'timeline') {
       this.renderTimeline();
+      return;
+    }
+
+    // The Videos view lists every article with a downloaded video.
+    if (this.viewMode === 'videos') {
+      this.renderVideosView();
       return;
     }
 
@@ -854,6 +945,61 @@ class RSSFeedComponent extends DataroomElement {
     if (this._findBar?.classList.contains('rss-find-bar--visible')) {
       this._runFind({ selectFirst: true });
     }
+  }
+
+  /**
+   * Render the Videos view: every article with a downloaded video, newest
+   * download first, regardless of read state (watch-later semantics).
+   *
+   * Data comes straight from the downloaded_videos queue joined with the
+   * feeds and articles tables, so the list is independent of the unread
+   * filtering that drives the timeline and feeds views.
+   *
+   * @returns {Promise<void>}
+   */
+  async renderVideosView() {
+    this.contentArea.innerHTML = '';
+
+    let items = [];
+    try {
+      items = (await loadDownloadedArticles()) || [];
+    } catch (error) {
+      console.error('Failed to load downloaded videos:', error);
+      const errorState = document.createElement('div');
+      errorState.className = 'rss-no-articles';
+      errorState.textContent = 'Could not load downloaded videos';
+      this.contentArea.appendChild(errorState);
+      return;
+    }
+
+    const container = document.createElement('div');
+    container.className = 'rss-videos-view';
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'rss-no-articles';
+      empty.textContent = 'No downloaded videos';
+      container.appendChild(empty);
+      this.contentArea.appendChild(container);
+      return;
+    }
+
+    for (const { feed, article } of items) {
+      // The wrapper carries data-feed-id so selection, click delegation,
+      // and article actions keep working exactly as in the feeds view.
+      // A null feed means the article row is gone (dangling video entry).
+      const entry = document.createElement('div');
+      entry.className = 'rss-videos-view-item';
+      entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
+
+      this.renderArticle(entry, article, feed, {
+        showFeedName: true,
+        showDownloadedBadge: true,
+      });
+      container.appendChild(entry);
+    }
+
+    this.contentArea.appendChild(container);
   }
 
   /**
@@ -1034,6 +1180,14 @@ class RSSFeedComponent extends DataroomElement {
       articleDiv.appendChild(metaDiv);
     }
 
+    if (options.showDownloadedBadge && article.downloadPath) {
+      const badgeDiv = document.createElement('div');
+      badgeDiv.className = 'rss-article-downloaded-badge';
+      badgeDiv.textContent = '⬇ Downloaded';
+      badgeDiv.title = 'Downloaded video available';
+      articleDiv.appendChild(badgeDiv);
+    }
+
     if (this.isSocialArticle(article) && (article.contentHTML || article.contentText)) {
       const contentDiv = document.createElement('div');
       contentDiv.className = 'rss-article-content';
@@ -1050,17 +1204,15 @@ class RSSFeedComponent extends DataroomElement {
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'rss-article-actions';
 
-    const readButton = document.createElement('button');
-    readButton.className = 'rss-action-button';
-    readButton.textContent = article.read ? 'Mark Unread' : 'Mark Read';
-    readButton.setAttribute('data-action', 'mark-read');
-    actionsDiv.appendChild(readButton);
-
-    const starButton = document.createElement('button');
-    starButton.className = 'rss-action-button';
-    starButton.textContent = article.starred ? 'Unstar' : 'Star';
-    starButton.setAttribute('data-action', 'toggle-star');
-    actionsDiv.appendChild(starButton);
+    // YouTube videos put "Download Video" first; all other articles put
+    // "Read" first. "Mark Read" is always rendered last.
+    if (article.url && isYouTubeURL(article.url)) {
+      const downloadButton = document.createElement('button');
+      downloadButton.className = 'rss-action-button rss-youtube-download-button';
+      downloadButton.textContent = article.downloadPath ? 'Downloaded ✓' : 'Download Video';
+      downloadButton.setAttribute('data-action', 'download-youtube');
+      actionsDiv.appendChild(downloadButton);
+    }
 
     if (article.url) {
       const openButton = document.createElement('button');
@@ -1070,13 +1222,11 @@ class RSSFeedComponent extends DataroomElement {
       actionsDiv.appendChild(openButton);
     }
 
-    if (article.url && isYouTubeURL(article.url)) {
-      const downloadButton = document.createElement('button');
-      downloadButton.className = 'rss-action-button rss-youtube-download-button';
-      downloadButton.textContent = article.downloadPath ? 'Downloaded ✓' : 'Download Video';
-      downloadButton.setAttribute('data-action', 'download-youtube');
-      actionsDiv.appendChild(downloadButton);
-    }
+    const starButton = document.createElement('button');
+    starButton.className = 'rss-action-button';
+    starButton.textContent = article.starred ? 'Unstar' : 'Star';
+    starButton.setAttribute('data-action', 'toggle-star');
+    actionsDiv.appendChild(starButton);
 
     const exportButton = document.createElement('button');
     exportButton.className = 'rss-action-button';
@@ -1089,6 +1239,23 @@ class RSSFeedComponent extends DataroomElement {
     saveButton.textContent = 'Save to File';
     saveButton.setAttribute('data-action', 'save-file');
     actionsDiv.appendChild(saveButton);
+
+    // A downloaded video is watch-later state: while it exists the last
+    // action is "Delete Video" (removes the file and marks the article
+    // read); once deleted the usual Mark Read/Unread toggle returns.
+    if (article.downloadPath) {
+      const deleteButton = document.createElement('button');
+      deleteButton.className = 'rss-action-button rss-button-danger';
+      deleteButton.textContent = 'Delete Video';
+      deleteButton.setAttribute('data-action', 'delete-youtube');
+      actionsDiv.appendChild(deleteButton);
+    } else {
+      const readButton = document.createElement('button');
+      readButton.className = 'rss-action-button';
+      readButton.textContent = article.read ? 'Mark Unread' : 'Mark Read';
+      readButton.setAttribute('data-action', 'mark-read');
+      actionsDiv.appendChild(readButton);
+    }
 
     articleDiv.appendChild(actionsDiv);
     container.appendChild(articleDiv);
@@ -2305,8 +2472,15 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    // YouTube embed viewer (IFrame player + download lifecycle) is
+    // temporarily disabled. Show the external "View on YouTube" panel
+    // instead; restore the two lines below to re-enable the embed.
+    // if (isYouTubeURL(article.url)) {
+    //   await this.openYouTubeViewer(article, feed);
+    //   return;
+    // }
     if (isYouTubeURL(article.url)) {
-      await this.openYouTubeViewer(article, feed);
+      await this.showYouTubeExternalViewer(article, feed);
       return;
     }
 
@@ -2511,10 +2685,168 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Show a lightweight YouTube panel with a "View on YouTube" button.
+   *
+   * Temporary replacement for the embedded player: opening a YouTube
+   * article shows the video summary (when available), a single prominent
+   * "View on YouTube" button that opens the video in the user's default
+   * browser, and a "Download Video" action backed by the yt-dlp bridge.
+   *
+   * @param {object} article
+   * @param {object} feed
+   * @returns {Promise<void>}
+   */
+  async showYouTubeExternalViewer(article, feed) {
+    const { overlay, body } = this.createArticleViewer(article, feed);
+
+    // Remove actions that do not make sense for a YouTube video.
+    const exportButton = overlay.querySelector('[data-action="export-markdown"]');
+    if (exportButton) {
+      exportButton.remove();
+    }
+
+    // Replace "Open Original" (which would iframe youtube.com) with the
+    // yt-dlp-backed Download Video action; the body keeps the single
+    // prominent "View on YouTube" call to action.
+    const actions = overlay.querySelector('.rss-article-viewer-actions');
+    const downloadButton = document.createElement('button');
+    downloadButton.className = 'rss-action-button rss-youtube-download-button';
+    downloadButton.textContent = article.downloadPath ? 'Downloaded ✓' : 'Download Video';
+    downloadButton.addEventListener('click', () => this._downloadYouTubeVideo(article, feed, downloadButton));
+
+    const originalButton = overlay.querySelector('[data-action="open-original"]');
+    if (originalButton) {
+      originalButton.replaceWith(downloadButton);
+    } else {
+      actions.insertBefore(downloadButton, actions.firstChild);
+    }
+
+    body.innerHTML = '';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'rss-youtube-external';
+
+    const badge = document.createElement('span');
+    badge.className = 'rss-youtube-badge';
+    badge.textContent = '▶ YouTube video';
+    wrapper.appendChild(badge);
+
+    // If the video has already been downloaded, play it inline from
+    // disk (Electron only — plain browsers have no media:// protocol).
+    const hasDownload = this._embeddedDownloadedVideo(article, wrapper);
+    if (hasDownload) {
+      const badgeHint = document.createElement('p');
+      badgeHint.className = 'rss-youtube-external-hint';
+      badgeHint.textContent = 'Downloaded copy';
+      wrapper.appendChild(badgeHint);
+    }
+
+    if (article.summary) {
+      const summary = document.createElement('p');
+      summary.className = 'rss-youtube-external-summary';
+      summary.textContent = article.summary;
+      wrapper.appendChild(summary);
+    }
+
+    const viewButton = document.createElement('button');
+    viewButton.className = 'rss-action-button rss-button-primary rss-youtube-external-button';
+    viewButton.textContent = 'View on YouTube';
+    viewButton.addEventListener('click', () => {
+      this.openExternalURL(article.url);
+    });
+    wrapper.appendChild(viewButton);
+
+    // A downloaded video stays embedded until the user deletes it. The
+    // "Delete Video" button removes the file and marks the article read;
+    // until then the article remains unread so it stays visible in the
+    // unread list (watch-later semantics).
+    if (hasDownload) {
+      const deleteButton = document.createElement('button');
+      deleteButton.className = 'rss-action-button rss-button-danger rss-youtube-external-button rss-youtube-delete-button';
+      deleteButton.textContent = 'Delete Video';
+      deleteButton.addEventListener('click', async () => {
+        deleteButton.disabled = true;
+        deleteButton.textContent = 'Deleting…';
+        try {
+          await this._deleteYouTubeVideo(article, feed, this.activeModal);
+        } catch (error) {
+          console.error('Failed to delete downloaded video:', error);
+          deleteButton.disabled = false;
+          deleteButton.textContent = 'Delete Video';
+        }
+      });
+      wrapper.insertBefore(deleteButton, viewButton);
+    }
+
+    body.appendChild(wrapper);
+
+    // Opening a downloaded video does not mark the article read — only
+    // deleting the video (or normal unread-toggle actions) does.
+    if (!hasDownload) {
+      await this.markAsRead(feed.feedID, article.articleID);
+    }
+  }
+
+  /**
+   * Insert an inline <video> player for an article's downloaded video
+   * file, if one exists and the environment can play it.
+   *
+   * Downloaded files are served over the media:// protocol (registered
+   * in the Electron main process); in a plain browser there is no way
+   * to read the file from disk, so nothing is embedded.
+   *
+   * @param {object} article - Article with a downloadPath (if downloaded)
+   * @param {HTMLElement} wrapper - The .rss-youtube-external container
+   * @returns {boolean} Whether a video element was added
+   */
+  _embeddedDownloadedVideo(article, wrapper) {
+    if (!article.downloadPath || !isElectronAvailable()) {
+      return false;
+    }
+
+    const video = document.createElement('video');
+    video.className = 'rss-youtube-external-video';
+    video.controls = true;
+    video.preload = 'metadata';
+    video.src = buildVideoMediaUrl(article.downloadPath);
+
+    const viewButton = wrapper.querySelector('.rss-youtube-external-button');
+    if (viewButton) {
+      wrapper.insertBefore(video, viewButton);
+    } else {
+      wrapper.appendChild(video);
+    }
+    return true;
+  }
+
+  /**
+   * After a download finishes, embed the new video in the article
+   * viewer if it is currently open (the external YouTube panel).
+   *
+   * @param {object} article - The downloaded article
+   * @returns {void}
+   */
+  _embedDownloadedInOpenViewer(article) {
+    const viewer = this.activeModal;
+    if (!viewer || !viewer.contains) {
+      return;
+    }
+    const wrapper = viewer.querySelector('.rss-youtube-external');
+    if (!wrapper || wrapper.querySelector('.rss-youtube-external-video')) {
+      return;
+    }
+    this._embeddedDownloadedVideo(article, wrapper);
+  }
+
+  /**
    * Open a YouTube video in an embedded player with save/delete lifecycle.
    *
    * Uses the YouTube IFrame Player API so the app can detect when the
    * video ends and prompt the user to keep or delete the downloaded file.
+   *
+   * Currently unreachable: the embed viewer is temporarily disabled and
+   * openArticleViewer routes YouTube articles to
+   * showYouTubeExternalViewer() instead.
    *
    * @param {object} article
    * @param {object} feed
@@ -2625,10 +2957,14 @@ class RSSFeedComponent extends DataroomElement {
       button.textContent = 'Downloading…';
     }
 
+    // Bottom-right toast with a live progress bar. Progress updates
+    // arrive over the Electron IPC channel keyed by the article URL.
+    const toast = showVideoDownloadToast(article.url, 'Preparing download…');
+
     try {
       const result = await downloadArticleYouTubeVideo(feed, article);
       if (result.error) {
-        this.showToast(`Download failed: ${result.error}`, 'error');
+        toast.fail(`Download failed: ${result.error}`);
         if (button) {
           button.disabled = false;
           button.textContent = 'Download Video';
@@ -2636,17 +2972,61 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
-      this.showToast(`Video saved to ${result.filePath}`);
+      toast.complete('Video saved ✓');
       if (button) {
         button.disabled = false;
         button.textContent = 'Downloaded ✓';
       }
+
+      // A downloaded video should surface again in the feed: mark the
+      // article unread so it appears in the unread list.
+      await this.markAsUnread(feed.feedID, article.articleID);
+      // If the article viewer is currently open on this article, play
+      // the fresh download inline.
+      this._embedDownloadedInOpenViewer(article);
     } catch (error) {
       console.error('Failed to download YouTube video:', error);
-      this.showToast(`Download failed: ${error.message}`, 'error');
+      toast.fail(`Download failed: ${error.message}`);
       if (button) {
         button.disabled = false;
         button.textContent = 'Download Video';
+      }
+    }
+  }
+
+  /**
+   * Delete a downloaded YouTube video from an article list row.
+   *
+   * Same effect as the viewer's "Delete Video" button: removes the file
+   * and its records, then marks the article read. Because markAsRead()
+   * re-renders the current view (including the Videos view), the deleted
+   * entry simply disappears from the list.
+   *
+   * @param {object} article - Article with a downloadPath
+   * @param {object} feed - The article's feed
+   * @param {HTMLElement} buttonElement - The clicked button, if any
+   * @returns {Promise<void>}
+   */
+  async _deleteYouTubeVideoFromList(article, feed, buttonElement) {
+    const button = buttonElement || null;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Deleting…';
+    }
+
+    try {
+      if (article.downloadPath) {
+        // Removes the file, the downloaded_videos record, and the
+        // article's denormalized download pointer in one step.
+        await deleteArticleYouTubeVideo(feed.feedID, article.articleID, article.downloadPath);
+        article.downloadPath = null;
+      }
+      await this.markAsRead(feed.feedID, article.articleID);
+    } catch (error) {
+      console.error('Failed to delete downloaded video:', error);
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Delete Video';
       }
     }
   }
@@ -2661,11 +3041,10 @@ class RSSFeedComponent extends DataroomElement {
    */
   async _deleteYouTubeVideo(article, feed, overlay) {
     if (article.downloadPath) {
-      try {
-        await deleteDownloadedVideo(article.downloadPath);
-      } catch (error) {
-        console.error('Failed to delete downloaded video:', error);
-      }
+      // Removes the file, the downloaded_videos record, and the article's
+      // denormalized download pointer in one step.
+      await deleteArticleYouTubeVideo(feed.feedID, article.articleID, article.downloadPath);
+      article.downloadPath = null;
     }
 
     this.closeModal();
@@ -3739,11 +4118,52 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
     this._findBar.classList.add('rss-find-bar--visible');
-    this._findInput.focus();
-    this._findInput.select();
+    this._focusFindInput();
     if (this._findInput.value) {
       this._runFind({ selectFirst: true });
     }
+  }
+
+  /**
+   * Focus the find input once it is actually focusable.
+   *
+   * The find bar is revealed via a 200ms transition that includes
+   * `visibility` (it starts at `visibility: hidden`), so a focus call
+   * made while the bar is still hidden fails silently and the input
+   * never receives focus. Poll until the bar reports itself visible —
+   * normally the very next frame after the transition — then focus and
+   * select the input. A final unconditional focus guards against
+   * environments where the transition never runs.
+   *
+   * @returns {void}
+   */
+  _focusFindInput() {
+    const focusWhenVisible = () => {
+      if (getComputedStyle(this._findBar).visibility === 'visible') {
+        this._findInput.focus();
+        this._findInput.select();
+        return true;
+      }
+      return false;
+    };
+
+    if (focusWhenVisible()) {
+      return;
+    }
+
+    const start = performance.now();
+    const tryFocus = () => {
+      if (focusWhenVisible()) {
+        return;
+      }
+      if (performance.now() - start < 500) {
+        requestAnimationFrame(tryFocus);
+        return;
+      }
+      this._findInput.focus();
+      this._findInput.select();
+    };
+    requestAnimationFrame(tryFocus);
   }
 
   /**

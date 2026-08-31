@@ -66,4 +66,18 @@ contextBridge.exposeInMainWorld('electron', {
    * @returns {Promise<boolean>} Whether the file was deleted or already absent
    */
   deleteDownloadedVideo: (filePath) => ipcRenderer.invoke('delete-downloaded-video', filePath),
+
+  /**
+   * Subscribe to YouTube download progress events forwarded from the
+   * main process while a download-youtube-video call is in flight.
+   *
+   * @param {(progress: {url: string, stage: string, percent?: number|null, totalSize?: string, currentSpeed?: string, eta?: string}) => void} callback
+   *   Invoked once per progress update
+   * @returns {() => void} Function that removes the subscription
+   */
+  onYouTubeDownloadProgress: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('youtube-download-progress', listener);
+    return () => ipcRenderer.removeListener('youtube-download-progress', listener);
+  },
 });

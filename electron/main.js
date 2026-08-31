@@ -32,7 +32,9 @@ import {
   downloadYouTubeVideo,
   deleteDownloadedVideo,
   checkForYTDlpUpdate,
+  getDownloadDirectory,
 } from './youtube-download.js';
+import { createMediaRequestHandler } from './media-protocol.js';
 
 /**
  * Content-Security-Policy for production builds served over app://.
@@ -51,6 +53,7 @@ const PRODUCTION_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
+  "media-src 'self' media:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
@@ -79,6 +82,7 @@ const DEVELOPMENT_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
+  "media-src 'self' media:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   `connect-src 'self' ${devServerOrigin} ${devServerWsScheme}://${devServerHost}`,
@@ -124,6 +128,17 @@ const MIME_TYPES = {
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'app',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
+  {
+    // Serves downloaded YouTube videos from disk so <video> elements
+    // in the renderer can play files without file:// access.
+    scheme: 'media',
     privileges: {
       standard: true,
       secure: true,
@@ -416,11 +431,23 @@ async function fetchBinary(url) {
 ipcMain.handle('fetch-text', async (_, url) => fetchText(url));
 ipcMain.handle('fetch-binary', async (_, url) => fetchBinary(url));
 ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));
-ipcMain.handle('download-youtube-video', async (_, url) => downloadYouTubeVideo(url));
+ipcMain.handle('download-youtube-video', async (event, url) => {
+  // Stream download progress to the requesting window so the renderer
+  // can render a live progress toast while yt-dlp runs.
+  const sender = event.sender;
+  return downloadYouTubeVideo(url, (progress) => {
+    if (!sender.isDestroyed()) {
+      sender.send('youtube-download-progress', { url, ...progress });
+    }
+  });
+});
 ipcMain.handle('delete-downloaded-video', async (_, filePath) => deleteDownloadedVideo(filePath));
 
 app.whenReady().then(async () => {
   protocol.handle('app', handleAppRequest);
+  // Downloaded videos live under Downloads/Aaron-RSS-YouTube; only
+  // files inside that directory are exposed over media://.
+  protocol.handle('media', createMediaRequestHandler(getDownloadDirectory()));
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const url = new URL(details.url);

@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 
@@ -24,6 +25,7 @@ const mockFetch = vi.fn();
 
 const mockGetVersion = vi.fn();
 const mockExecPromise = vi.fn();
+const mockExec = vi.fn();
 const mockGetVideoInfo = vi.fn();
 const mockDownloadFromGithub = vi.fn();
 const mockGetGithubReleases = vi.fn();
@@ -65,6 +67,17 @@ vi.mock('yt-dlp-wrap-plus', () => ({
       this.getVersion = (...args) => mockGetVersion(...args);
       this.execPromise = (...args) => mockExecPromise(...args);
       this.getVideoInfo = (...args) => mockGetVideoInfo(...args);
+      // The download step uses the event-emitter form so progress can be
+      // streamed; emit one progress tick then a clean close by default.
+      this.exec = (...args) => {
+        mockExec(...args);
+        const emitter = new EventEmitter();
+        queueMicrotask(() => {
+          emitter.emit('progress', { percent: 42.5, totalSize: '1.00MiB', currentSpeed: '1.00MiB/s', eta: '00:01' });
+          emitter.emit('close', 0);
+        });
+        return emitter;
+      };
     }
 
     static downloadFromGithub(...args) {
@@ -226,6 +239,11 @@ describe('youtube download backend', () => {
       }
     });
 
+    /** Args of the (single) yt-dlp download invocation, via exec(). */
+    function downloadCallArgs() {
+      return mockExec.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+    }
+
     function setupSuccessfulDownload() {
       mockExecPromise.mockImplementation(async (args) => {
         if (args.includes('--dump-json')) {
@@ -273,7 +291,7 @@ describe('youtube download backend', () => {
       const { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).toContain('--js-runtimes');
       expect(downloadArgs).toContain('quickjs:/opt/homebrew/bin/qjs');
     });
@@ -291,7 +309,7 @@ describe('youtube download backend', () => {
       const { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).toContain('deno:/opt/homebrew/bin/deno');
     });
 
@@ -308,7 +326,7 @@ describe('youtube download backend', () => {
       const { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).toContain('node:/usr/local/bin/node');
     });
 
@@ -321,7 +339,7 @@ describe('youtube download backend', () => {
       let { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const legacyArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const legacyArgs = downloadCallArgs();
       expect(legacyArgs).not.toContain('--ffmpeg-location');
       const legacyFormatIndex = legacyArgs.indexOf('-f');
       expect(legacyFormatIndex).toBeGreaterThan(-1);
@@ -343,7 +361,7 @@ describe('youtube download backend', () => {
       const { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       const idx = downloadArgs.indexOf('--ffmpeg-location');
       expect(idx).toBeGreaterThan(-1);
       expect(downloadArgs[idx + 1]).toBe('/opt/homebrew/bin/ffmpeg');
@@ -364,7 +382,7 @@ describe('youtube download backend', () => {
       const { downloadYouTubeVideo } = await importYoutubeDownload();
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).not.toContain('--js-runtimes');
     });
 
@@ -392,6 +410,7 @@ describe('youtube download backend', () => {
 
       expect(result.error).toBe('Live streams are not downloaded');
       expect(mockExecPromise).not.toHaveBeenCalled();
+      expect(mockExec).not.toHaveBeenCalled();
     });
 
     it('auto-downloads deno when no JS runtime is available on the machine', async () => {
@@ -430,7 +449,7 @@ describe('youtube download backend', () => {
         expect.stringContaining('deno'),
         '/mock/userData/provisioned-binaries/deno'
       );
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).toContain('--js-runtimes');
       expect(downloadArgs).toContain('deno:/mock/userData/provisioned-binaries/deno');
     });
@@ -468,7 +487,7 @@ describe('youtube download backend', () => {
         '/mock/userData/provisioned-binaries/ffprobe',
         expect.any(Buffer)
       );
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       const idx = downloadArgs.indexOf('--ffmpeg-location');
       expect(idx).toBeGreaterThan(-1);
       expect(downloadArgs[idx + 1]).toBe('/mock/userData/provisioned-binaries/ffmpeg');
@@ -495,8 +514,46 @@ describe('youtube download backend', () => {
       await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
 
       expect(mockFetch).not.toHaveBeenCalled();
-      const downloadArgs = mockExecPromise.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+      const downloadArgs = downloadCallArgs();
       expect(downloadArgs).toContain('quickjs:/mock/userData/provisioned-binaries/qjs');
+    });
+
+    it('reports download progress through the optional callback', async () => {
+      process.env.PATH = '';
+      mockAccess.mockRejectedValue(new Error('not found'));
+      setupSuccessfulDownload();
+
+      const { downloadYouTubeVideo } = await importYoutubeDownload();
+      const events = [];
+      const result = await downloadYouTubeVideo(
+        'https://www.youtube.com/watch?v=abc12345678',
+        (progress) => events.push(progress)
+      );
+
+      expect(result.filePath).toBeDefined();
+      // Starts indeterminate, streams a percent tick, then processing.
+      expect(events[0]).toMatchObject({ stage: 'starting', percent: null });
+      expect(events).toContainEqual(
+        expect.objectContaining({ stage: 'downloading', percent: 42.5 })
+      );
+      expect(events[events.length - 1]).toMatchObject({ stage: 'processing', percent: 100 });
+    });
+
+    it('survives a progress callback that throws', async () => {
+      process.env.PATH = '';
+      mockAccess.mockRejectedValue(new Error('not found'));
+      setupSuccessfulDownload();
+
+      const { downloadYouTubeVideo } = await importYoutubeDownload();
+      const result = await downloadYouTubeVideo(
+        'https://www.youtube.com/watch?v=abc12345678',
+        () => {
+          throw new Error('listener blew up');
+        }
+      );
+
+      // A broken UI listener must not abort the download itself.
+      expect(result.filePath).toBeDefined();
     });
   });
 

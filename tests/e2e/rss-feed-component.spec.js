@@ -20,10 +20,7 @@ test.describe('Aaron RSS', () => {
     await expect(component).toHaveJSProperty('initialized', true);
     await component.evaluate((el) => {
       el.viewMode = 'feeds';
-      if (el.viewToggleInput) {
-        el.viewToggleInput.checked = false;
-        el._updateViewToggleText();
-      }
+      el._syncViewToggle();
     });
   });
 
@@ -88,7 +85,7 @@ test.describe('Aaron RSS', () => {
     await expect(addButton).toHaveAttribute('title', 'Add RSS feed');
   });
 
-  test('renders a view toggle switch at the bottom left before the action buttons', async ({ page }) => {
+  test('renders a view radio menu with all three views at the bottom left', async ({ page }) => {
     // Reload so we observe the untouched default state; the suite-wide
     // beforeEach opts other tests out of the timeline default.
     await page.goto('/');
@@ -96,11 +93,22 @@ test.describe('Aaron RSS', () => {
 
     const toggle = page.locator('.rss-footer .rss-view-toggle');
     await expect(toggle).toBeVisible();
-    await expect(toggle.locator('.rss-view-toggle-input')).toBeChecked();
-    await expect(toggle.locator('.rss-view-toggle-text')).toHaveText('◴');
-    await expect(toggle.locator('.rss-view-toggle-text')).toHaveAttribute('title', 'Timeline view');
+    await expect(toggle).toHaveAttribute('role', 'radiogroup');
 
-    // The switch sits to the left of Refresh All / Add Feed in the footer.
+    // All three view options are present; timeline is checked by default.
+    await expect(toggle.locator('.rss-view-toggle-input')).toHaveCount(3);
+    await expect(toggle.locator('.rss-view-toggle-input[value="timeline"]')).toBeChecked();
+    await expect(toggle.locator('.rss-view-toggle-input[value="feeds"]')).not.toBeChecked();
+    await expect(toggle.locator('.rss-view-toggle-input[value="videos"]')).not.toBeChecked();
+
+    // Each option exposes an icon and a labeled affordance.
+    for (const mode of ['timeline', 'feeds', 'videos']) {
+      const option = toggle.locator(`.rss-view-toggle-option--${mode}`);
+      await expect(option.locator('.rss-view-toggle-icon')).toBeVisible();
+      await expect(option.locator('.rss-view-toggle-option-label')).toHaveAttribute('title', `${mode[0].toUpperCase()}${mode.slice(1)} view`);
+    }
+
+    // The menu sits to the left of Refresh All / Add Feed in the footer.
     const order = await page.evaluate(() => {
       const children = Array.from(document.querySelector('.rss-footer').children);
       return children.map((el) => el.className);
@@ -110,16 +118,28 @@ test.describe('Aaron RSS', () => {
     expect(order).toContain('rss-add-feed-button');
   });
 
+  test('the active view option is highlighted with the --secondary color', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('rss-feed-component')).toHaveJSProperty('initialized', true);
+
+    const active = await page.locator('.rss-footer .rss-view-toggle-option--timeline .rss-view-toggle-option-label')
+      .evaluate((el) => getComputedStyle(el).backgroundColor);
+    const expected = await page.evaluate(() => {
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = 'var(--secondary-color)';
+      document.body.appendChild(probe);
+      return getComputedStyle(probe).backgroundColor;
+    });
+    expect(active).toBe(expected);
+  });
+
   test('timeline is the default view and orders articles by publication date across feeds', async ({ page }) => {
     const component = page.locator('rss-feed-component');
 
     // Re-enable the default timeline mode (beforeEach opts into feeds).
     await component.evaluate((el) => {
       el.viewMode = 'timeline';
-      if (el.viewToggleInput) {
-        el.viewToggleInput.checked = true;
-        el._updateViewToggleText();
-      }
+      el._syncViewToggle();
     });
 
     await component.evaluate((el) => {
@@ -225,12 +245,11 @@ test.describe('Aaron RSS', () => {
     await expect(page.locator('.rss-timeline')).toBeVisible();
     await expect(page.locator('.rss-feed')).toHaveCount(0);
 
-    await page.locator('.rss-footer .rss-view-toggle').click();
+    await page.locator('.rss-footer .rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
 
     await expect(page.locator('.rss-timeline')).toHaveCount(0);
     await expect(page.locator('.rss-feed')).toBeVisible();
-    await expect(page.locator('.rss-footer .rss-view-toggle-text')).toHaveText('▤');
-    await expect(page.locator('.rss-footer .rss-view-toggle-text')).toHaveAttribute('title', 'Feeds view');
+    await expect(page.locator('.rss-footer .rss-view-toggle-input[value="feeds"]')).toBeChecked();
   });
 
   test('keyboard navigation selects articles in the timeline view', async ({ page }) => {
@@ -303,6 +322,7 @@ test.describe('Aaron RSS', () => {
       'Manage Feeds',
       'Refresh All Feeds',
       'Mark All Read',
+      'Videos',
       'Settings',
       'Export OPML',
       'Import OPML',
@@ -656,11 +676,54 @@ test.describe('Aaron RSS', () => {
     await expect(article).toBeVisible();
 
     await expect(article.locator('.rss-action-button')).toHaveText([
-      'Mark Read',
-      'Star',
       'Read',
+      'Star',
       'Export Markdown',
       'Save to File',
+      'Mark Read',
+    ]);
+  });
+
+  test('youtube article actions put Download Video first and Mark Read last', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-yt',
+          url: 'https://example.com/feed.xml',
+          name: 'Example Feed',
+          homePageURL: 'https://example.com',
+          articles: [
+            {
+              articleID: 'article-yt',
+              title: 'Sample Video',
+              url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+              datePublished: new Date('2024-01-01T00:00:00Z'),
+              authors: [{ name: 'Jane Doe' }],
+              read: false,
+              starred: false,
+              tags: [],
+            },
+          ],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    const article = page.locator('.rss-article');
+    await expect(article).toBeVisible();
+
+    await expect(article.locator('.rss-action-button')).toHaveText([
+      'Download Video',
+      'Read',
+      'Star',
+      'Export Markdown',
+      'Save to File',
+      'Mark Read',
     ]);
   });
 
@@ -866,6 +929,26 @@ test.describe('Aaron RSS', () => {
 
     await viewer.locator('.rss-article-viewer-back').click();
     await expect(viewer).not.toBeVisible();
+  });
+
+  test('original viewer back button has a large touch-friendly hit area', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.openOriginalViewer(
+        { title: 'Sample Article', url: 'https://example.com/post' },
+        { feedID: 'feed-1', name: 'Example Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-original-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    const box = await viewer.locator('.rss-article-viewer-back').boundingBox();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
   });
 
   test('original viewer has an Open in Browser button', async ({ page }) => {
@@ -1095,33 +1178,120 @@ test.describe('Aaron RSS', () => {
     await expect(viewer).not.toBeVisible();
   });
 
-  test('Open on YouTube button opens the video in the default browser', async ({ page }) => {
+  // YouTube embed viewer is temporarily disabled; openArticleViewer
+  // routes YouTube articles to the "View on YouTube" panel instead.
+  // Restore this test together with the embed viewer in
+  // src/rss-feed-component.js.
+  // test('Open on YouTube button opens the video in the default browser', async ({ page }) => {
+  //   const component = page.locator('rss-feed-component');
+  //   await expect(component).toBeVisible();
+  //   await expect(component).toHaveJSProperty('initialized', true);
+  //
+  //   await page.evaluate(() => {
+  //     window.__openedExternalUrls = [];
+  //     window.electron = {
+  //       openExternal: async (url) => {
+  //         window.__openedExternalUrls.push(url);
+  //       },
+  //     };
+  //   });
+  //
+  //   await component.evaluate((el) => {
+  //     el.openYouTubeViewer(
+  //       { title: 'YouTube Test', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+  //       { name: 'YouTube Feed' }
+  //     );
+  //   });
+  //
+  //   const viewer = page.locator('.rss-article-viewer-overlay');
+  //   await expect(viewer).toBeVisible();
+  //
+  //   const openButton = viewer.locator('button', { hasText: 'Open on YouTube' });
+  //   await expect(openButton).toBeVisible();
+  //   await openButton.click();
+  //
+  //   const openedUrls = await page.evaluate(() => window.__openedExternalUrls);
+  //   expect(openedUrls).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
+  // });
+
+  test('YouTube articles show a View on YouTube panel instead of the embedded player', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toBeVisible();
     await expect(component).toHaveJSProperty('initialized', true);
 
     await page.evaluate(() => {
       window.__openedExternalUrls = [];
+      window.__downloadRequests = [];
       window.electron = {
         openExternal: async (url) => {
           window.__openedExternalUrls.push(url);
+        },
+        downloadYouTubeVideo: async (url) => {
+          window.__downloadRequests.push(url);
+          return { filePath: '/downloads/Aaron-RSS-YouTube/e2e.mp4' };
         },
       };
     });
 
     await component.evaluate((el) => {
-      el.openYouTubeViewer(
-        { title: 'YouTube Test', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
-        { name: 'YouTube Feed' }
+      el.openArticleViewer(
+        {
+          articleID: 'e2e-yt-article',
+          title: 'YouTube Panel Test',
+          summary: 'A test video summary.',
+          url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        },
+        { feedID: 'e2e-yt-feed', name: 'YouTube Feed' }
       );
     });
 
     const viewer = page.locator('.rss-article-viewer-overlay');
     await expect(viewer).toBeVisible();
 
-    const openButton = viewer.locator('button', { hasText: 'Open on YouTube' });
-    await expect(openButton).toBeVisible();
-    await openButton.click();
+    // The embedded player must not appear.
+    await expect(viewer.locator('.rss-youtube-player')).toHaveCount(0);
+
+    // Summary is shown with exactly one View on YouTube button (the body
+    // CTA) plus a Download Video action backed by the yt-dlp bridge.
+    await expect(viewer.locator('.rss-youtube-external-summary')).toHaveText('A test video summary.');
+    await expect(viewer.locator('button', { hasText: 'View on YouTube' })).toHaveCount(1);
+
+    const downloadButton = viewer.locator('.rss-youtube-download-button');
+    await expect(downloadButton).toHaveText('Download Video');
+
+    // After a successful download the article must be marked unread so
+    // it surfaces again in the feed, and the freshly downloaded video
+    // must be embedded in the still-open viewer.
+    await component.evaluate((el) => {
+      el.__unreadCalls = [];
+      const original = el.markAsUnread.bind(el);
+      el.markAsUnread = async (feedID, articleID) => {
+        el.__unreadCalls.push({ feedID, articleID });
+        await original(feedID, articleID);
+      };
+    });
+
+    await downloadButton.click();
+    await expect(downloadButton).toHaveText('Downloaded ✓');
+    const downloadRequests = await page.evaluate(() => window.__downloadRequests);
+    expect(downloadRequests).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
+
+    const unreadCalls = await component.evaluate((el) => el.__unreadCalls);
+    expect(unreadCalls).toEqual([
+      { feedID: 'e2e-yt-feed', articleID: 'e2e-yt-article' },
+    ]);
+
+    // The downloaded copy is embedded as an inline <video> player.
+    const embeddedVideo = viewer.locator('video.rss-youtube-external-video');
+    await expect(embeddedVideo).toHaveCount(1);
+    await expect(embeddedVideo).toHaveJSProperty(
+      'src',
+      'media://local/' + encodeURIComponent('/downloads/Aaron-RSS-YouTube/e2e.mp4')
+    );
+
+    const viewButton = viewer.locator('.rss-youtube-external-button');
+    await expect(viewButton).toHaveText('View on YouTube');
+    await viewButton.click();
 
     const openedUrls = await page.evaluate(() => window.__openedExternalUrls);
     expect(openedUrls).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
@@ -1242,6 +1412,18 @@ test.describe('Aaron RSS', () => {
     const toast = page.locator('.rss-toast');
     await expect(toast).toBeVisible();
     await expect(toast).toHaveText('Copied URL to clipboard');
+
+    // The toast must not be occluded by the article viewer overlay it was
+    // triggered from (regression guard: toast z-index must sit above overlays).
+    const toastOnTop = await toast.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2
+      );
+      return el === hit || el.contains(hit);
+    });
+    expect(toastOnTop).toBe(true);
   });
 
   test('original viewer Share button copies the original URL to clipboard', async ({ page }) => {
@@ -2186,8 +2368,15 @@ test.describe('Aaron RSS', () => {
     await expect(findBar).toHaveClass(/rss-find-bar--visible/);
 
     const input = page.locator('.rss-find-input');
+    // The shortcut itself should move focus into the input; no click required.
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue('');
+
+    // Clicking the input should still focus it and allow typing.
     await input.click();
     await expect(input).toBeFocused();
+    await input.fill('test');
+    await expect(input).toHaveValue('test');
   });
 
   test('typing in the find input highlights matches in articles', async ({ page }) => {
@@ -2554,5 +2743,448 @@ test.describe('Aaron RSS', () => {
     await page.waitForTimeout(3000);
     await expect(viewer).toBeVisible();
     await expect(page.locator('.rss-toast-error')).toHaveCount(0);
+  });
+
+
+  test.describe('downloading a video (bypasses dev CSP for feed fetch stubs)', () => {
+    test.use({ bypassCSP: true });
+
+    test('downloading a video persists the article as unread with its download path', async ({ page }) => {
+      test.setTimeout(30000);
+
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Persist Feed</title>',
+        '<link>https://persist-feed.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Persist Video</title>',
+        '<link>https://www.youtube.com/watch?v=e2ePersist1</link>',
+        '<guid>persist-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://persist-feed.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+      await component.evaluate((el) => {
+        el.viewMode = 'feeds';
+        el._syncViewToggle();
+      });
+
+      // Add a real feed through the app's own pipeline so the article is
+      // stored in SQLite (route stubs satisfy the discovery fetches).
+      await component.evaluate((el) => el.addFeedInBackground('https://persist-feed.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      // Stub the Electron download bridge after page load (the bridge
+      // checks window.electron at call time, so late stubbing is fine).
+      await page.evaluate(() => {
+        window.electron = {
+          downloadYouTubeVideo: async () => ({
+            filePath: '/downloads/Aaron-RSS-YouTube/e2e-persisted.mp4',
+          }),
+        };
+      });
+
+      // Open the article (marks it read in the DB) and download its video.
+      await page.locator('.rss-article-title strong').click();
+      const viewer = page.locator('.rss-article-viewer-overlay');
+      await expect(viewer).toBeVisible();
+
+      const downloadButton = viewer.locator('.rss-youtube-download-button');
+      await expect(downloadButton).toHaveText('Download Video');
+      await downloadButton.click();
+      await expect(downloadButton).toHaveText('Downloaded ✓');
+
+      // Re-query the database (refreshFeeds reloads from SQLite) and assert
+      // the article came back as unread with the download path persisted.
+      await component.evaluate((el) => el.refreshFeeds());
+      const state = await component.evaluate((el) => {
+        const feed = el.feeds.find((f) => f.name === 'Persist Feed');
+        const article = feed?.articles.find((a) => a.title === 'Persist Video');
+        if (!article) {
+          return { found: false };
+        }
+        return {
+          found: true,
+          read: article.read,
+          downloadPath: article.downloadPath,
+        };
+      });
+
+      expect(state).toEqual({
+        found: true,
+        read: false,
+        downloadPath: '/downloads/Aaron-RSS-YouTube/e2e-persisted.mp4',
+      });
+    });
+
+    test('opening a downloaded video keeps it unread; Delete Video deletes and marks read', async ({ page }) => {
+      test.setTimeout(30000);
+
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Delete Flow Feed</title>',
+        '<link>https://delete-flow.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Delete Flow Video</title>',
+        '<link>https://www.youtube.com/watch?v=e2eDelete11</link>',
+        '<guid>delete-flow-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://delete-flow.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      // Track delete-file calls through the Electron bridge stub (the
+      // bridge checks window.electron at call time, so late stubbing is
+      // fine and matches the pattern used by the download test).
+      await page.evaluate(() => {
+        window.__deleteVideoCalls = [];
+        window.electron = {
+          deleteDownloadedVideo: async (filePath) => {
+            window.__deleteVideoCalls.push(filePath);
+            return true;
+          },
+        };
+      });
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+      await component.evaluate((el) => {
+        el.viewMode = 'feeds';
+        el._syncViewToggle();
+      });
+
+      await component.evaluate((el) => el.addFeedInBackground('https://delete-flow.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      // Download the video through the app's own pipeline so the article
+      // ends up unread with a persisted download path.
+      await page.evaluate(() => {
+        window.electron.downloadYouTubeVideo = async () => ({
+          filePath: '/downloads/Aaron-RSS-YouTube/e2e-delete-flow.mp4',
+        });
+      });
+
+      await page.locator('.rss-article-title strong').click();
+      const viewer = page.locator('.rss-article-viewer-overlay');
+      await expect(viewer).toBeVisible();
+
+      const downloadButton = viewer.locator('.rss-youtube-download-button');
+      await downloadButton.click();
+      await expect(downloadButton).toHaveText('Downloaded ✓');
+
+      // Close and re-open the article: with a downloaded copy embedded,
+      // the viewer shows the Delete Video button and the article stays
+      // unread (watch-later semantics).
+      await page.locator('.rss-article-viewer-close').click();
+      await expect(viewer).toBeHidden();
+
+      await page.locator('.rss-article-title strong').click();
+      await expect(viewer).toBeVisible();
+
+      const deleteButton = viewer.locator('.rss-youtube-delete-button');
+      await expect(deleteButton).toHaveText('Delete Video');
+
+      await component.evaluate((el) => el.refreshFeeds());
+      const unreadState = await component.evaluate((el) => {
+        const feed = el.feeds.find((f) => f.name === 'Delete Flow Feed');
+        const article = feed?.articles.find((a) => a.title === 'Delete Flow Video');
+        return { read: article?.read, downloadPath: article?.downloadPath };
+      });
+      expect(unreadState).toEqual({
+        read: false,
+        downloadPath: '/downloads/Aaron-RSS-YouTube/e2e-delete-flow.mp4',
+      });
+
+      // Delete the video: file removed through the bridge, article
+      // marked read, download pointer cleared.
+      await deleteButton.click();
+      await expect(viewer).toBeHidden();
+
+      const deletedPaths = await page.evaluate(() => window.__deleteVideoCalls);
+      expect(deletedPaths).toEqual(['/downloads/Aaron-RSS-YouTube/e2e-delete-flow.mp4']);
+
+      await component.evaluate((el) => el.refreshFeeds());
+      // loadFeedsForDisplay only returns unread articles, so the article
+      // vanishing from the refreshed feed list proves it was marked read.
+      const deletedState = await component.evaluate((el) => {
+        const feed = el.feeds.find((f) => f.name === 'Delete Flow Feed');
+        const articles = feed?.articles || [];
+        return {
+          unreadCount: articles.length,
+          stillListed: articles.some((a) => a.title === 'Delete Flow Video'),
+        };
+      });
+      expect(deletedState).toEqual({ unreadCount: 0, stillListed: false });
+    });
+
+    test('Videos view lists downloaded articles and empties after deletion', async ({ page }) => {
+      test.setTimeout(30000);
+
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Videos View Feed</title>',
+        '<link>https://videos-view.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Videos View Video</title>',
+        '<link>https://www.youtube.com/watch?v=e2eVideosV1</link>',
+        '<guid>videos-view-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://videos-view.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+      await component.evaluate((el) => {
+        el.viewMode = 'feeds';
+        el._syncViewToggle();
+      });
+
+      await component.evaluate((el) => el.addFeedInBackground('https://videos-view.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      await page.evaluate(() => {
+        window.electron = {
+          downloadYouTubeVideo: async () => ({
+            filePath: '/downloads/Aaron-RSS-YouTube/e2e-videos-view.mp4',
+          }),
+        };
+      });
+
+      // Download the video through the app's own pipeline.
+      await page.locator('.rss-article-title strong').click();
+      const viewer = page.locator('.rss-article-viewer-overlay');
+      await expect(viewer).toBeVisible();
+      const downloadButton = viewer.locator('.rss-youtube-download-button');
+      await downloadButton.click();
+      await expect(downloadButton).toHaveText('Downloaded ✓');
+      await page.locator('.rss-article-viewer-close').click();
+      await expect(viewer).toBeHidden();
+
+      // Enter the Videos view: the downloaded article is listed with a
+      // "Downloaded" badge even though the article is unread.
+      await page.locator('.rss-videos-view-button .rss-view-toggle-option-label').click();
+      const videosView = page.locator('.rss-videos-view');
+      await expect(videosView).toBeVisible();
+      const item = videosView.locator('.rss-videos-view-item', { hasText: 'Videos View Video' });
+      await expect(item).toHaveCount(1);
+      await expect(item.locator('.rss-article-downloaded-badge')).toHaveText('⬇ Downloaded');
+
+      // The videos radio is checked while the Videos view is active, and
+      // the videos option carries the active highlight class.
+      await expect(component.locator('.rss-view-toggle-input[value="videos"]')).toBeChecked();
+      await expect(component.locator('.rss-videos-view-button')).toHaveClass(/rss-videos-view-button--active/);
+
+      // Leaving the Videos view happens by selecting another view option.
+      await page.locator('.rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
+      await expect(videosView).toHaveCount(0);
+      await expect(component.locator('.rss-view-toggle-input[value="feeds"]')).toBeChecked();
+      // The videos option no longer carries the active highlight.
+      await expect(component.locator('.rss-videos-view-button')).not.toHaveClass(/rss-videos-view-button--active/);
+
+      // Delete the video from the viewer, then the Videos view is empty.
+      await page.locator('.rss-article-title strong').click();
+      await expect(viewer).toBeVisible();
+      await viewer.locator('.rss-youtube-delete-button').click();
+      await expect(viewer).toBeHidden();
+
+      await page.locator('.rss-videos-view-button .rss-view-toggle-option-label').click();
+      await expect(videosView).toBeVisible();
+      await expect(videosView.locator('.rss-videos-view-item')).toHaveCount(0);
+      await expect(videosView.locator('.rss-no-articles')).toHaveText('No downloaded videos');
+    });
+
+    test('Videos view row shows Delete Video in place of Mark Read and deletes inline', async ({ page }) => {
+      test.setTimeout(30000);
+
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Row Delete Feed</title>',
+        '<link>https://row-delete.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Row Delete Video</title>',
+        '<link>https://www.youtube.com/watch?v=e2eRowDel01</link>',
+        '<guid>row-delete-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://row-delete.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      await page.evaluate(() => {
+        window.__deleteVideoCalls = [];
+        window.electron = {
+          downloadYouTubeVideo: async () => ({
+            filePath: '/downloads/Aaron-RSS-YouTube/e2e-row-delete.mp4',
+          }),
+          deleteDownloadedVideo: async (filePath) => {
+            window.__deleteVideoCalls.push(filePath);
+            return true;
+          },
+        };
+      });
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+
+      await component.evaluate((el) => el.addFeedInBackground('https://row-delete.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      // Download the video through the app's own pipeline.
+      await page.locator('.rss-article-title strong').click();
+      const viewer = page.locator('.rss-article-viewer-overlay');
+      await expect(viewer).toBeVisible();
+      const downloadButton = viewer.locator('.rss-youtube-download-button');
+      await downloadButton.click();
+      await expect(downloadButton).toHaveText('Downloaded ✓');
+      await page.locator('.rss-article-viewer-close').click();
+      await expect(viewer).toBeHidden();
+
+      // In the Videos view the row replaces "Mark Read" with a
+      // "Delete Video" button while a downloaded copy exists.
+      await page.locator('.rss-videos-view-button .rss-view-toggle-option-label').click();
+      const videosView = page.locator('.rss-videos-view');
+      await expect(videosView).toBeVisible();
+      const item = videosView.locator('.rss-videos-view-item', { hasText: 'Row Delete Video' });
+      await expect(item).toHaveCount(1);
+      const rowDeleteButton = item.locator('[data-action="delete-youtube"]');
+      await expect(rowDeleteButton).toHaveText('Delete Video');
+      await expect(item.locator('[data-action="mark-read"]')).toHaveCount(0);
+
+      // Deleting from the row removes the file through the bridge and
+      // re-renders the Videos view without the deleted entry.
+      await rowDeleteButton.click();
+      await expect(videosView.locator('.rss-no-articles')).toHaveText('No downloaded videos');
+      expect(await page.evaluate(() => window.__deleteVideoCalls))
+        .toEqual(['/downloads/Aaron-RSS-YouTube/e2e-row-delete.mp4']);
+
+      // Deleting also marks the article read. Exit the Videos view first:
+      // refreshFeeds() intentionally does not reload this.feeds while in
+      // Videos mode, and loadFeedsForDisplay only returns unread articles,
+      // so the article's absence from the refreshed feed list proves the
+      // read state.
+      await page.locator('.rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
+      await component.evaluate((el) => el.refreshFeeds());
+      const feedState = await component.evaluate((el) => {
+        const feed = el.feeds.find((f) => f.name === 'Row Delete Feed');
+        return {
+          unreadCount: (feed?.articles || []).length,
+          stillListed: (feed?.articles || []).some((a) => a.title === 'Row Delete Video'),
+        };
+      });
+      expect(feedState).toEqual({ unreadCount: 0, stillListed: false });
+    });
+
+    test('command panel Videos command opens the Videos view', async ({ page }) => {
+      test.setTimeout(30000);
+
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Command Videos Feed</title>',
+        '<link>https://command-videos.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Command Videos Video</title>',
+        '<link>https://www.youtube.com/watch?v=e2eCmdVids1</link>',
+        '<guid>command-videos-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://command-videos.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+
+      await component.evaluate((el) => el.addFeedInBackground('https://command-videos.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      await page.evaluate(() => {
+        window.electron = {
+          downloadYouTubeVideo: async () => ({
+            filePath: '/downloads/Aaron-RSS-YouTube/e2e-command-videos.mp4',
+          }),
+        };
+      });
+
+      await page.locator('.rss-article-title strong').click();
+      const viewer = page.locator('.rss-article-viewer-overlay');
+      await expect(viewer).toBeVisible();
+      await viewer.locator('.rss-youtube-download-button').click();
+      await expect(viewer.locator('.rss-youtube-download-button')).toHaveText('Downloaded ✓');
+      await page.locator('.rss-article-viewer-close').click();
+      await expect(viewer).toBeHidden();
+
+      // Run the Videos command from the command panel.
+      await page.locator('.rss-hamburger').click();
+      const dialog = page.locator('command-panel dialog');
+      await expect(dialog).toBeVisible();
+      await page.locator('command-panel .command-item', { hasText: 'Videos' }).click();
+
+      // The command enters the Videos view and lists the download.
+      await expect(dialog).toBeHidden();
+      await expect(page.locator('.rss-videos-view')).toBeVisible();
+      await expect(
+        page.locator('.rss-videos-view-item', { hasText: 'Command Videos Video' })
+      ).toHaveCount(1);
+    });
   });
 });

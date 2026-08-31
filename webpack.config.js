@@ -235,6 +235,9 @@ export default {
           "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://www.youtube.com https://s.ytimg.com",
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
           "img-src 'self' https: http: data:",
+          // Downloaded videos are served to <video> elements over the
+          // app's media:// protocol (see electron/media-protocol.js).
+          "media-src 'self' media:",
           "frame-src https: http:",
           "worker-src 'self' blob:",
           `connect-src 'self' ws://localhost:${port} http://localhost:${port}`,

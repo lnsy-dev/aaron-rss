@@ -12,6 +12,7 @@ import {
   saveArticles as dbSaveArticles,
   deleteArticlesNotInSet as dbDeleteArticlesNotInSet,
   purgeOldReadArticles as dbPurgeOldReadArticles,
+  listPrunableDownloadedVideos as dbListPrunableDownloadedVideos,
   runDatabaseMaintenance as dbRunDatabaseMaintenance,
   loadAllFeeds as dbLoadAllFeeds,
   loadFeedsForDisplay as dbLoadFeedsForDisplay,
@@ -21,6 +22,10 @@ import {
   markAllArticlesAsRead as dbMarkAllArticlesAsRead,
   savePageSnapshot as dbSavePageSnapshot,
   loadPageSnapshot as dbLoadPageSnapshot,
+  recordDownloadedVideo as dbRecordDownloadedVideo,
+  deleteDownloadedVideosForArticle as dbDeleteDownloadedVideosForArticle,
+  deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
+  loadDownloadedArticles as dbLoadDownloadedArticles,
 } from './database.js';
 import { fetchText } from './rss-network.js';
 import { parseFeedText } from './rss-parser.js';
@@ -314,7 +319,7 @@ export async function refreshFeed(feedID, maxArticles = 50) {
       feedID,
       updatedFeed.articles.map((article) => article.articleID)
     );
-    await dbPurgeOldReadArticles(feedID);
+    await purgeOldReadArticles(feedID);
 
     return updatedFeed;
   } catch (error) {
@@ -356,6 +361,15 @@ export async function downloadArticleYouTubeVideo(feed, article) {
 
     article.downloadPath = result.filePath;
     await dbUpdateArticleStatus(feed.feedID, article.articleID, { downloadPath: result.filePath });
+    // Queue table record: the article pointer above is a denormalized
+    // copy kept in sync; this table is the authoritative video library.
+    await dbRecordDownloadedVideo({
+      feedID: feed.feedID,
+      articleID: article.articleID,
+      youtubeURL: article.url,
+      filePath: result.filePath,
+      title: article.title || null,
+    });
     return result;
   } catch (error) {
     console.error(`Unexpected error downloading YouTube video ${article.url}:`, error);
@@ -429,6 +443,15 @@ export function loadFeedsForDisplay() {
 }
 
 /**
+ * Load every article that has a downloaded video, for the Videos view.
+ *
+ * @returns {Promise<Array<{feed: object|null, article: object}>>} Newest download first
+ */
+export function loadDownloadedArticles() {
+  return dbLoadDownloadedArticles();
+}
+
+/**
  * Mark every unread article across all feeds as read.
  *
  * @returns {Promise<number>} The number of articles marked as read
@@ -448,8 +471,35 @@ export function loadFeed(feedID) {
 }
 
 /**
+ * Delete a feed's downloaded YouTube video (file + record) and clear the
+ * article's denormalized download pointer.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {string} filePath - Absolute path of the file to remove
+ * @returns {Promise<void>}
+ */
+export async function deleteArticleYouTubeVideo(feedID, articleID, filePath) {
+  if (filePath) {
+    try {
+      await deleteDownloadedVideo(filePath);
+    } catch (error) {
+      console.error('Failed to delete downloaded video file:', error);
+    }
+  }
+  try {
+    await dbDeleteDownloadedVideosForArticle(feedID, articleID);
+    // Clear the article's pointer so the UI stops showing "Downloaded ✓".
+    await dbUpdateArticleStatus(feedID, articleID, { downloadPath: null });
+  } catch (error) {
+    console.error('Failed to clean up downloaded video record:', error);
+  }
+}
+
+/**
  * Delete a feed and its articles, cleaning up any downloaded YouTube
- * video files so they do not linger on disk.
+ * video files and queue records so they do not linger on disk or in the
+ * downloaded_videos table.
  *
  * @param {string} feedID
  * @returns {Promise<void>}
@@ -467,7 +517,46 @@ export async function deleteFeed(feedID) {
       }
     }
   }
+  try {
+    await dbDeleteDownloadedVideosForFeed(feedID);
+  } catch (error) {
+    console.error('Failed to delete downloaded video records for feed:', feedID, error);
+  }
   await dbDeleteFeed(feedID);
+}
+
+/**
+ * Purge read, unstarred articles older than the retention window,
+ * cleaning up any downloaded YouTube videos first. Per product
+ * decision, a pruned article's video is deleted entirely — the file on
+ * disk and its downloaded_videos record — not kept in the library.
+ *
+ * @param {string} feedID
+ * @param {number} [retentionDays] - Defaults to the standard retention window
+ * @returns {Promise<void>}
+ */
+export async function purgeOldReadArticles(feedID, retentionDays) {
+  try {
+    const prunable = (await dbListPrunableDownloadedVideos(feedID, retentionDays)) || [];
+    for (const item of prunable) {
+      try {
+        await deleteDownloadedVideo(item.downloadPath);
+      } catch (error) {
+        console.error('Failed to delete pruned video file:', item.downloadPath, error);
+      }
+      try {
+        await dbDeleteDownloadedVideosForArticle(feedID, item.articleID);
+      } catch (error) {
+        console.error('Failed to delete pruned video record:', item.articleID, error);
+      }
+    }
+  } catch (error) {
+    // Never block pruning of the articles themselves on cleanup failures.
+    console.error('Failed to clean up videos for prunable articles:', error);
+  }
+
+  const args = retentionDays === undefined ? [feedID] : [feedID, retentionDays];
+  await dbPurgeOldReadArticles(...args);
 }
 
 /**

@@ -104,6 +104,7 @@ body command-panel dialog {
   margin: 0 0.75rem 0 auto;
   text-align: right;
   font-size: 0.75rem;
+  font-family: var(--font-ui);
   color: var(--trinary-color);
   background: var(--secondary-color);
   border: 1px solid var(--quaternary-color);
@@ -174,30 +175,41 @@ body command-panel dialog {
   background: var(--secondary-color);
 }
 
+/* View radio menu: three icon radios (timeline / feeds / videos), with
+   the active view highlighted using the --secondary color. */
 .rss-view-toggle {
-  /* Match the footer action buttons so the switch reads as a control. */
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  padding: 0.5rem 0.75rem;
+  gap: 0.25rem;
+  padding: 0.25rem 0.4rem;
   background: var(--background-color);
   border: 1px solid var(--quaternary-color);
   border-radius: 4px;
-  color: var(--foreground-color);
   user-select: none;
 }
 
-.rss-view-toggle:hover {
-  /* Opaque equivalent of --highlight-color over --background-color so the
-     content scrolling behind the fixed footer doesn't show through. */
+.rss-view-toggle-option {
+  position: relative;
+  display: inline-flex;
+}
+
+.rss-view-toggle-option-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.55rem;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1;
+  color: var(--foreground-color);
+}
+
+.rss-view-toggle-option-label:hover {
   background: color-mix(in srgb, var(--background-color) 88%, black);
 }
 
 .rss-view-toggle-input {
-  /* The native checkbox is visually replaced by the track/thumb below,
+  /* The native radio is visually replaced by the icon below,
      but stays focusable for keyboard users. */
   position: absolute;
   opacity: 0;
@@ -205,39 +217,40 @@ body command-panel dialog {
   height: 0;
 }
 
-.rss-view-toggle-track {
-  position: relative;
+.rss-view-toggle-icon {
   display: inline-block;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  background: var(--background-color);
-  border: 1px solid var(--quaternary-color);
-  box-sizing: border-box;
+  width: 1.1rem;
+  height: 1.1rem;
+  background-color: var(--foreground-color);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
-.rss-view-toggle-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--trinary-color);
-  transition: transform 0.2s ease, background 0.2s ease;
+.rss-view-toggle-icon--timeline {
+  -webkit-mask-image: url('../assets/solid/list.svg');
+  mask-image: url('../assets/solid/list.svg');
 }
 
-/* Checked (Timeline): neutral emphasis, no red. */
-.rss-view-toggle-input:checked + .rss-view-toggle-track {
+.rss-view-toggle-icon--feeds {
+  -webkit-mask-image: url('../assets/solid/rss.svg');
+  mask-image: url('../assets/solid/rss.svg');
+}
+
+.rss-view-toggle-icon--videos {
+  -webkit-mask-image: url('../assets/solid/video.svg');
+  mask-image: url('../assets/solid/video.svg');
+}
+
+/* Active view: --secondary highlight. */
+.rss-view-toggle-input:checked + .rss-view-toggle-option-label {
   background: var(--secondary-color);
 }
 
-.rss-view-toggle-input:checked + .rss-view-toggle-track .rss-view-toggle-thumb {
-  transform: translateX(14px);
-  background: var(--foreground-color);
-}
-
-.rss-view-toggle-input:focus-visible + .rss-view-toggle-track {
+.rss-view-toggle-input:focus-visible + .rss-view-toggle-option-label {
   outline: 2px solid var(--notification-color);
   outline-offset: 2px;
 }
@@ -322,6 +335,7 @@ body command-panel dialog {
   padding: 0.1rem 0.6rem;
   font-size: 0.8rem;
   font-weight: 600;
+  font-family: var(--font-ui);
   margin-left: 0.5rem;
 }
 
@@ -538,7 +552,7 @@ body command-panel dialog {
   align-items: center;
   justify-content: center;
   /* Modals can be opened over the article viewer (z-index 600), so they must
-     sit above it. The command panel remains highest at 1000. */
+     sit above it. The command panel sits at 1000 and toasts at 1100. */
   z-index: 700;
   padding: 1rem;
 }
@@ -736,7 +750,10 @@ body command-panel dialog {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  z-index: 500;
+  /* Toasts are transient feedback for actions taken inside overlays (e.g. the
+     Share button in the article viewer at z-index 600) so they must paint
+     above every overlay, including the command palette at 1000. */
+  z-index: 1100;
 }
 
 .rss-toast {
@@ -848,7 +865,15 @@ body command-panel dialog {
 .rss-article-viewer-back {
   background: none;
   border: none;
-  padding: 0;
+  /* Generous padding gives the button a ~44x44px hit target; the negative
+     margin keeps it visually aligned with the header title. */
+  padding: 0.75rem;
+  margin: -0.75rem;
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.85rem;
   line-height: 1;
   cursor: pointer;
@@ -1226,6 +1251,10 @@ body command-panel dialog {
   visibility: hidden;
   transform: translateY(-0.5rem);
   transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  /* The bar sits in the draggable title-bar region on macOS; opt it and
+     its children out of window-dragging so the input can be clicked and
+     focused. */
+  -webkit-app-region: no-drag;
 }
 
 .rss-find-bar.rss-find-bar--visible {
@@ -1340,6 +1369,15 @@ body command-panel dialog {
   border-radius: 1px;
 }
 
+.rss-youtube-external-hint {
+  display: none;
+}
+
+.rss-article-downloaded-badge {
+  color: var(--neutral-2) !important;
+  font-family: var(--font-ui);
+}
+
 .rss-find-marker-active {
   background: var(--notification-color);
   height: 4px;
@@ -1348,7 +1386,7 @@ body command-panel dialog {
 
 /* YouTube video indicator */
 .rss-youtube-badge {
-  display: inline-block;
+  display: none;
   margin-left: 0.5rem;
   padding: 0.15rem 0.4rem;
   font-size: 0.75rem;
@@ -1384,6 +1422,70 @@ body command-panel dialog {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+/* YouTube external viewer (embedded player temporarily disabled) */
+.rss-youtube-external {
+  max-width: 640px;
+  margin: 2rem auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  text-align: center;
+}
+
+.rss-videos-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.rss-videos-view-item .rss-article {
+  border-bottom: 1px solid var(--quaternary-color);
+}
+
+.rss-article-downloaded-badge {
+  font-size: 0.8rem;
+  color: var(--quaternary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* The videos view lives inside the footer radio menu; only the active
+   marker needs styling here. */
+.rss-videos-view-button--active .rss-view-toggle-option-label {
+  background: var(--secondary-color);
+}
+
+.rss-youtube-external-summary {
+  margin: 0;
+  color: var(--foreground-color);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.rss-youtube-external-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--quaternary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.rss-youtube-external-video {
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 6px;
+}
+
+.rss-youtube-external-button {
+  font-size: 1rem;
+  padding: 0.6rem 1.5rem;
 }
 
 .rss-youtube-prompt {

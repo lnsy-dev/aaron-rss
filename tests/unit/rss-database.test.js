@@ -59,7 +59,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -71,6 +71,11 @@ describe('rss database helpers', () => {
     expect(tables[6]).toContain('ALTER TABLE articles ADD COLUMN download_path');
     expect(tables[7]).toContain('CREATE TABLE IF NOT EXISTS settings');
     expect(tables[8]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
+    expect(tables[9]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[9]).toContain('UNIQUE (feed_id, article_id)');
+    expect(tables[10]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[10]).toContain('FROM articles');
+    expect(tables[10]).toContain('download_path IS NOT NULL');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -100,7 +105,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>
       m.params.sql?.includes('ALTER TABLE')
@@ -308,6 +313,335 @@ describe('rss database helpers', () => {
     expect(message.params.sql).toContain('download_path = ?');
     expect(message.params.sql).toContain('WHERE feed_id = ? AND article_id = ?');
     expect(message.params.params).toEqual(['/downloads/video.mp4', 'feed123', 'art1']);
+  });
+
+  it('recordDownloadedVideo inserts a row with bound params and generated id', async () => {
+    const db = await importDatabaseModule();
+    await db.recordDownloadedVideo({
+      feedID: 'feed123',
+      articleID: 'art1',
+      youtubeURL: 'https://www.youtube.com/watch?v=abc',
+      filePath: '/downloads/Aaron-RSS-YouTube/abc.mp4',
+      title: 'My Video',
+      downloadedAt: new Date('2026-01-01T00:00:00.000Z'),
+      fileSizeBytes: 12345,
+    });
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toContain('INSERT OR REPLACE INTO downloaded_videos');
+    expect(message.params.sql).toContain('(video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)');
+    expect(message.params.params[0]).toEqual(expect.any(String));
+    expect(message.params.params.slice(1)).toEqual([
+      'feed123',
+      'art1',
+      'https://www.youtube.com/watch?v=abc',
+      '/downloads/Aaron-RSS-YouTube/abc.mp4',
+      'My Video',
+      '2026-01-01T00:00:00.000Z',
+      12345,
+    ]);
+  });
+
+  it('recordDownloadedVideo tolerates null crypto.randomUUID', async () => {
+    const db = await importDatabaseModule();
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal('crypto', {});
+
+    await db.recordDownloadedVideo({
+      feedID: null,
+      articleID: 'art1',
+      youtubeURL: 'https://www.youtube.com/watch?v=abc',
+      filePath: '/downloads/Aaron-RSS-YouTube/abc.mp4',
+      title: null,
+    });
+
+    const params = FakeWorker.instance.messages[0].params.params;
+    expect(typeof params[0]).toBe('string');
+    expect(params[0].length).toBeGreaterThan(0);
+    expect(params[6]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(params[7]).toBeNull();
+    vi.stubGlobal('crypto', originalCrypto);
+  });
+
+  it('listDownloadedVideos maps rows to camelCase objects', async () => {
+    const db = await importDatabaseModule();
+    await db.listDownloadedVideos();
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain('SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC');
+  });
+
+  it('getDownloadedVideoForArticle queries by feed and article id', async () => {
+    const db = await importDatabaseModule();
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [
+        {
+          video_id: 'vid1',
+          feed_id: 'feed123',
+          article_id: 'art1',
+          youtube_url: 'https://www.youtube.com/watch?v=abc',
+          file_path: '/downloads/Aaron-RSS-YouTube/abc.mp4',
+          title: 'My Video',
+          downloaded_at: '2026-01-01T00:00:00.000Z',
+          file_size_bytes: 42,
+        },
+      ],
+    });
+
+    const record = await db.getDownloadedVideoForArticle('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.sql).toContain('WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+    expect(record).toEqual({
+      videoID: 'vid1',
+      feedID: 'feed123',
+      articleID: 'art1',
+      youtubeURL: 'https://www.youtube.com/watch?v=abc',
+      filePath: '/downloads/Aaron-RSS-YouTube/abc.mp4',
+      title: 'My Video',
+      downloadedAt: '2026-01-01T00:00:00.000Z',
+      fileSizeBytes: 42,
+    });
+  });
+
+  it('getDownloadedVideoForArticle returns null when no record exists', async () => {
+    const db = await importDatabaseModule();
+
+    const record = await db.getDownloadedVideoForArticle('feed123', 'art1');
+
+    expect(record).toBeNull();
+  });
+
+  it('deleteDownloadedVideosForArticle deletes by feed and article id', async () => {
+    const db = await importDatabaseModule();
+    await db.deleteDownloadedVideosForArticle('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toContain('DELETE FROM downloaded_videos WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+  });
+
+  it('deleteDownloadedVideosForFeed deletes by feed id', async () => {
+    const db = await importDatabaseModule();
+    await db.deleteDownloadedVideosForFeed('feed123');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toContain('DELETE FROM downloaded_videos WHERE feed_id = ?');
+    expect(message.params.params).toEqual(['feed123']);
+  });
+
+  it('article load queries COALESCE the downloaded_videos table over the article column', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    await db.loadFeedsForDisplay();
+    await db.loadAllFeeds();
+    await db.loadFeed('feed123');
+
+    for (const message of FakeWorker.instance.messages) {
+      expect(message.params.sql).toContain('COALESCE(v.file_path, a.download_path) AS download_path');
+      expect(message.params.sql).toContain(
+        'LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id'
+      );
+    }
+  });
+
+  it('listPrunableDownloadedVideos selects old read unstarred articles with downloads', async () => {
+    const db = await importDatabaseModule();
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [
+        { article_id: 'art1', download_path: '/downloads/a.mp4' },
+        { article_id: 'art2', download_path: '/downloads/b.mp4' },
+      ],
+    });
+
+    const items = await db.listPrunableDownloadedVideos('feed123', 30);
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).not.toContain('DELETE');
+    expect(message.params.sql).toContain('read = 1');
+    expect(message.params.sql).toContain('starred = 0');
+    expect(message.params.sql).toContain('date_arrived < ?');
+    expect(message.params.sql).toContain('download_path IS NOT NULL');
+    expect(message.params.sql).toContain('download_path != ' + "''");
+    expect(message.params.params[0]).toBe('feed123');
+    expect(items).toEqual([
+      { articleID: 'art1', downloadPath: '/downloads/a.mp4' },
+      { articleID: 'art2', downloadPath: '/downloads/b.mp4' },
+    ]);
+  });
+
+  it('listPrunableDownloadedVideos uses the default retention window when omitted', async () => {
+    const db = await importDatabaseModule();
+    await db.listPrunableDownloadedVideos('feed123');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.params).toHaveLength(2);
+    // Cutoff should be roughly now minus 30 days (default retention).
+    const cutoff = new Date(message.params.params[1]);
+    const expected = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(cutoff.getTime() - expected)).toBeLessThan(60 * 1000);
+  });
+
+  it('loadDownloadedArticles joins downloaded_videos with feeds and articles', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: 'feed123',
+        feed_url: 'https://example.com/feed',
+        name: 'Example Feed',
+        home_page_url: 'https://example.com',
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: 1,
+        last_fetch_end_time: null,
+        synthetic: 0,
+        open_original_by_default: 0,
+        auto_download_youtube: 0,
+        article_id: 'art1',
+        article_url: 'https://www.youtube.com/watch?v=e2eVideosV1',
+        unique_id: 'u1',
+        title: 'Downloaded Post',
+        content_html: null,
+        content_text: null,
+        external_url: null,
+        summary: null,
+        image_url: null,
+        banner_image_url: null,
+        date_published: null,
+        date_modified: null,
+        authors: '[]',
+        tags: '[]',
+        read: 0,
+        starred: 0,
+        download_path: '/downloads/video.mp4',
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedArticles();
+
+    expect(FakeWorker.instance.messages[0].action).toBe('query');
+    expect(FakeWorker.instance.messages[0].params.sql).toContain('FROM downloaded_videos v');
+    expect(FakeWorker.instance.messages[0].params.sql).toContain('LEFT JOIN feeds f ON f.feed_id = v.feed_id');
+    expect(FakeWorker.instance.messages[0].params.sql).toContain('LEFT JOIN articles a ON a.feed_id = v.feed_id AND a.article_id = v.article_id');
+    expect(FakeWorker.instance.messages[0].params.sql).toContain('ORDER BY v.downloaded_at DESC');
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed.feedID).toBe('feed123');
+    expect(items[0].article.articleID).toBe('art1');
+    expect(items[0].article.downloadPath).toBe('/downloads/video.mp4');
+  });
+
+  it('loadDownloadedArticles surfaces dangling video rows with fallback metadata', async () => {
+    // Simulates a video whose article row was deleted but whose
+    // downloaded_videos row and file remain: feed and article columns are
+    // NULL and the title/URL come from the video queue via COALESCE.
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: null,
+        feed_url: null,
+        name: null,
+        home_page_url: null,
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: null,
+        last_fetch_end_time: null,
+        synthetic: null,
+        open_original_by_default: null,
+        auto_download_youtube: null,
+        article_id: null,
+        article_url: 'https://www.youtube.com/watch?v=e2eVideosV1',
+        unique_id: null,
+        title: 'Dangling Video',
+        content_html: null,
+        content_text: null,
+        external_url: null,
+        summary: null,
+        image_url: null,
+        banner_image_url: null,
+        date_published: null,
+        date_modified: null,
+        authors: null,
+        tags: null,
+        read: 0,
+        starred: 0,
+        download_path: '/downloads/dangling.mp4',
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedArticles();
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed).toBeNull();
+    expect(items[0].article.articleID).toBeNull();
+    expect(items[0].article.title).toBe('Dangling Video');
+    expect(items[0].article.url).toBe('https://www.youtube.com/watch?v=e2eVideosV1');
+    expect(items[0].article.downloadPath).toBe('/downloads/dangling.mp4');
+  });
+
+  it('loadDownloadedArticles keeps the feed attached when only the article row is gone', async () => {
+    // Feed still alive but its article row vanished: the video entry keeps
+    // the feed for name display and still shows the video metadata.
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: 'feed123',
+        feed_url: 'https://example.com/feed',
+        name: 'Example Feed',
+        home_page_url: null,
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: 1,
+        last_fetch_end_time: null,
+        synthetic: 0,
+        open_original_by_default: 0,
+        auto_download_youtube: 0,
+        article_id: null,
+        article_url: 'https://www.youtube.com/watch?v=e2eVideosV1',
+        unique_id: null,
+        title: 'Video Queue Title',
+        content_html: null,
+        content_text: null,
+        external_url: null,
+        summary: null,
+        image_url: null,
+        banner_image_url: null,
+        date_published: null,
+        date_modified: null,
+        authors: null,
+        tags: null,
+        read: 0,
+        starred: 0,
+        download_path: '/downloads/orphan.mp4',
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedArticles();
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed.feedID).toBe('feed123');
+    expect(items[0].feed.articles).toHaveLength(0);
+    expect(items[0].article.title).toBe('Video Queue Title');
+    expect(items[0].article.downloadPath).toBe('/downloads/orphan.mp4');
   });
 
   it('updateFeedAutoDownloadYouTube updates the feed with bound params', async () => {

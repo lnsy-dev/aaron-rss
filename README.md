@@ -2,6 +2,18 @@
 
 A vanilla JS, CSS and HTML project that runs both as an **Electron desktop app** and as a **static front-end-only web app**, with SQLite local persistence (sqlite-wasm), Chrome file APIs, Custom HTML Elements, and optional C++/Rust WebAssembly.
 
+Releases are published at <https://github.com/lnsy-dev/aaron-rss/releases>.
+
+## Features
+
+- **RSS/Atom feed reader** — subscribe to feeds, fetch articles, and read them in a clean built-in reader with defuddle extraction and markdown rendering.
+- **Auto-download YouTube videos** — when a feed item links to a YouTube video, the app can automatically download it in the background (via yt-dlp in the Electron main process), with a live progress toast and built-in playback of the downloaded file.
+- **Bluesky integration** — paste a `bsky.app` profile URL and the app discovers the profile's RSS feed automatically; post links are opened through Bluesky's public API so original posts, embedded quote posts, and replies render natively (no iframes).
+- **Mastodon integration** — the same works for Mastodon: profile URLs resolve to their Atom feeds, and post links are fetched through instance public APIs and rendered as native posts, including reply threads.
+- **Local-first storage** — feeds, articles, and settings persist in SQLite (compiled to WebAssembly) in OPFS, entirely on your own machine. No accounts, no cloud.
+- **OPML import/export** — bring your subscription list from any other reader, and take it with you when you leave.
+- **Database export/import** — snapshot the whole SQLite database to a file on disk and restore it later, via Chrome's File System Access API.
+
 ## Getting Started
 
 Install dependencies:

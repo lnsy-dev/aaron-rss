@@ -8,7 +8,12 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # One runner per OS so electron-builder builds each platform's
+        # native targets (mac dmg/zip, win nsis, linux AppImage).
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -16,9 +21,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Install dependencies and build
-        run: |
-          npm install
-          npx electron-builder --publish always
+      - name: Install dependencies
+        run: npm install
+      - name: Build renderer bundle (webpack + icons)
+        run: npm run build
+      - name: Package and publish
+        run: npx electron-builder --publish always
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

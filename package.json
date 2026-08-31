@@ -1,6 +1,6 @@
 {
   "name": "aaron-rss",
-  "version": "0.7.13",
+  "version": "0.7.14",
   "description": "A simple RSS reader as an Electron App",
   "main": "electron/main.js",
   "type": "module",
@@ -20,9 +20,9 @@
   ],
   "scripts": {
     "start": "webpack serve",
-    "build": "npm run build:icons && NODE_ENV=production webpack build",
+    "build": "npm run build:icons && cross-env NODE_ENV=production webpack build",
     "build:icons": "node scripts/build-icons.js",
-    "build:pages": "NODE_ENV=production PUBLIC_PATH=/aaron-rss/app/ webpack build && rm -rf docs/app && cp -R dist docs/app",
+    "build:pages": "cross-env NODE_ENV=production PUBLIC_PATH=/aaron-rss/app/ webpack build && rm -rf docs/app && cp -R dist docs/app",
     "electron": "node scripts/electron-dev.js",
     "electron:build": "npm run build && electron-builder",
     "build:wasm:cpp": "cd src/wasm/cpp && make",
@@ -46,6 +46,7 @@
     "@playwright/test": "^1.52.0",
     "@swc/core": "^1.9.3",
     "copy-webpack-plugin": "^14.0.0",
+    "cross-env": "^10.1.0",
     "css-loader": "^7.1.2",
     "cssnano": "^8.0.1",
     "dotenv": "17.4.2",

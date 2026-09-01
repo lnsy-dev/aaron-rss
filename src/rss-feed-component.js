@@ -16,6 +16,7 @@ import {
   loadSettings,
   saveSettings,
   updateFeedOpenOriginalByDefault,
+  loadArticleContent,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -577,7 +578,7 @@ class RSSFeedComponent extends DataroomElement {
         this.exportArticleMarkdown(article, feed);
         break;
       case 'save-file':
-        this.saveArticleToFile(article);
+        this.saveArticleToFile(article, feed);
         break;
       case 'download-youtube':
         this._downloadYouTubeVideo(article, feed, actionEl);
@@ -3740,16 +3741,32 @@ class RSSFeedComponent extends DataroomElement {
    * Save an article as a Markdown file via the File System Access API.
    *
    * @param {object} article
+   * @param {object} [feed] - The feed containing the article, used to
+   *   fetch stored content on demand when the display load omitted it
    * @returns {Promise<void>}
    */
-  async saveArticleToFile(article) {
+  async saveArticleToFile(article, feed) {
     if (!isFileSystemAccessSupported()) {
       this.showToast('File System Access API not available', 'error');
       return;
     }
 
-    const filename = this.generateArticleFilename(article);
-    const content = this.generateArticleMarkdown(article);
+    // Slim display loads omit content columns for regular articles; fetch
+    // the stored content on demand so exports keep the Content section.
+    let exportArticle = article;
+    if (!article.contentText && !article.contentHTML && feed?.feedID && article.articleID) {
+      try {
+        const stored = await loadArticleContent(article.feedID, article.articleID);
+        if (stored.contentText || stored.contentHTML) {
+          exportArticle = { ...article, contentText: stored.contentText, contentHTML: stored.contentHTML };
+        }
+      } catch (error) {
+        console.error('Failed to load article content for export:', error);
+      }
+    }
+
+    const filename = this.generateArticleFilename(exportArticle);
+    const content = this.generateArticleMarkdown(exportArticle);
     const bytes = new TextEncoder().encode(content);
 
     try {

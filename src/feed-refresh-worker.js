@@ -23,10 +23,15 @@ import {
   processNewArticles,
   updateExistingArticles,
   mergeArticles,
+  skipPersist,
 } from './lib/article-processor.js';
 
 /**
  * Build a failure record for an existing feed when fetching or parsing fails.
+ *
+ * Articles are flagged skipPersist: failure records reuse the slim
+ * (content-less) feed loaded for refresh, and re-writing those would
+ * overwrite stored content with NULLs.
  *
  * @param {object} existingFeed
  * @returns {object}
@@ -36,6 +41,7 @@ function buildFailedFeed(existingFeed) {
     ...existingFeed,
     lastFetchWasSuccessful: false,
     lastFetchEndTime: new Date(),
+    articles: existingFeed.articles.map(skipPersist),
   };
 }
 
@@ -80,6 +86,7 @@ async function refreshFeed(params) {
         lastFetchEndTime: new Date(),
         noNewItems: true,
         snapshotLinks,
+        articles: existingFeed.articles.map(skipPersist),
       };
     }
     return buildFailedFeed(existingFeed);

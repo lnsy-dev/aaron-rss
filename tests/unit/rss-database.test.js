@@ -59,7 +59,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -69,13 +69,15 @@ describe('rss database helpers', () => {
     expect(tables[3]).toContain('ALTER TABLE feeds ADD COLUMN auto_download_youtube');
     expect(tables[4]).toContain('CREATE TABLE IF NOT EXISTS articles');
     expect(tables[6]).toContain('ALTER TABLE articles ADD COLUMN download_path');
-    expect(tables[7]).toContain('CREATE TABLE IF NOT EXISTS settings');
-    expect(tables[8]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
-    expect(tables[9]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
-    expect(tables[9]).toContain('UNIQUE (feed_id, article_id)');
-    expect(tables[10]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[10]).toContain('FROM articles');
-    expect(tables[10]).toContain('download_path IS NOT NULL');
+    expect(tables[7]).toContain('ALTER TABLE articles ADD COLUMN content_hash');
+    expect(tables[8]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
+    expect(tables[9]).toContain('CREATE TABLE IF NOT EXISTS settings');
+    expect(tables[10]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
+    expect(tables[11]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[11]).toContain('UNIQUE (feed_id, article_id)');
+    expect(tables[12]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[12]).toContain('FROM articles');
+    expect(tables[12]).toContain('download_path IS NOT NULL');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -95,7 +97,7 @@ describe('rss database helpers', () => {
         return {
           id: m.id,
           ok: true,
-          result: [{ name: 'article_id' }, { name: 'download_path' }],
+          result: [{ name: 'article_id' }, { name: 'download_path' }, { name: 'content_hash' }],
         };
       }
       return { id: m.id, ok: true, result: null };
@@ -105,7 +107,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec']);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>
       m.params.sql?.includes('ALTER TABLE')
@@ -767,8 +769,89 @@ describe('rss database helpers', () => {
     expect(message.action).toBe('exec');
     expect(message.params.sql).toContain('INSERT INTO articles');
     expect(message.params.sql).toContain('ON CONFLICT(article_id) DO UPDATE SET');
+    expect(message.params.sql).toContain('content_hash');
     expect(message.params.params[0]).toBe('art1');
     expect(message.params.params[1]).toBe('feed123');
+  });
+
+  it('saveArticles skips articles flagged skipPersist', async () => {
+    const db = await importDatabaseModule();
+    const articles = [
+      {
+        articleID: 'unchanged',
+        uniqueID: 'u1',
+        title: 'Unchanged',
+        read: false,
+        starred: false,
+        skipPersist: true,
+        dateArrived: new Date('2026-01-01T00:00:00.000Z'),
+      },
+      {
+        articleID: 'changed',
+        uniqueID: 'u2',
+        title: 'Changed',
+        read: false,
+        starred: false,
+        contentHash: 'deadbeef-42',
+        dateArrived: new Date('2026-01-01T00:00:00.000Z'),
+      },
+    ];
+
+    await db.saveArticles('feed123', articles);
+
+    // Only the changed article is written.
+    expect(FakeWorker.instance.messages).toHaveLength(1);
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.params[0]).toBe('changed');
+    // Content hash is bound so future refreshes can detect no-op saves.
+    expect(message.params.params.at(-1)).toBe('deadbeef-42');
+  });
+
+  it('loadFeedsForDisplay omits regular article content but keeps social posts', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+
+    const db = await importDatabaseModule();
+    await db.loadFeedsForDisplay();
+
+    const sql = FakeWorker.instance.messages[0].params.sql;
+    // Content columns are selected via a social-URL CASE guard, not raw.
+    expect(sql).toContain('CASE WHEN');
+    expect(sql).toContain("LIKE 'https://bsky.app/profile/%/post/%'");
+    expect(sql).toContain('THEN a.content_html END AS content_html');
+    expect(sql).not.toMatch(/a\.content_html, a\.content_text/);
+    expect(sql).toContain('a.read = 0');
+  });
+
+  it('loadFeedForRefresh queries a feed without article content columns', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+
+    const db = await importDatabaseModule();
+    await db.loadFeedForRefresh('feed123');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.params).toEqual(['feed123']);
+    expect(message.params.sql).toContain('WHERE f.feed_id = ?');
+    expect(message.params.sql).not.toContain('content_html');
+    expect(message.params.sql).not.toContain('content_text');
+    expect(message.params.sql).toContain('a.content_hash');
+    expect(message.params.sql).toContain('COALESCE(v.file_path, a.download_path)');
+  });
+
+  it('loadArticleContent returns only the content columns for one article', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ content_html: '<p>Hi</p>', content_text: 'Hi' }],
+    });
+
+    const db = await importDatabaseModule();
+    const content = await db.loadArticleContent('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.sql).toBe('SELECT content_html, content_text FROM articles WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+    expect(content).toEqual({ contentHTML: '<p>Hi</p>', contentText: 'Hi' });
   });
 
   it('deleteArticlesNotInSet deletes unstarred articles outside the kept set', async () => {

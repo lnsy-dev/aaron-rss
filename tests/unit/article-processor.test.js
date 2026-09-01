@@ -5,7 +5,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mergeArticles } from '../../src/lib/article-processor.js';
+import {
+  mergeArticles,
+  processNewArticles,
+  updateExistingArticles,
+  hashArticleContent,
+  skipPersist,
+} from '../../src/lib/article-processor.js';
 
 function makeArticle(uniqueID, overrides = {}) {
   return {
@@ -70,5 +76,130 @@ describe('article processor', () => {
 
     const merged = mergeArticles(existing, fresh, 10);
     expect(merged.map((a) => a.uniqueID)).toEqual(['b', 'c', 'a']);
+  });
+
+  describe('refresh change detection (content hashing + skipPersist)', () => {
+    const feedURL = 'https://example.com/feed';
+
+    function makeParsedItem(uniqueID, overrides = {}) {
+      return {
+        uniqueID,
+        title: `Article ${uniqueID}`,
+        contentHTML: `<p>Body ${uniqueID}</p>`,
+        contentText: `Body ${uniqueID}`,
+        summary: `Summary ${uniqueID}`,
+        url: `https://example.com/posts/${uniqueID}`,
+        datePublished: new Date('2026-01-01T00:00:00.000Z'),
+        ...overrides,
+      };
+    }
+
+    it('hashArticleContent is stable for identical content and differs on change', () => {
+      const item = makeParsedItem('a');
+      const same = makeParsedItem('a');
+      const changed = makeParsedItem('a', { contentHTML: '<p>Edited</p>' });
+
+      expect(hashArticleContent(item)).toBe(hashArticleContent(same));
+      expect(hashArticleContent(item)).not.toBe(hashArticleContent(changed));
+    });
+
+    it('processNewArticles stamps fresh articles with a content hash', () => {
+      const existingFeed = { url: feedURL, articles: [] };
+      const [article] = processNewArticles([makeParsedItem('a')], existingFeed);
+
+      expect(article.contentHash).toBe(hashArticleContent(makeParsedItem('a')));
+      expect(article.skipPersist).toBeUndefined();
+    });
+
+    it('updateExistingArticles skips persisting articles whose content hash matches', () => {
+      const parsedItem = makeParsedItem('a');
+      const existingFeed = {
+        url: feedURL,
+        articles: [
+          makeArticle('a', {
+            contentHash: hashArticleContent(parsedItem),
+            dateModified: new Date('2025-06-01T00:00:00.000Z'),
+          }),
+        ],
+      };
+
+      const [updated] = updateExistingArticles([parsedItem], existingFeed);
+
+      expect(updated.skipPersist).toBe(true);
+      // Content unchanged, so dateModified must not be bumped.
+      expect(updated.dateModified).toEqual(new Date('2025-06-01T00:00:00.000Z'));
+    });
+
+    it('updateExistingArticles rewrites and re-hashes articles whose content changed', () => {
+      const parsedItem = makeParsedItem('a', { contentHTML: '<p>New body</p>', contentText: 'New body' });
+      const existingFeed = {
+        url: feedURL,
+        articles: [
+          makeArticle('a', {
+            contentHash: hashArticleContent(makeParsedItem('a')),
+            read: true,
+            dateModified: new Date('2025-06-01T00:00:00.000Z'),
+          }),
+        ],
+      };
+
+      const [updated] = updateExistingArticles([parsedItem], existingFeed);
+
+      expect(updated.skipPersist).toBeUndefined();
+      expect(updated.contentHTML).toBe('<p>New body</p>');
+      expect(updated.contentHash).toBe(hashArticleContent(parsedItem));
+      // Read state and identity survive the merge.
+      expect(updated.read).toBe(true);
+      expect(updated.articleID).toBe('id-a');
+      expect(updated.dateModified?.getTime()).toBeGreaterThan(new Date('2025-06-01T00:00:00.000Z').getTime());
+    });
+
+    it('updateExistingArticles marks pass-through articles skipPersist so slim records never clobber content', () => {
+      const existingFeed = {
+        url: feedURL,
+        // Refresh-slim record: identity fields + hash, NO content columns.
+        articles: [
+          makeArticle('gone', {
+            contentHash: 'abc-123',
+            starred: true,
+          }),
+        ],
+      };
+
+      const [updated] = updateExistingArticles([makeParsedItem('still-there')], existingFeed);
+
+      expect(updated.uniqueID).toBe('gone');
+      expect(updated.skipPersist).toBe(true);
+      expect(updated.contentHTML).toBeUndefined();
+    });
+
+    it('legacy rows without a stored hash are rewritten once and do not bump dateModified when metadata is unchanged', () => {
+      const parsedItem = makeParsedItem('a');
+      const existingFeed = {
+        url: feedURL,
+        articles: [
+          makeArticle('a', {
+            title: parsedItem.title,
+            summary: parsedItem.summary,
+            dateModified: new Date('2025-06-01T00:00:00.000Z'),
+            // No contentHash: pre-upgrade row.
+          }),
+        ],
+      };
+
+      const [updated] = updateExistingArticles([parsedItem], existingFeed);
+
+      expect(updated.skipPersist).toBeUndefined();
+      expect(updated.contentHash).toBe(hashArticleContent(parsedItem));
+      expect(updated.dateModified).toEqual(new Date('2025-06-01T00:00:00.000Z'));
+    });
+
+    it('skipPersist flags a copy of the article without mutating the original', () => {
+      const article = makeArticle('a', { contentHash: 'x' });
+      const flagged = skipPersist(article);
+
+      expect(flagged.skipPersist).toBe(true);
+      expect(article.skipPersist).toBeUndefined();
+    });
   });
 });

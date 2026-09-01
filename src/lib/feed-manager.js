@@ -17,6 +17,7 @@ import {
   loadAllFeeds as dbLoadAllFeeds,
   loadFeedsForDisplay as dbLoadFeedsForDisplay,
   loadFeed as dbLoadFeed,
+  loadFeedForRefresh as dbLoadFeedForRefresh,
   deleteFeed as dbDeleteFeed,
   updateArticleStatus as dbUpdateArticleStatus,
   markAllArticlesAsRead as dbMarkAllArticlesAsRead,
@@ -270,7 +271,10 @@ async function parseAndEnrichBlueskyFeed(feedURL, feedText) {
  */
 export async function refreshFeed(feedID, maxArticles = 50) {
   try {
-    const existingFeed = await dbLoadFeed(feedID);
+    // Load the feed without article content columns: the merge only needs
+    // identity/flag fields plus content hashes, and skipping megabytes of
+    // content keeps the sqlite worker free for interactive operations.
+    const existingFeed = await dbLoadFeedForRefresh(feedID);
     if (!existingFeed) return null;
 
     // Watched-page feeds refresh by diffing links against their stored

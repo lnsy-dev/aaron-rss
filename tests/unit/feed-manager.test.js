@@ -18,6 +18,7 @@ vi.mock('../../src/lib/database.js', () => ({
   loadFeedsForDisplay: vi.fn(),
   loadDownloadedArticles: vi.fn(),
   loadFeed: vi.fn(),
+  loadFeedForRefresh: vi.fn(),
   deleteFeed: vi.fn(),
   updateArticleStatus: vi.fn(),
   markAllArticlesAsRead: vi.fn(),
@@ -62,6 +63,7 @@ vi.mock('../../src/lib/youtube-bridge.js', () => ({
 import {
   loadAllFeeds,
   loadFeed,
+  loadFeedForRefresh,
   saveFeed,
   saveFeedMetadata,
   saveArticles,
@@ -128,7 +130,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockImplementation((feedID) => {
+    loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
 
@@ -150,7 +152,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
 
     const { refreshAllFeeds } = await importFeedManager();
     const results = await refreshAllFeeds(50);
@@ -167,7 +169,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockImplementation((feedID) => {
+    loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
 
@@ -187,7 +189,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
     const { refreshFeed } = await importFeedManager();
@@ -207,7 +209,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<html/>' });
 
     const { refreshFeed } = await importFeedManager();
@@ -241,7 +243,7 @@ describe('feed manager', () => {
     };
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
     parseFeedText.mockResolvedValue(parsedFeed);
 
@@ -262,7 +264,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: false, status: 404, text: 'Not found' });
 
     const { refreshFeed } = await importFeedManager();
@@ -295,7 +297,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
     const { refreshFeed } = await importFeedManager();
@@ -540,7 +542,7 @@ describe('feed manager', () => {
         },
       ];
 
-      loadFeed.mockResolvedValue(feeds[0]);
+      loadFeedForRefresh.mockResolvedValue(feeds[0]);
       loadPageSnapshot.mockResolvedValue({
         feedID: 'feed-snap',
         links: ['https://example.com/posts/old.html'],
@@ -585,7 +587,7 @@ describe('feed manager', () => {
         { feedID: 'feed-html', url: 'https://example.com', name: 'HTML', synthetic: true, articles: [] },
       ];
 
-      loadFeed.mockResolvedValue(feeds[0]);
+      loadFeedForRefresh.mockResolvedValue(feeds[0]);
       fetchText.mockResolvedValue({ ok: true, status: 200, text: '<html/>' });
 
       const { refreshFeed } = await importFeedManager();
@@ -618,7 +620,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
     refreshFeedInWorker.mockResolvedValue({
       ...feeds[0],
@@ -642,7 +644,7 @@ describe('feed manager', () => {
     ];
 
     loadAllFeeds.mockResolvedValue(feeds);
-    loadFeed.mockResolvedValue(feeds[0]);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
 
     const { refreshAllFeeds } = await importFeedManager();
     await refreshAllFeeds(50);

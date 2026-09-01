@@ -284,6 +284,24 @@ export async function initRSSSchema() {
     });
   }
 
+  // Migration: add the article content_hash column. It stores a cheap
+  // fingerprint of an article's content so refreshes can skip re-writing
+  // articles whose parsed content did not change.
+  if (!articleColumns.some((col) => col.name === 'content_hash')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN content_hash TEXT',
+    });
+  }
+
+  // Index for per-feed article queries. Without it every refresh-time
+  // operation (load, delete-not-in-set, purge, status updates) full-scans
+  // the articles table — including multi-kilobyte content columns — which
+  // monopolizes the sqlite worker and blocks interactive operations
+  // (mark as read, star, view loads) while feeds refresh.
+  await callWorker('exec', {
+    sql: 'CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles(feed_id)',
+  });
+
   await callWorker('exec', {
     sql: `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -380,6 +398,7 @@ function articleToRow(article, feedID) {
     article.starred ? 1 : 0,
     article.downloadPath || null,
     article.dateArrived ? article.dateArrived.toISOString() : new Date().toISOString(),
+    article.contentHash || null,
   ];
 }
 
@@ -432,6 +451,7 @@ function rowsToFeeds(rows) {
         starred: Boolean(row.starred),
         downloadPath: row.download_path || undefined,
         dateArrived: new Date(row.date_arrived),
+        contentHash: row.content_hash || undefined,
       });
     }
   }
@@ -472,8 +492,8 @@ export async function saveFeed(feed) {
   for (const article of feed.articles) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: articleToRow(article, feed.feedID),
     });
   }
@@ -526,11 +546,17 @@ export async function saveFeedMetadata(feed) {
  * @returns {Promise<void>}
  */
 export async function saveArticles(feedID, articles) {
-  for (const article of articles) {
+  // Articles flagged skipPersist by the refresh merge are already stored
+  // byte-identical (content hash matches) — skipping them keeps refresh
+  // write bursts off the sqlite worker so interactive operations stay
+  // responsive. It also prevents slim (content-less) pass-through records
+  // from clobbering stored content with NULLs.
+  const writable = articles.filter((article) => !article.skipPersist);
+  for (const article of writable) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(article_id) DO UPDATE SET
           feed_id = excluded.feed_id,
           unique_id = excluded.unique_id,
@@ -549,7 +575,8 @@ export async function saveArticles(feedID, articles) {
           read = excluded.read,
           starred = excluded.starred,
           download_path = excluded.download_path,
-          date_arrived = excluded.date_arrived`,
+          date_arrived = excluded.date_arrived,
+          content_hash = excluded.content_hash`,
       params: articleToRow(article, feedID),
     });
   }
@@ -635,10 +662,23 @@ export function runDatabaseMaintenance() {
 }
 
 /**
+ * SQL predicate matching social post URLs (Bluesky/Mastodon). Social posts
+ * render their embedded content straight in the list, so unlike regular
+ * articles their content columns are loaded for display.
+ * @type {string}
+ */
+const SOCIAL_URL_SQL =
+  "(a.url LIKE 'https://bsky.app/profile/%/post/%' OR a.url LIKE 'https://%/@%/%' OR a.url LIKE 'https://%users/%statuses/%')";
+
+/**
  * Load every feed with its unread articles for the main list UI.
  *
  * This avoids pulling read articles (which may be numerous and large) into
- * the renderer just to be discarded by the unread-only filter.
+ * the renderer just to be discarded by the unread-only filter. Article
+ * *content* columns are likewise excluded for regular articles: the list
+ * only renders summaries, and full content can be megabytes that tie up
+ * the sqlite worker while feeds refresh. Social posts keep their content
+ * because it is rendered inline in the list.
  *
  * @returns {Promise<Array<object>>}
  */
@@ -647,10 +687,12 @@ export function loadFeedsForDisplay() {
     sql: `SELECT
         f.feed_id, f.url AS feed_url, f.name, f.home_page_url, f.icon_url, f.favicon_url,
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
-        a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
+        a.article_id, a.unique_id, a.title,
+        CASE WHEN ${SOCIAL_URL_SQL} THEN a.content_html END AS content_html,
+        CASE WHEN ${SOCIAL_URL_SQL} THEN a.content_text END AS content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
-        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id AND a.read = 0
       LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
@@ -693,7 +735,7 @@ export function loadFeed(feedID) {
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
-        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
       LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
@@ -703,6 +745,58 @@ export function loadFeed(feedID) {
     const feeds = rowsToFeeds(rows);
     return feeds.length > 0 ? feeds[0] : null;
   });
+}
+
+/**
+ * Load a single feed for a refresh cycle.
+ *
+ * Identical to loadFeed except that article *content* columns are omitted:
+ * the refresh merge only needs identity/flag fields plus the content hash,
+ * so skipping megabytes of content keeps the sqlite worker available for
+ * interactive operations. The merged result carries fresh parsed content
+ * for every changed article, and unchanged articles are never re-written.
+ *
+ * @param {string} feedID
+ * @returns {Promise<object|null>}
+ */
+export function loadFeedForRefresh(feedID) {
+  return callWorker('query', {
+    sql: `SELECT
+        f.feed_id, f.url AS feed_url, f.name, f.home_page_url, f.icon_url, f.favicon_url,
+        f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
+        a.article_id, a.unique_id, a.title,
+        a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
+      FROM feeds f
+      LEFT JOIN articles a ON a.feed_id = f.feed_id
+      LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
+      WHERE f.feed_id = ?`,
+    params: [feedID],
+  }).then((rows) => {
+    const feeds = rowsToFeeds(rows);
+    return feeds.length > 0 ? feeds[0] : null;
+  });
+}
+
+/**
+ * Load just the content columns for one article.
+ *
+ * Used on demand (e.g. markdown export) for articles whose content was
+ * not loaded by the slim display query.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<{contentHTML: string|null, contentText: string|null}>}
+ */
+export function loadArticleContent(feedID, articleID) {
+  return callWorker('query', {
+    sql: 'SELECT content_html, content_text FROM articles WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  }).then((rows) => ({
+    contentHTML: rows[0]?.content_html ?? null,
+    contentText: rows[0]?.content_text ?? null,
+  }));
 }
 
 /**

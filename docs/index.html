@@ -14,183 +14,78 @@
   <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/lnsy-dev/aaron-rss/main/assets/logo.svg">
   <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/lnsy-dev/aaron-rss/main/assets/logo.png">
 
-  <style>
-    :root {
-      --background-color: #f2ece2;
-      --foreground-color: #444;
-      --secondary-color: rgba(0, 0, 0, 0.02);
-      --trinary-color: #666;
-      --accent-color: #9F1113;
-      --card-bg: #faf6ee;
-      --border-color: rgba(0, 0, 0, 0.12);
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
-      background-color: var(--background-color);
-      color: var(--foreground-color);
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      line-height: 1.5;
-    }
-
-    main {
-      width: 100%;
-      max-width: 720px;
-      padding: 4rem 1.5rem 3rem;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      text-align: center;
-    }
-
-    .logo {
-      width: 96px;
-      height: 96px;
-      margin-bottom: 1.5rem;
-    }
-
-    h1 {
-      font-size: 2.75rem;
-      letter-spacing: -0.02em;
-      margin-bottom: 0.75rem;
-    }
-
-    .tagline {
-      font-size: 1.25rem;
-      color: var(--trinary-color);
-      max-width: 34rem;
-      margin-bottom: 2.25rem;
-    }
-
-    .install-steps {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 1.25rem 1.5rem;
-      text-align: left;
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
-    }
-
-    .install-steps p { font-size: 0.95rem; }
-
-    .install-steps a { color: var(--accent-color); }
-
-    .install-meta code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.85rem;
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      padding: 0.1rem 0.3rem;
-    }
-
-    .install-meta {
-      margin-top: 0.75rem;
-      font-size: 0.9rem;
-      color: var(--trinary-color);
-    }
-
-    .features {
-      margin-top: 3.5rem;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem;
-      width: 100%;
-    }
-
-    .feature {
-      background: var(--card-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 1.25rem;
-      text-align: left;
-    }
-
-    .feature h2 {
-      font-size: 1rem;
-      margin-bottom: 0.35rem;
-    }
-
-    .feature p {
-      font-size: 0.9rem;
-      color: var(--trinary-color);
-    }
-
-    footer {
-      margin-top: auto;
-      padding: 2rem 1.5rem;
-      font-size: 0.85rem;
-      color: var(--trinary-color);
-    }
-
-    footer a { color: var(--accent-color); }
-
-    @media (max-width: 480px) {
-      h1 { font-size: 2.1rem; }
-      .tagline { font-size: 1.05rem; }
-    }
-  </style>
+  <link rel="stylesheet" href="./index.css">
 </head>
 <body>
-  <main>
+  <header>
     <img class="logo" src="https://raw.githubusercontent.com/lnsy-dev/aaron-rss/main/assets/logo.png"
          alt="Aaron RSS logo" width="96" height="96">
-
     <h1>Aaron RSS</h1>
-    <p class="tagline">Minimalist RSS Reader.</p>
+    <p style="text-align: center;" class="tagline">Minimalist RSS Reader</p>
+  </header>
 
-    <!-- Grab a release build instead of building from source -->
-    <div class="install-steps">
-      <p><strong>1.</strong> Go to the <a href="https://github.com/lnsy-dev/aaron-rss/releases">releases page</a>.</p>
-      <p><strong>2.</strong> Download the latest release for your platform.</p>
-      <p><strong>3.</strong> Install and run Aaron RSS.</p>
-    </div>
+  <main>
+    <section>
+      <!-- Grab a release build instead of building from source -->
+      <article class="install-steps">
+        <ul>
+          <li><a href="https://github.com/lnsy-dev/aaron-rss/releases/download/untagged-bc5c5e4d37120fef9cb8/Aaron-RSS-0.7.15-arm64-mac.zip">Apple Arm</a> </li>
+          <li><a href="https://github.com/lnsy-dev/aaron-rss/releases/download/untagged-bc5c5e4d37120fef9cb8/Aaron-RSS-Setup-0.7.15.exe">Windows EXE</a>
+          </li>
+          <li><a href="https://github.com/lnsy-dev/aaron-rss/releases/download/untagged-bc5c5e4d37120fef9cb8/Aaron-RSS-0.7.15.AppImage">Linux AppImage</a>
+</li>
+        </ul>
+      </article>
 
-    <p class="install-meta">Prefer building from source? Clone the repo, run <code>npm install</code>, <code>npm run build</code>, then <code>npm run electron</code>.</p>
+      <p class="install-meta">Prefer building from source? Clone the repo, run <code>npm install</code>, <code>npm run build</code>, then <code>npm run electron</code>.</p>
+
+    </section>
 
     <section class="features">
-      <div class="feature">
+      <article class="feature">
         <h2>Local-first</h2>
         <p>Feeds and articles are persisted in SQLite (via OPFS) entirely on your device.</p>
-      </div>
-      <div class="feature">
+      </article>
+      <article class="feature">
         <h2>Reader built in</h2>
         <p>Clean article reading with defuddle extraction and markdown rendering.</p>
-      </div>
-      <div class="feature">
+      </article>
+      <article class="feature">
         <h2>Auto-download YouTube videos</h2>
         <p>Feed items that link to YouTube videos are downloaded automatically in the background, with live progress and offline playback.</p>
-      </div>
-      <div class="feature">
+      </article>
+      <article class="feature">
         <h2>Bluesky</h2>
         <p>Add a Bluesky profile and its RSS feed is discovered for you. Open original posts, quote posts and replies natively.</p>
-      </div>
-      <div class="feature">
+      </article>
+      <article class="feature">
         <h2>Mastodon</h2>
         <p>Mastodon profile URLs resolve to their Atom feeds, and posts — including reply threads — render natively via instance public APIs.</p>
-      </div>
-      <div class="feature">
+      </article>
+      <article class="feature">
         <h2>OPML import/export</h2>
         <p>Bring your subscriptions from any other reader, and take them with you.</p>
-      </div>
+      </article>
     </section>
-    <section>
-      <h2>Support AaronRSS</h2>
-      <p>Support me on Ko-Fi: <a href="https://ko-fi.com/lnsy47369">Ko-Fi</a></p>
+
+    <section class="support">
+      <h2>Support</h2>
+      <article >
+      <p style="text-align: center"><a href="https://ko-fi.com/lnsy47369">Support me on Ko-Fi</a></p>
+    </article>
     </section>
   </main>
 
 
+
   <footer>
-    Aaron RSS is <a href="https://github.com/lnsy-dev/aaron-rss">open source</a> under the Unlicense.
-    Grab the source on GitHub, or check the <a href="https://github.com/lnsy-dev/aaron-rss/releases">releases page</a> for the latest version, and run it locally.
+    <p>Aaron RSS is <a href="https://github.com/lnsy-dev/aaron-rss">open source</a> under the Unlicense.
+    Grab the source on GitHub, or check the <a href="https://github.com/lnsy-dev/aaron-rss/releases">releases page</a> for the latest version, and run it locally.</p>
   </footer>
+
+  <script src="https://lnsy-dev.github.io/simple-github-icon/github-icon.min.js"></script>
+<github-icon light style="position: fixed; right: 1em; top: 1em; width: 2em; height: 2em" href="https://github.com/lnsy-dev/aaron-rss"></github-icon>
+
+
 </body>
 </html>

@@ -1,0 +1,342 @@
+/**
+ * Aaron RSS landing page — single stylesheet.
+ *
+ * Combined from lnsy-dev.github.io's dataroom-theme.css and
+ * layout.css, pruned to the rules this page actually uses.
+ * The visual language (colors, fonts, letterpress shadows,
+ * dark-mode values) matches lnsy-dev.github.io exactly.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Roboto+Condensed:ital,wght@0,100..900;1,100..900&display=swap');
+
+/* ── Theme: light ───────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+
+  --foreground: #1a1812;
+  --background: #f2ece2;
+  --accent: #9f1113;
+  --secondary: #6b0c0e;
+  --muted: #6b6759;
+  --surface-alt: #d2cec0;
+  --border: rgba(0, 0, 0, 0.2);
+  --color-heading: var(--foreground);
+
+  /* Fonts */
+  --font-header: 'Roboto Condensed', sans-serif;
+
+  --font-ui: 'Roboto Condensed', sans-serif;
+  --font-body: "EB Garamond", serif;
+
+  /* Modular scale (minor third, 1.2 ratio)
+     — body 20px → h2 28.8px → h1 34.56px */
+  --type-body: 1.25rem;
+  --type-h2: 1.8rem;
+  --type-h1: 2.16rem;
+  --leading-body: 1.4;
+  --leading-heading: 1.15;
+
+  /* Spacing rhythm (multiples of body line-height ≈ 22.4px) */
+  --rhythm-xs: 0.5rem;
+  --rhythm-sm: 1rem;
+  --rhythm-md: 1.5rem;
+  --rhythm-lg: 2rem;
+  --rhythm-xl: 3rem;
+
+  /* Measure */
+  --measure: 60ch;
+
+  /* Shadows — letterpress text effect on body text, plus
+     bevel-style box shadow for cards */
+  --text-shadow:
+    -0.5px -0.5px 0 rgba(0, 0, 0, 0.50),
+     0.5px  0.5px 0 rgba(255, 255, 255, 1);
+  --box-shadow:
+    0.5px 0.5px 0 rgba(0, 0, 0, 0.40),
+    -0.5px -0.5px 0 rgba(255, 255, 255, 1);
+}
+
+/* ── Theme: dark (matches lnsy-dev.github.io) ───────────── */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --foreground: #e5c7a9;
+    --background: #1b1c25;
+    --accent: #ffe6bd;
+    --secondary: #8b7963;
+    --muted: #aa9d7e;
+    --surface-alt: #1b1c25;
+    --border: #34312d;
+
+    /* Letterpress adapted for a dark surface: deepened dark
+       shadow, softened light highlight */
+    --text-shadow:
+      -0.5px -0.5px 0 rgba(0, 0, 0, 0.60),
+       0.5px  0.5px 0 rgba(255, 255, 255, 0.12);
+    --box-shadow:
+      0.5px 0.5px 0 rgba(0, 0, 0, 0.60),
+      -0.5px -0.5px 0 rgba(255, 255, 255, 0.12);
+  }
+}
+
+/* ── Reset ─────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ── Document / global prose ───────────────────────────── */
+
+html {
+  scroll-behavior: smooth;
+  font-size: 100%;
+}
+
+body {
+  padding: 1em;
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  line-height: var(--leading-body);
+  color: var(--foreground);
+  background-color: var(--background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Bringhurst §2.2.2: hyphenate to soften the rag */
+  hyphens: auto;
+  -webkit-hyphens: auto;
+
+  /* Letterpress engrave: dark shadow upper-left + light
+     highlight lower-right, text pressed into the paper */
+  text-shadow: var(--text-shadow);
+
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures discretionary-ligatures;
+  /* Oldstyle figures sit on the baseline like lowercase letters */
+  font-variant-numeric: oldstyle-nums proportional-nums;
+  font-feature-settings:
+    'kern' 1,
+    'liga' 1,
+    'dlig' 1,
+    'calt' 1,
+    'onum' 1,
+    'pnum' 1;
+}
+
+header, main, footer {
+  max-width: var(--measure);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--rhythm-md);
+  padding-right: var(--rhythm-md);
+}
+
+/* ── Headings ──────────────────────────────────────────── */
+
+h1, h2 {
+  font-family: var(--font-header);
+  font-weight: 400;
+  font-style: normal;
+  color: var(--color-heading);
+  line-height: var(--leading-heading);
+  padding-bottom: var(--rhythm-xs);
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures;
+  font-feature-settings: 'kern' 1, 'liga' 1;
+}
+
+h1 {
+  font-size: var(--type-h1);
+  padding-top: var(--rhythm-xl);
+}
+
+h2 {
+  font-size: var(--type-h2);
+  padding-top: 1.5em;
+}
+
+/* ── Paragraphs, lists, links, code ────────────────────── */
+
+p {
+  text-align: left;
+  margin-bottom: 1.5em;
+}
+
+p:last-child {
+  margin-bottom: 0;
+}
+
+ol {
+  margin-bottom: var(--rhythm-md);
+  padding-left: var(--rhythm-md);
+}
+
+li {
+  margin-bottom: var(--rhythm-xs);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: var(--secondary);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background-color: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  white-space: nowrap;
+}
+
+/* ── Header ────────────────────────────────────────────── */
+
+header {
+  padding-top: var(--rhythm-lg);
+  padding-bottom: var(--rhythm-md);
+  text-align: center;
+}
+
+header h1 {
+  padding-top: 0.5em;
+  padding-bottom: 0;
+  text-transform: uppercase;
+}
+
+/* Tagline — small-caps, Bringhurst §13 */
+.tagline {
+  font-variant: small-caps;
+  font-size: 0.95em;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: var(--rhythm-sm);
+}
+
+.logo {
+  width: 96px;
+  height: 96px;
+  display: block;
+  margin: 0 auto var(--rhythm-sm);
+  filter: drop-shadow(0.5px 0.5px 0 rgba(0, 0, 0, 0.40));
+}
+
+/* ── Main content ──────────────────────────────────────── */
+
+main {
+  padding-top: var(--rhythm-lg);
+  padding-bottom: var(--rhythm-lg);
+}
+
+/* Sections — use white space, not rules, to group */
+section {
+  margin-bottom: var(--rhythm-xl);
+}
+
+section:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Download / install card ───────────────────────────── */
+
+.install-steps {
+  background-color: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: var(--box-shadow);
+  padding: var(--rhythm-sm) var(--rhythm-md);
+  margin-bottom: var(--rhythm-md);
+  text-align: center;
+  font-family: var(--font-ui);
+}
+
+.install-steps a {
+  font-family: var(--font-ui);
+}
+
+
+
+.install-steps ul {
+  margin-bottom: 0;
+}
+
+.install-steps li {
+  list-style: none;
+}
+
+.install-meta {
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+/* ── Feature grid ──────────────────────────────────────── */
+
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--rhythm-sm);
+  margin-bottom: var(--rhythm-xl);
+}
+
+.feature {
+  background-color: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: var(--box-shadow);
+  padding: var(--rhythm-sm);
+}
+
+.feature h2 {
+  font-size: calc(var(--type-body) * 1.1);
+  padding-top: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.feature p {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+/* ── Support / Ko-Fi ───────────────────────────────────── */
+
+.support {
+  text-align: center;
+}
+
+/* ── Footer ────────────────────────────────────────────── */
+
+footer {
+  margin-top: var(--rhythm-xl);
+  padding-top: var(--rhythm-md);
+  padding-bottom: var(--rhythm-lg);
+  text-align: center;
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+footer p {
+  text-align: center;
+}
+
+/* ── Narrow screens ────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  .features {
+    grid-template-columns: 1fr;
+  }
+}

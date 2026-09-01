@@ -501,7 +501,7 @@ body command-panel dialog {
 .rss-button-danger,
 .rss-modal-buttons button {
   background: var(--background-color);
-  border: 1px solid var(--quaternary-color);
+  border: 1px solid var(--neutral-color);
   border-radius: 4px;
   padding: 0.35rem 0.75rem;
   font-size: 0.85rem;
@@ -663,6 +663,7 @@ body command-panel dialog {
 .rss-thanks-message {
   line-height: 1.5;
   color: var(--foreground-color);
+  font-feature-settings: normal;
 }
 
 .rss-thanks-kofi-button {

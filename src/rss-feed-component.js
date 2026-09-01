@@ -186,6 +186,46 @@ class RSSFeedComponent extends DataroomElement {
     this.contentArea.addEventListener('click', this._contentClickHandler);
 
     this._setupImageContextMenu();
+
+    // Thank-you dialog on startup. Skipped for automated browsers (e2e
+    // tests) so the modal overlay does not block scripted interactions.
+    if (!navigator.webdriver) {
+      this.showThanksModal();
+    }
+  }
+
+  /**
+   * Show a thank-you modal with a link to the project's Ko-fi page.
+   *
+   * @returns {void}
+   */
+  showThanksModal() {
+    const modal = this.createModal('Welcome to Aaron RSS');
+
+    const message = document.createElement('p');
+    message.className = 'rss-thanks-message';
+    message.textContent = 'Thank you for using Aaron RSS! If you find it useful and would like to support its development, consider buying me a coffee.';
+    modal.body.appendChild(message);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'rss-modal-buttons';
+
+    const kofiButton = document.createElement('button');
+    kofiButton.className = 'rss-button-primary rss-thanks-kofi-button';
+    kofiButton.textContent = '☕ Support on Ko-fi';
+    kofiButton.setAttribute('aria-label', 'Support Aaron RSS on Ko-fi');
+    kofiButton.addEventListener('click', () => {
+      this.openExternalURL('https://ko-fi.com/lnsy47369');
+      this.closeModal();
+    });
+    buttonContainer.appendChild(kofiButton);
+
+    const closeButton = document.createElement('button');
+    closeButton.textContent = 'Close';
+    closeButton.addEventListener('click', () => this.closeModal());
+    buttonContainer.appendChild(closeButton);
+
+    modal.body.appendChild(buttonContainer);
   }
 
   /**

@@ -34,6 +34,10 @@ describe('feed-finder', () => {
     return { ok: false, status: 404, text: async () => 'Not found' };
   }
 
+  function mockJSONResponse(text, contentType = 'application/json') {
+    return { ok: true, status: 200, headers: { 'content-type': contentType }, text: async () => text };
+  }
+
   it('decodes HTML entities in discovered feed titles', async () => {
     const html = `
       <!DOCTYPE html>
@@ -209,5 +213,62 @@ describe('feed-finder', () => {
 
     expect(feeds).toHaveLength(1);
     expect(feeds[0].url).toBe('https://mastodon.social/@handle.atom');
+  });
+
+  it('does not treat JSON error bodies as feeds, even when they mention version and items', async () => {
+    const junk = JSON.stringify({
+      version: 2,
+      items: 'not an array',
+      error: 'Not found',
+    });
+
+    fetch.mockImplementation(async () => mockJSONResponse(junk));
+
+    const { findFeeds } = await importFeedFinder();
+    const feeds = await findFeeds('https://example.com/');
+
+    expect(feeds).toHaveLength(0);
+  });
+
+  it('does not treat HTML pages as JSON feeds', async () => {
+    const junk = '{ "meta": { "version": 3 }, "data": { "items": [1, 2] } }';
+
+    fetch.mockImplementation(async () => mockJSONResponse(junk));
+
+    const { findFeeds } = await importFeedFinder();
+    const feeds = await findFeeds('https://example.com/');
+
+    expect(feeds).toHaveLength(0);
+  });
+
+  it('discovers JSON Feed documents served as JSON', async () => {
+    const jsonFeed = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1.1',
+      title: 'Example JSON Feed',
+      home_page_url: 'https://example.com',
+      items: [{ id: '1', title: 'First post', url: 'https://example.com/1' }],
+    });
+
+    fetch.mockImplementation(async (url) => {
+      if (url === 'https://example.com/feed.json') {
+        return mockJSONResponse(jsonFeed, 'application/feed+json');
+      }
+      return mockNotFound();
+    });
+
+    const { findFeeds } = await importFeedFinder();
+    const feeds = await findFeeds('https://example.com/feed.json');
+
+    expect(feeds).toHaveLength(1);
+    expect(feeds[0].url).toBe('https://example.com/feed.json');
+  });
+
+  it('does not crash discovery when a feed content type carries a broken body', async () => {
+    fetch.mockImplementation(async () => mockJSONResponse('{not json', 'application/feed+json'));
+
+    const { findFeeds } = await importFeedFinder();
+    const feeds = await findFeeds('https://example.com/');
+
+    expect(Array.isArray(feeds)).toBe(true);
   });
 });

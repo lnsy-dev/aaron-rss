@@ -67,4 +67,72 @@ describe('fetchBytes', () => {
     expect(response.ok).toBe(false);
     expect(response.status).toBe(0);
   });
+
+  it('normalizes scheme-less URLs before fetching', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh) Chrome' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '<rss></rss>',
+      headers: { get: () => 'text/xml' },
+    }));
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    await fetchText('example.com/feed');
+
+    expect(global.fetch).toHaveBeenCalledWith('https://example.com/feed');
+  });
+});
+
+describe('fetchText', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the Electron bridge in Electron and forwards its result', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla Electron' });
+    vi.stubGlobal('window', {
+      electron: {
+        fetchText: vi.fn().mockResolvedValue({ ok: true, status: 200, text: '<rss/>', contentType: 'text/xml' }),
+      },
+    });
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    const response = await fetchText('https://example.com/rss');
+
+    expect(window.electron.fetchText).toHaveBeenCalledWith('https://example.com/rss');
+    expect(response.ok).toBe(true);
+    expect(response.text).toBe('<rss/>');
+    expect(response.contentType).toBe('text/xml');
+  });
+
+  it('falls back to renderer fetch outside Electron and reports the content type', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh) Chrome' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => 'Not found',
+      headers: { get: () => 'application/json' },
+    }));
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    const response = await fetchText('https://example.com/missing');
+
+    expect(response.ok).toBe(false);
+    expect(response.status).toBe(404);
+    expect(response.contentType).toBe('application/json');
+  });
+
+  it('returns a failed response instead of throwing on network errors', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh) Chrome' });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    const response = await fetchText('https://example.com/broken');
+
+    expect(response.ok).toBe(false);
+    expect(response.status).toBe(0);
+    expect(response.contentType).toBe('');
+  });
 });

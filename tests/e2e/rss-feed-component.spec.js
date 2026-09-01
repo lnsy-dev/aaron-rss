@@ -3187,4 +3187,44 @@ test.describe('Aaron RSS', () => {
       ).toHaveCount(1);
     });
   });
+
+  test.describe('Startup thank-you modal', () => {
+    // The modal is auto-skipped for automated browsers so it never blocks
+    // scripted interactions; invoke it directly and verify its contents.
+    test('shows a thank-you modal with a Ko-fi support link', async ({ page }) => {
+      const component = page.locator('rss-feed-component');
+      await expect(component).toHaveJSProperty('initialized', true);
+
+      // The modal must not be auto-opened in automation.
+      await expect(page.locator('.rss-modal-overlay')).toHaveCount(0);
+
+      await component.evaluate((el) => el.showThanksModal());
+
+      const overlay = page.locator('.rss-modal-overlay');
+      await expect(overlay).toBeVisible();
+      await expect(overlay.locator('h2')).toHaveText('Welcome to Aaron RSS');
+      await expect(overlay.locator('.rss-thanks-message'))
+        .toContainText('Thank you for using Aaron RSS');
+
+      const kofiButton = overlay.locator('.rss-thanks-kofi-button');
+      await expect(kofiButton).toHaveText('☕ Support on Ko-fi');
+
+      // Stub the Electron bridge so the click does not open a real tab.
+      await page.evaluate(() => {
+        window.electron = {
+          openExternal: async (url) => {
+            window.__kofiOpenedURL = url;
+          },
+        };
+      });
+
+      // Closing the Ko-fi button's modal returns to the app chrome.
+      await kofiButton.click();
+      await expect(overlay).toBeHidden();
+      await expect(page.locator('.rss-hamburger')).toBeVisible();
+      await expect
+        .poll(() => page.evaluate(() => window.__kofiOpenedURL))
+        .toBe('https://ko-fi.com/lnsy47369');
+    });
+  });
 });

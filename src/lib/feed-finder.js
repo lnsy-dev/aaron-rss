@@ -82,6 +82,13 @@ export async function findFeeds(url) {
 /**
  * Check whether a URL returns a valid feed.
  *
+ * Accepts a response when the content type identifies a feed, the body
+ * sniffs as RSS/Atom XML, or the body parses as a JSON Feed document.
+ * JSON is validated strictly (must start with `{`, declare a feed
+ * version, and carry an items array) so arbitrary JSON responses — e.g.
+ * JSON error pages that mention "version" — are not misidentified as
+ * feeds and later crash the XML parser.
+ *
  * @param {string} url
  * @returns {Promise<boolean>}
  */
@@ -92,7 +99,7 @@ async function isFeedURL(url) {
       return false;
     }
 
-    const contentType = (response.headers?.['content-type'] || '').toLowerCase();
+    const contentType = (response.contentType || '').toLowerCase();
     const content = response.text || '';
 
     const isFeedContentType =
@@ -104,16 +111,46 @@ async function isFeedURL(url) {
       return true;
     }
 
-    const lowerContent = content.toLowerCase();
-    return (
-      lowerContent.includes('<rss') ||
-      lowerContent.includes('<feed') ||
-      lowerContent.includes('<atom') ||
-      lowerContent.includes('<rdf') ||
-      (lowerContent.includes('"version"') && lowerContent.includes('"items"'))
-    );
+    const trimmed = content.trim();
+    if (trimmed.startsWith('<')) {
+      // XML-ish: only accept documents that sniff as a feed.
+      const lowerContent = trimmed.toLowerCase();
+      return (
+        lowerContent.includes('<rss') ||
+        lowerContent.includes('<feed') ||
+        lowerContent.includes('<atom') ||
+        lowerContent.includes('<rdf')
+      );
+    }
+
+    if (trimmed.startsWith('{')) {
+      // JSON: only accept actual JSON Feed documents.
+      return isJSONFeedDocument(trimmed);
+    }
+
+    return false;
   } catch (error) {
     console.error('Error checking feed URL', url, error);
+    return false;
+  }
+}
+
+/**
+ * Check whether text is a valid JSON Feed document.
+ *
+ * @param {string} text - JSON text starting with '{'
+ * @returns {boolean}
+ */
+function isJSONFeedDocument(text) {
+  try {
+    const json = JSON.parse(text);
+    return Boolean(
+      json &&
+      typeof json === 'object' &&
+      typeof json.version === 'string' &&
+      Array.isArray(json.items)
+    );
+  } catch {
     return false;
   }
 }

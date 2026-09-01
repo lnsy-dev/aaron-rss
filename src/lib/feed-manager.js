@@ -27,7 +27,7 @@ import {
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
 } from './database.js';
-import { fetchText } from './rss-network.js';
+import { fetchText, normalizeFeedURL } from './rss-network.js';
 import { parseFeedText } from './rss-parser.js';
 import { findFeeds } from './feed-finder.js';
 import { generateRSSFromHTML } from './html-to-rss.js';
@@ -66,12 +66,16 @@ export async function addFeed(url, name, synthetic = false) {
   try {
     let parsedFeed;
 
+    // Scheme-less entries like "example.com/feed" must be resolved to an
+    // absolute URL before fetching (and for the feedID/feed record).
+    url = normalizeFeedURL(url);
+
     if (synthetic) {
       parsedFeed = await generateRSSFromHTML(url);
     } else {
       const response = await fetchText(url);
       if (!response.ok) {
-        throw new Error(`Failed to fetch feed: ${response.status}`);
+        throw new Error(`Failed to fetch feed (${url}): HTTP ${response.status}`);
       }
       parsedFeed = await parseFeedText(response.text, url);
     }

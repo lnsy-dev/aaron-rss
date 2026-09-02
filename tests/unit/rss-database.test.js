@@ -52,6 +52,9 @@ describe('rss database helpers', () => {
       if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(articles)') {
         return { id: m.id, ok: true, result: [{ name: 'article_id' }, { name: 'feed_id' }] };
       }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(downloaded_videos)') {
+        return { id: m.id, ok: true, result: [{ name: 'video_id' }, { name: 'file_path' }] };
+      }
       return { id: m.id, ok: true, result: null };
     };
 
@@ -59,7 +62,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -74,10 +77,13 @@ describe('rss database helpers', () => {
     expect(tables[9]).toContain('CREATE TABLE IF NOT EXISTS settings');
     expect(tables[10]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
     expect(tables[11]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[11]).toContain('seen INTEGER NOT NULL DEFAULT 0');
     expect(tables[11]).toContain('UNIQUE (feed_id, article_id)');
-    expect(tables[12]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[12]).toContain('FROM articles');
-    expect(tables[12]).toContain('download_path IS NOT NULL');
+    expect(tables[12]).toContain('PRAGMA table_info(downloaded_videos)');
+    expect(tables[13]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
+    expect(tables[14]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[14]).toContain('FROM articles');
+    expect(tables[14]).toContain('download_path IS NOT NULL');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -100,6 +106,13 @@ describe('rss database helpers', () => {
           result: [{ name: 'article_id' }, { name: 'download_path' }, { name: 'content_hash' }],
         };
       }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(downloaded_videos)') {
+        return {
+          id: m.id,
+          ok: true,
+          result: [{ name: 'video_id' }, { name: 'file_path' }, { name: 'seen' }],
+        };
+      }
       return { id: m.id, ok: true, result: null };
     };
 
@@ -107,7 +120,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec']);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>
       m.params.sql?.includes('ALTER TABLE')
@@ -332,7 +345,9 @@ describe('rss database helpers', () => {
     const message = FakeWorker.instance.messages[0];
     expect(message.action).toBe('exec');
     expect(message.params.sql).toContain('INSERT OR REPLACE INTO downloaded_videos');
-    expect(message.params.sql).toContain('(video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)');
+    expect(message.params.sql).toContain('(video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen)');
+    // A fresh download record is always ready (unwatched).
+    expect(message.params.sql).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)');
     expect(message.params.params[0]).toEqual(expect.any(String));
     expect(message.params.params.slice(1)).toEqual([
       'feed123',
@@ -454,6 +469,71 @@ describe('rss database helpers', () => {
     }
   });
 
+  it('loadFeedsForDisplay excludes ready (unwatched) downloaded videos from the main feed', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    await db.loadFeedsForDisplay();
+
+    const sql = FakeWorker.instance.messages[0].params.sql;
+    expect(sql).toContain('NOT EXISTS');
+    expect(sql).toContain('rv.feed_id = a.feed_id AND rv.article_id = a.article_id');
+    expect(sql).toContain('rv.seen = 0');
+    expect(sql).toContain("rv.file_path IS NOT NULL AND rv.file_path != ''");
+  });
+
+  it('other feed loaders do not exclude ready downloaded videos', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    await db.loadAllFeeds();
+    await db.loadFeed('feed123');
+
+    for (const message of FakeWorker.instance.messages) {
+      expect(message.params.sql).not.toContain('NOT EXISTS');
+    }
+  });
+
+  it('countUnseenDownloadedVideos returns the ready count', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ ready_count: 3 }],
+    });
+
+    const db = await importDatabaseModule();
+    const count = await db.countUnseenDownloadedVideos();
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain('SELECT COUNT(*) AS ready_count FROM downloaded_videos');
+    expect(message.params.sql).toContain('WHERE seen = 0');
+    expect(message.params.sql).toContain("file_path IS NOT NULL AND file_path != ''");
+    expect(count).toBe(3);
+  });
+
+  it('countUnseenDownloadedVideos returns 0 when no rows come back', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: null });
+
+    const db = await importDatabaseModule();
+    const count = await db.countUnseenDownloadedVideos();
+
+    expect(count).toBe(0);
+  });
+
+  it('markDownloadedVideoSeen updates the seen flag with bound params', async () => {
+    const db = await importDatabaseModule();
+    await db.markDownloadedVideoSeen('feed123', 'art1', true);
+    await db.markDownloadedVideoSeen('feed123', 'art2', false);
+    await db.markDownloadedVideoSeen('feed123', 'art3');
+
+    const [seenMessage, unseenMessage, defaultMessage] = FakeWorker.instance.messages;
+    expect(seenMessage.action).toBe('exec');
+    expect(seenMessage.params.sql).toBe('UPDATE downloaded_videos SET seen = ? WHERE feed_id = ? AND article_id = ?');
+    expect(seenMessage.params.params).toEqual([1, 'feed123', 'art1']);
+    expect(unseenMessage.params.params).toEqual([0, 'feed123', 'art2']);
+    // Defaults to seen (watched).
+    expect(defaultMessage.params.params).toEqual([1, 'feed123', 'art3']);
+  });
+
   it('listPrunableDownloadedVideos selects old read unstarred articles with downloads', async () => {
     const db = await importDatabaseModule();
     FakeWorker.onMessage = (m) => ({
@@ -549,7 +629,9 @@ describe('rss database helpers', () => {
   it('loadDownloadedArticles surfaces dangling video rows with fallback metadata', async () => {
     // Simulates a video whose article row was deleted but whose
     // downloaded_videos row and file remain: feed and article columns are
-    // NULL and the title/URL come from the video queue via COALESCE.
+    // NULL and the title/URL come from the video queue via COALESCE. The
+    // queue row's own feed_id/article_id are exposed so the entry can
+    // still be opened and deleted from the Videos view.
     FakeWorker.onMessage = (m) => ({
       id: m.id,
       ok: true,
@@ -583,6 +665,8 @@ describe('rss database helpers', () => {
         starred: 0,
         download_path: '/downloads/dangling.mp4',
         date_arrived: '2026-01-01T00:00:00.000Z',
+        video_feed_id: 'queueFeed1',
+        video_article_id: 'queueArt1',
       }],
     });
 
@@ -591,10 +675,21 @@ describe('rss database helpers', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0].feed).toBeNull();
-    expect(items[0].article.articleID).toBeNull();
+    expect(items[0].article.articleID).toBe('queueArt1');
+    expect(items[0].article.feedID).toBe('queueFeed1');
     expect(items[0].article.title).toBe('Dangling Video');
     expect(items[0].article.url).toBe('https://www.youtube.com/watch?v=e2eVideosV1');
     expect(items[0].article.downloadPath).toBe('/downloads/dangling.mp4');
+  });
+
+  it('loadDownloadedArticles selects the queue row feed/article IDs', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    await db.loadDownloadedArticles();
+
+    const sql = FakeWorker.instance.messages[0].params.sql;
+    expect(sql).toContain('v.feed_id AS video_feed_id');
+    expect(sql).toContain('v.article_id AS video_article_id');
   });
 
   it('loadDownloadedArticles keeps the feed attached when only the article row is gone', async () => {

@@ -32,7 +32,7 @@
 @import './styles/db-component.css';
 @import './styles/file-storage-component.css';
 @import './styles/rss-feed-component.css';
-@import './styles/video-download-toast.css';
+@import './styles/toast.css';
 /* <WASM> */
 @import './styles/wasm-components.css';
 /* </WASM> */
@@ -182,7 +182,7 @@ span.rss-unread-count {
   font-family: var(--font-ui);
 }
 
-.rss-empty-state, .rss-refresh-progress, .rss-toast-container {
+.rss-empty-state, .app-toast-container {
   font-family: var(--font-ui);
 }
 

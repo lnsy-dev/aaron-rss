@@ -482,7 +482,8 @@ export function loadFeed(feedID) {
  * Delete a feed's downloaded YouTube video (file + record) and clear the
  * article's denormalized download pointer.
  *
- * @param {string} feedID
+ * @param {string|null} feedID - Null when the feed row is gone (dangling
+ *   Videos-view entry); the file and queue record are still removed.
  * @param {string} articleID
  * @param {string} filePath - Absolute path of the file to remove
  * @returns {Promise<void>}
@@ -498,7 +499,10 @@ export async function deleteArticleYouTubeVideo(feedID, articleID, filePath) {
   try {
     await dbDeleteDownloadedVideosForArticle(feedID, articleID);
     // Clear the article's pointer so the UI stops showing "Downloaded ✓".
-    await dbUpdateArticleStatus(feedID, articleID, { downloadPath: null });
+    // Only possible while the article row still exists.
+    if (feedID && articleID) {
+      await dbUpdateArticleStatus(feedID, articleID, { downloadPath: null });
+    }
   } catch (error) {
     console.error('Failed to clean up downloaded video record:', error);
   }

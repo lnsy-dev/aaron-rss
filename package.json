@@ -1,6 +1,6 @@
 {
   "name": "aaron-rss",
-  "version": "0.9.0",
+  "version": "0.11.1",
   "description": "A simple RSS reader as an Electron App",
   "main": "electron/main.js",
   "type": "module",

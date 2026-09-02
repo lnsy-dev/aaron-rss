@@ -429,6 +429,23 @@ describe('feed manager', () => {
       expect(updateArticleStatus).toHaveBeenCalledWith('feed-yt', 'art1', { downloadPath: null });
     });
 
+    it('deleteArticleYouTubeVideo still clears the queue record when the feed row is gone', async () => {
+      // Dangling Videos-view entries: the feed (and often the article)
+      // row was deleted, but the file and downloaded_videos record must
+      // still be removed — without attempting the article-row update.
+      const { deleteDownloadedVideosForArticle, updateArticleStatus } = await import(
+        '../../src/lib/database.js'
+      );
+      const { deleteArticleYouTubeVideo } = await importFeedManager();
+
+      updateArticleStatus.mockClear();
+      await deleteArticleYouTubeVideo(null, 'art-dangling', '/downloads/Aaron-RSS-YouTube/dangling.mp4');
+
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/dangling.mp4');
+      expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith(null, 'art-dangling');
+      expect(updateArticleStatus).not.toHaveBeenCalled();
+    });
+
     it('deleteFeed removes downloaded_videos records for the feed', async () => {
       const { deleteDownloadedVideosForFeed } = await import('../../src/lib/database.js');
       const { deleteFeed } = await importFeedManager();

@@ -98,6 +98,44 @@ export function isYouTubeURL(url) {
 }
 
 /**
+ * Determine whether a URL points at YouTube at all (host-level check).
+ *
+ * Unlike isYouTubeURL(), this does not require a recognizable video path
+ * or a valid 11-character ID. It returns true for every http(s) URL on a
+ * YouTube host (youtube.com, m.youtube.com, music.youtube.com, youtu.be),
+ * including odd shapes like attribution_link or deleted-video redirects
+ * that a feed may still carry. Callers use it to route the user to the
+ * YouTube viewer instead of attempting a generic article extraction,
+ * which fails with 403 against youtube.com.
+ *
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isYouTubeHostURL(url) {
+  if (!url || typeof url !== 'string') {
+    return false;
+  }
+
+  let urlObj;
+  try {
+    urlObj = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+    return false;
+  }
+
+  const hostname = urlObj.hostname.toLowerCase();
+  if (EXCLUDED_HOSTS.includes(hostname)) {
+    return false;
+  }
+
+  return YOUTUBE_HOSTS.includes(hostname);
+}
+
+/**
  * Determine whether a YouTube URL is a live stream.
  *
  * Live streams and premieres are excluded from auto-download and from

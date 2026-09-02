@@ -2,7 +2,9 @@
  * Video Download Toast Unit Tests
  *
  * Tests the renderer-side toast in src/lib/video-download-toast.js
- * against a minimal fake DOM. The Electron progress bridge is mocked so
+ * against a minimal fake DOM. All DOM and styling live in the central
+ * toast system (src/lib/toast.js), so the toasts use the shared
+ * app-toast-* classes. The Electron progress bridge is mocked so
  * progress routing can be simulated.
  */
 
@@ -107,12 +109,12 @@ vi.stubGlobal('document', {
 });
 
 function findToasts() {
-  const container = fakeBody.querySelector('video-download-toast-container');
+  const container = fakeBody.querySelector('app-toast-container');
   return container ? container.children : [];
 }
 
 function findToastsByClass(className) {
-  const container = fakeBody.querySelector('video-download-toast-container');
+  const container = fakeBody.querySelector('app-toast-container');
   if (!container) {
     return [];
   }
@@ -130,11 +132,11 @@ function findToastsByClass(className) {
 }
 
 function findProgressFill(toastRoot) {
-  return toastRoot.querySelector('video-download-toast-progress-fill');
+  return toastRoot.querySelector('app-toast-progress-fill');
 }
 
 function findText(toastRoot) {
-  return toastRoot.querySelector('video-download-toast-text');
+  return toastRoot.querySelector('app-toast-text');
 }
 
 describe('video download toast', () => {
@@ -162,12 +164,12 @@ describe('video download toast', () => {
   it('creates a bottom-right toast with text and an indeterminate progress bar', () => {
     const toast = showVideoDownloadToast('https://youtu.be/abc123');
 
-    const roots = findToastsByClass('video-download-toast');
+    const roots = findToastsByClass('app-toast');
     expect(roots).toHaveLength(1);
     expect(findText(roots[0]).textContent).toBe('Preparing download…');
 
     const fill = findProgressFill(roots[0]);
-    expect(fill.classList.contains('video-download-toast-indeterminate')).toBe(true);
+    expect(fill.classList.contains('app-toast-indeterminate')).toBe(true);
     expect(typeof toast.update).toBe('function');
   });
 
@@ -177,11 +179,11 @@ describe('video download toast', () => {
     const callback = mockSubscribe.captured();
     callback({ url: 'https://youtu.be/abc123', stage: 'downloading', percent: 42.5 });
 
-    const root = findToastsByClass('video-download-toast')[0];
+    const root = findToastsByClass('app-toast')[0];
     expect(findText(root).textContent).toBe('Downloading… 43%');
     const fill = findProgressFill(root);
-    expect(fill.classList.contains('video-download-toast-indeterminate')).toBe(false);
-    expect(fill._styles['--video-download-toast-progress']).toBe('42.5%');
+    expect(fill.classList.contains('app-toast-indeterminate')).toBe(false);
+    expect(fill._styles['--app-toast-progress']).toBe('42.5%');
   });
 
   it('switches to 100% processing state and then completes', () => {
@@ -190,16 +192,16 @@ describe('video download toast', () => {
     const callback = mockSubscribe.captured();
     callback({ url: 'https://youtu.be/abc123', stage: 'processing', percent: 100 });
 
-    const root = findToastsByClass('video-download-toast')[0];
+    const root = findToastsByClass('app-toast')[0];
     expect(findText(root).textContent).toBe('Processing video…');
-    expect(findProgressFill(root)._styles['--video-download-toast-progress']).toBe('100%');
+    expect(findProgressFill(root)._styles['--app-toast-progress']).toBe('100%');
 
     toast.complete();
     expect(findText(root).textContent).toBe('Video saved ✓');
 
     // The linger (1200ms) and fade (300ms) both elapse within 1500ms.
     vi.advanceTimersByTime(1500);
-    expect(findToastsByClass('video-download-toast')).toHaveLength(0);
+    expect(findToastsByClass('app-toast')).toHaveLength(0);
   });
 
   it('marks failures with the error styling and cleans up', () => {
@@ -207,19 +209,19 @@ describe('video download toast', () => {
 
     toast.fail('Download failed: offline');
 
-    const root = findToastsByClass('video-download-toast')[0];
+    const root = findToastsByClass('app-toast')[0];
     expect(findText(root).textContent).toBe('Download failed: offline');
-    expect(root.classList.contains('video-download-toast-error')).toBe(true);
+    expect(root.classList.contains('app-toast-error')).toBe(true);
 
     vi.advanceTimersByTime(3300);
-    expect(findToastsByClass('video-download-toast')).toHaveLength(0);
+    expect(findToastsByClass('app-toast')).toHaveLength(0);
   });
 
   it('replaces a stale toast for the same URL on retry', () => {
     showVideoDownloadToast('https://youtu.be/abc123');
     showVideoDownloadToast('https://youtu.be/abc123');
 
-    expect(findToastsByClass('video-download-toast')).toHaveLength(1);
+    expect(findToastsByClass('app-toast')).toHaveLength(1);
   });
 
   it('ignores progress events for unknown URLs', () => {
@@ -230,7 +232,7 @@ describe('video download toast', () => {
       callback({ url: 'https://youtu.be/other', stage: 'downloading', percent: 10 })
     ).not.toThrow();
 
-    const root = findToastsByClass('video-download-toast')[0];
+    const root = findToastsByClass('app-toast')[0];
     expect(findText(root).textContent).toBe('Preparing download…');
   });
 });

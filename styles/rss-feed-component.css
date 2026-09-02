@@ -469,6 +469,16 @@ body command-panel dialog {
   line-height: 1.4;
 }
 
+/* Clickable summaries open the article viewer, like the title link. */
+.rss-article-summary[data-action='open-article'] {
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.rss-article-summary[data-action='open-article']:hover {
+  color: var(--trinary-color);
+}
+
 .rss-article-content {
   font-family: var(--font-body);
   font-size: 0.95rem;
@@ -753,86 +763,11 @@ body command-panel dialog {
   flex-shrink: 0;
 }
 
-/* Toast notifications */
-.rss-toast-container {
-  position: fixed;
-  bottom: 3.5rem;
-  right: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  /* Toasts are transient feedback for actions taken inside overlays (e.g. the
-     Share button in the article viewer at z-index 600) so they must paint
-     above every overlay, including the command palette at 1000. */
-  z-index: 1100;
-}
+/* Toast notifications are owned by the central toast system; styles live
+   in styles/toast.css and are rendered by src/lib/toast.js. */
 
-.rss-toast {
-  background: var(--notification-color);
-  color: var(--background-color);
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  min-width: 200px;
-  max-width: 400px;
-  opacity: 1;
-  transition: opacity 0.3s ease;
-}
-
-.rss-toast-error {
-  background: var(--error-color);
-}
-
-.rss-toast-fade {
-  opacity: 0;
-}
-
-/* Refresh progress panel */
-.rss-refresh-progress {
-  position: fixed;
-  bottom: 4.5rem;
-  right: 1rem;
-  width: 280px;
-  max-width: calc(100vw - 2rem);
-  background: var(--background-color);
-  border: 1px solid var(--quaternary-color);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 550;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  pointer-events: none;
-}
-
-.rss-refresh-progress-title {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--foreground-color);
-}
-
-.rss-refresh-progress-track {
-  height: 6px;
-  background: var(--quaternary-color);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.rss-refresh-progress-fill {
-  height: 100%;
-  background: var(--notification-color);
-  width: 0%;
-  transition: width 0.2s ease;
-}
-
-.rss-refresh-progress-feed {
-  font-size: 0.8rem;
-  color: var(--trinary-color);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* The refresh progress is a progress toast from the central toast system;
+   its styles live in styles/toast.css. */
 
 /* Article viewer */
 .rss-article-viewer-overlay {
@@ -1471,6 +1406,35 @@ body command-panel dialog {
   background: var(--secondary-color);
 }
 
+/* Ready badge on the footer Videos button: a small count bubble shown
+   while downloaded videos are waiting to be watched. The option wrapper
+   (.rss-view-toggle-option) provides the positioning context. */
+.rss-videos-ready-badge {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  min-width: 0.95rem;
+  height: 0.95rem;
+  padding: 0 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--notification-color);
+  color: var(--background-color);
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-family: var(--font-ui);
+  line-height: 1;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The hidden attribute must win over the display value above. */
+.rss-videos-ready-badge[hidden] {
+  display: none;
+}
+
 .rss-youtube-external-summary {
   margin: 0;
   color: var(--foreground-color);
@@ -1517,4 +1481,67 @@ body command-panel dialog {
   display: flex;
   justify-content: center;
   gap: 0.75rem;
+}
+
+/* Quick Keys reference dialog */
+.rss-quick-keys-group {
+  margin: 0 0 1.25rem;
+}
+
+.rss-quick-keys-group:last-child {
+  margin-bottom: 0;
+}
+
+.rss-quick-keys-group h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--trinary-color);
+  font-family: var(--font-ui);
+}
+
+.rss-quick-keys-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rss-quick-keys-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--secondary-color);
+}
+
+.rss-quick-keys-row:last-child {
+  border-bottom: none;
+}
+
+.rss-quick-keys-description {
+  color: var(--foreground-color);
+}
+
+.rss-quick-keys-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.rss-quick-keys-key {
+  display: inline-block;
+  min-width: 1.6em;
+  box-sizing: border-box;
+  padding: 0.1rem 0.45rem;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--foreground-color);
+  background: var(--secondary-color);
+  border: 1px solid var(--quaternary-color);
+  border-radius: 4px;
 }

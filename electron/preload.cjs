@@ -52,6 +52,18 @@ contextBridge.exposeInMainWorld('electron', {
   onEscapePressed: (callback) => ipcRenderer.on('escape-pressed', () => callback()),
 
   /**
+   * Subscribe to "Quick Keys" requests forwarded from the main process.
+   *
+   * The native Help menu carries the Cmd+? / Ctrl+? accelerator; Electron
+   * consumes those keystrokes before the page sees them, so the menu asks
+   * the renderer over IPC to open the quick keys reference dialog.
+   *
+   * @param {() => void} callback - Invoked once per request
+   * @returns {void}
+   */
+  onShowQuickKeys: (callback) => ipcRenderer.on('show-quick-keys', () => callback()),
+
+  /**
    * Download a YouTube video to disk from the main process.
    *
    * @param {string} url - The YouTube video URL

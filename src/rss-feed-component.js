@@ -17,6 +17,8 @@ import {
   saveSettings,
   updateFeedOpenOriginalByDefault,
   loadArticleContent,
+  countUnseenDownloadedVideos,
+  markDownloadedVideoSeen,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -36,6 +38,7 @@ import {
   loadDownloadedArticles,
 } from './lib/feed-manager.js';
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
+import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
 import {
   isFileSystemAccessSupported,
   isUserCancellation,
@@ -58,7 +61,12 @@ import {
   renderBlueskyText,
 } from './lib/social-post.js';
 import { highlightMatches, clearHighlights } from './lib/find-highlights.js';
-import { isYouTubeURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
+import {
+  detectKeyboardPlatform,
+  getQuickKeyGroups,
+  isQuickKeysEvent,
+} from './lib/quick-keys.js';
+import { isYouTubeURL, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
 import {
   getUsableImageURL,
@@ -120,6 +128,14 @@ class RSSFeedComponent extends DataroomElement {
     this.isRefreshing = false;
     this.activeModal = null;
     this._articleViewerOverlay = null;
+    // Cached {feed, article} pairs for the Videos view (see renderVideosView).
+    this._videosEntries = null;
+    // Monotonic guard so superseded async Videos-view renders never draw
+    // (see renderVideosView).
+    this._videosRenderGeneration = 0;
+    // Ready (downloaded, unwatched) video count for the footer badge.
+    this._videosReadyCount = 0;
+    this._videosReadyBadgeEl = null;
     this._scrollLockCount = 0;
     this._previousBodyOverflow = '';
     this._previousHtmlOverflow = '';
@@ -140,7 +156,9 @@ class RSSFeedComponent extends DataroomElement {
     this.statusLine = this.create('p', { class: 'rss-status' }, this.footer);
     this.statusFadeTimeout = null;
     this.contentArea = this.create('div', { class: 'rss-content-area' });
-    this.toastContainer = this.create('div', { class: 'rss-toast-container' });
+    // Toasts are owned by the central toast system (src/lib/toast.js).
+    this._refreshToast = null;
+    this._refreshProgress = null;
 
     try {
       const status = await getStatus();
@@ -165,6 +183,7 @@ class RSSFeedComponent extends DataroomElement {
 
       this.applyTheme();
       await this.refreshFeeds();
+      await this._refreshVideosReadyBadge();
       this._lastRefreshAt = Date.now();
       this._startAutoRefresh();
       this.initialized = true;
@@ -227,6 +246,63 @@ class RSSFeedComponent extends DataroomElement {
     buttonContainer.appendChild(closeButton);
 
     modal.body.appendChild(buttonContainer);
+  }
+
+  /**
+   * Show the Quick Keys reference dialog.
+   *
+   * Lists every keyboard shortcut the app supports, grouped by concern,
+   * with key caps rendered for the current platform. Opened from the
+   * command panel, the native Help menu (Electron), or directly with
+   * Cmd+? / Ctrl+? (see _handleKeyDown and electron/main.js).
+   *
+   * @returns {void}
+   */
+  showQuickKeysModal() {
+    const platform = detectKeyboardPlatform();
+    const modal = this.createModal('Quick Keys');
+
+    const container = document.createElement('div');
+    container.className = 'rss-quick-keys';
+
+    for (const group of getQuickKeyGroups(platform)) {
+      const section = document.createElement('section');
+      section.className = 'rss-quick-keys-group';
+
+      const heading = document.createElement('h3');
+      heading.textContent = group.title;
+      section.appendChild(heading);
+
+      const list = document.createElement('ul');
+      list.className = 'rss-quick-keys-list';
+
+      for (const item of group.items) {
+        const row = document.createElement('li');
+        row.className = 'rss-quick-keys-row';
+
+        const description = document.createElement('span');
+        description.className = 'rss-quick-keys-description';
+        description.textContent = item.description;
+        row.appendChild(description);
+
+        const keys = document.createElement('span');
+        keys.className = 'rss-quick-keys-keys';
+        for (const label of item.labels) {
+          const key = document.createElement('kbd');
+          key.className = 'rss-quick-keys-key';
+          key.textContent = label;
+          keys.appendChild(key);
+        }
+        row.appendChild(keys);
+
+        list.appendChild(row);
+      }
+
+      section.appendChild(list);
+      container.appendChild(section);
+    }
+
+    modal.body.appendChild(container);
   }
 
   /**
@@ -316,6 +392,13 @@ class RSSFeedComponent extends DataroomElement {
       this.viewModeInputs[option.mode] = input;
       if (option.mode === 'videos') {
         this.videosButton = optionWrap;
+        // Ready badge: a count bubble shown while downloaded videos are
+        // waiting to be watched (see _refreshVideosReadyBadge).
+        const readyBadge = document.createElement('span');
+        readyBadge.className = 'rss-videos-ready-badge';
+        readyBadge.hidden = true;
+        optionWrap.appendChild(readyBadge);
+        this._videosReadyBadgeEl = readyBadge;
       }
     }
 
@@ -433,6 +516,61 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Refresh the ready badge on the footer Videos button.
+   *
+   * The badge shows how many downloaded videos are ready (downloaded but
+   * not yet watched). A count of zero hides it. Called after downloads
+   * finish, videos are watched or deleted, and whenever feeds reload.
+   *
+   * @returns {Promise<void>}
+   */
+  async _refreshVideosReadyBadge() {
+    if (!this.videosButton || !this._videosReadyBadgeEl) {
+      return;
+    }
+    let count = 0;
+    try {
+      count = await countUnseenDownloadedVideos();
+    } catch (error) {
+      console.error('Failed to count ready videos:', error);
+      return;
+    }
+    this._videosReadyCount = count;
+    const badge = this._videosReadyBadgeEl;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.setAttribute(
+        'aria-label',
+        `${count} downloaded video${count === 1 ? '' : 's'} ready to watch`
+      );
+      badge.hidden = false;
+    } else {
+      badge.textContent = '';
+      badge.removeAttribute('aria-label');
+      badge.hidden = true;
+    }
+  }
+
+  /**
+   * Mark a downloaded video as seen (watched) and refresh the ready badge.
+   *
+   * Fire-and-forget: failures are logged, never thrown, so playback is
+   * never interrupted by bookkeeping.
+   *
+   * @param {string} feedID
+   * @param {string} articleID
+   * @returns {void}
+   */
+  _markDownloadedVideoSeen(feedID, articleID) {
+    if (!feedID || !articleID) {
+      return;
+    }
+    markDownloadedVideoSeen(feedID, articleID, true)
+      .then(() => this._refreshVideosReadyBadge())
+      .catch((error) => console.error('Failed to mark downloaded video as seen:', error));
+  }
+
+  /**
    * Create the command panel and register the available app commands.
    *
    * @returns {void}
@@ -450,6 +588,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
       { name: 'Import OPML', action: () => this.handleImportOPML() },
+      { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
@@ -535,26 +674,57 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     const feedID = feedEl.getAttribute('data-feed-id');
-    const feed = this.feeds.find((f) => f.feedID === feedID);
-    if (!feed) {
-      return;
+    const articleEl = event.target.closest('.rss-article');
+    const articleID = articleEl?.getAttribute('data-article-id') || null;
+
+    // The Videos view renders straight from the downloaded_videos queue,
+    // so its entries are often NOT in this.feeds (which only carries
+    // unread articles): read articles, pruned articles, and entries whose
+    // feed was deleted all live only in the queue. Resolve those clicks
+    // from the cached view data instead of this.feeds, otherwise "Read"
+    // and "Delete Video" silently do nothing for exactly those videos.
+    let feed;
+    let article;
+    if (event.target.closest('.rss-videos-view')) {
+      const entry = (this._videosEntries || []).find((candidate) => {
+        if (candidate.article?.articleID !== articleID) {
+          return false;
+        }
+        // Empty data-feed-id marks a dangling entry whose feed is gone.
+        return !feedID || candidate.feed?.feedID === feedID;
+      });
+      feed = entry?.feed || null;
+      article = entry?.article;
+      if (!article) {
+        return;
+      }
+    } else {
+      feed = this.feeds.find((f) => f.feedID === feedID);
+      if (!feed) {
+        return;
+      }
+      article = articleID ? this.findArticle(feedID, articleID) : undefined;
     }
 
     const actionEl = event.target.closest('[data-action]');
     const action = actionEl?.getAttribute('data-action');
 
+    // Action buttons and clickable article elements swallow their clicks so
+    // they never bubble out of the article (e.g. to the feed <details>
+    // toggle or document-level handlers).
+    if (actionEl) {
+      event.stopPropagation();
+    }
+
     if (action === 'feed-menu') {
-      this.showFeedMenu(feedID, actionEl);
+      // Feed menus only exist in the grouped feeds view, where feed is
+      // always resolved from this.feeds. They live outside any article.
+      if (feed) {
+        this.showFeedMenu(feedID, actionEl);
+      }
       return;
     }
 
-    const articleEl = event.target.closest('.rss-article');
-    if (!articleEl) {
-      return;
-    }
-
-    const articleID = articleEl.getAttribute('data-article-id');
-    const article = this.findArticle(feedID, articleID);
     if (!article) {
       return;
     }
@@ -809,6 +979,7 @@ class RSSFeedComponent extends DataroomElement {
       // refresh it in place instead of switching back to the main list.
       if (this.viewMode === 'videos') {
         await this.renderVideosView();
+        await this._refreshVideosReadyBadge();
         return;
       }
 
@@ -816,6 +987,7 @@ class RSSFeedComponent extends DataroomElement {
       // potentially large read-article bodies into the renderer.
       this.feeds = sortFeedsByUnreadCount(await loadFeedsForDisplay());
       this.renderFeeds();
+      await this._refreshVideosReadyBadge();
     } catch (error) {
       console.error('Failed to load feeds:', error);
       this.showToast(`Failed to load feeds: ${error.message}`, 'error');
@@ -850,6 +1022,11 @@ class RSSFeedComponent extends DataroomElement {
    */
   renderFeeds() {
     this._updateUnreadCount();
+
+    // Leaving the Videos view invalidates its cached entries.
+    if (this.viewMode !== 'videos') {
+      this._videosEntries = null;
+    }
 
     // Cancel any pending animation-frame render so direct renders always
     // win and never get overwritten by a stale scheduled render.
@@ -996,16 +1173,31 @@ class RSSFeedComponent extends DataroomElement {
    * feeds and articles tables, so the list is independent of the unread
    * filtering that drives the timeline and feeds views.
    *
+   * Rendering is incremental so the view never flickers: the database is
+   * queried before the DOM is touched, and existing entry nodes whose key
+   * and display signature are unchanged are kept in place. A refresh only
+   * adds/removes what actually changed, and deleting a video removes
+   * exactly its own row instead of rebuilding the whole list.
+   *
    * @returns {Promise<void>}
    */
   async renderVideosView() {
-    this.contentArea.innerHTML = '';
+    // Monotonic generation guard: concurrent calls (bursty incremental
+    // refresh renders are fire-and-forget) must not interleave DOM writes
+    // or let stale data overwrite a newer render. Only the latest call
+    // survives its database await and draws.
+    const generation = (this._videosRenderGeneration += 1);
 
     let items = [];
     try {
       items = (await loadDownloadedArticles()) || [];
     } catch (error) {
+      if (generation !== this._videosRenderGeneration) {
+        return;
+      }
       console.error('Failed to load downloaded videos:', error);
+      this._videosEntries = [];
+      this.contentArea.innerHTML = '';
       const errorState = document.createElement('div');
       errorState.className = 'rss-no-articles';
       errorState.textContent = 'Could not load downloaded videos';
@@ -1013,34 +1205,95 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
-    const container = document.createElement('div');
-    container.className = 'rss-videos-view';
+    // A newer render was started while this one waited on the database;
+    // abandon this one so the fresh data always wins.
+    if (generation !== this._videosRenderGeneration) {
+      return;
+    }
+
+    // Cache the resolved {feed, article} pairs so the delegated click
+    // handler can act on entries that are not in this.feeds (read or
+    // pruned articles, deleted feeds).
+    this._videosEntries = items;
+
+    // Reuse the container rendered by the previous videos pass so the
+    // entries below can keep their DOM nodes. Any other content in the
+    // content area means the view is being (re)entered, which starts
+    // from a clean slate.
+    let container = this.contentArea.querySelector(':scope > .rss-videos-view');
+    if (!container || this.contentArea.children.length > 1) {
+      this.contentArea.innerHTML = '';
+      container = document.createElement('div');
+      container.className = 'rss-videos-view';
+      this.contentArea.appendChild(container);
+    }
 
     if (items.length === 0) {
+      container.innerHTML = '';
       const empty = document.createElement('div');
       empty.className = 'rss-no-articles';
       empty.textContent = 'No downloaded videos';
       container.appendChild(empty);
-      this.contentArea.appendChild(container);
       return;
     }
 
-    for (const { feed, article } of items) {
-      // The wrapper carries data-feed-id so selection, click delegation,
-      // and article actions keep working exactly as in the feeds view.
-      // A null feed means the article row is gone (dangling video entry).
-      const entry = document.createElement('div');
-      entry.className = 'rss-videos-view-item';
-      entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
-
-      this.renderArticle(entry, article, feed, {
-        showFeedName: true,
-        showDownloadedBadge: true,
-      });
-      container.appendChild(entry);
+    // Keyed reconciliation. Entries are identified by feed+article and a
+    // signature of the fields the row displays; unchanged nodes survive
+    // untouched (no image reloads, no hover/scroll loss), changed entries
+    // are rebuilt, and entries that vanished are dropped.
+    const reusable = new Map();
+    for (const node of Array.from(container.children)) {
+      if (node.classList.contains('rss-videos-view-item')) {
+        reusable.set(node.getAttribute('data-entry-key'), node);
+      } else {
+        // Stale status message from an earlier empty/error state.
+        node.remove();
+      }
     }
 
-    this.contentArea.appendChild(container);
+    const fragment = document.createDocumentFragment();
+    for (const { feed, article } of items) {
+      const key = `${feed ? feed.feedID : ''}\u0000${article.articleID}`;
+      const signature = JSON.stringify([
+        article.read,
+        article.starred,
+        article.downloadPath || null,
+        article.title,
+        article.summary,
+        feed ? feed.name : null,
+      ]);
+
+      let entry = reusable.get(key);
+      if (entry && entry.getAttribute('data-entry-signature') !== signature) {
+        // The entry is still listed but what it shows changed.
+        entry.remove();
+        entry = null;
+      }
+
+      if (!entry) {
+        entry = document.createElement('div');
+        entry.className = 'rss-videos-view-item';
+        // The wrapper carries data-feed-id so selection, click delegation,
+        // and article actions keep working exactly as in the feeds view.
+        // A null feed means the article row is gone (dangling video entry).
+        entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
+        entry.setAttribute('data-entry-key', key);
+        entry.setAttribute('data-entry-signature', signature);
+        this.renderArticle(entry, article, feed, {
+          showFeedName: true,
+          showDownloadedBadge: true,
+        });
+      }
+
+      // appendChild moves reused nodes too, so the newest-first order is
+      // restored without recreating anything.
+      fragment.appendChild(entry);
+    }
+
+    // Swap the reconciled children in one pass; nodes that disappeared
+    // (e.g. a deleted video) are dropped here.
+    container.innerHTML = '';
+    container.appendChild(fragment);
   }
 
   /**
@@ -1182,7 +1435,7 @@ class RSSFeedComponent extends DataroomElement {
     }
     titleDiv.appendChild(titleEl);
 
-    if (isYouTubeURL(article.url)) {
+    if (isYouTubeHostURL(article.url)) {
       const youtubeBadge = document.createElement('span');
       youtubeBadge.className = 'rss-youtube-badge';
       youtubeBadge.textContent = '▶ YouTube';
@@ -1239,6 +1492,10 @@ class RSSFeedComponent extends DataroomElement {
       const summaryDiv = document.createElement('div');
       summaryDiv.className = 'rss-article-summary';
       summaryDiv.textContent = article.summary;
+      // Clicking the summary opens the article viewer, same as the title.
+      if (article.url) {
+        summaryDiv.setAttribute('data-action', 'open-article');
+      }
       articleDiv.appendChild(summaryDiv);
     }
 
@@ -2092,7 +2349,7 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
-   * Create and show the lower-right refresh progress panel.
+   * Show the refresh progress toast from the central toast system.
    *
    * @param {number} total - Total number of feeds that will be fetched.
    * @returns {void}
@@ -2100,70 +2357,52 @@ class RSSFeedComponent extends DataroomElement {
   _showRefreshProgress(total) {
     this._hideRefreshProgress();
 
-    const container = document.createElement('div');
-    container.className = 'rss-refresh-progress';
-    container.setAttribute('role', 'status');
-    container.setAttribute('aria-live', 'polite');
-
-    const title = document.createElement('div');
-    title.className = 'rss-refresh-progress-title';
-    title.textContent = total === 1 ? 'Refreshing feed…' : 'Refreshing feeds…';
-    container.appendChild(title);
-
-    const track = document.createElement('div');
-    track.className = 'rss-refresh-progress-track';
-
-    const fill = document.createElement('div');
-    fill.className = 'rss-refresh-progress-fill';
-    track.appendChild(fill);
-    container.appendChild(track);
-
-    const feedName = document.createElement('div');
-    feedName.className = 'rss-refresh-progress-feed';
-    feedName.textContent = 'Starting…';
-    container.appendChild(feedName);
-
-    this.appendChild(container);
-
+    // Keep the counters here; all DOM lives in the central toast system.
     this._refreshProgress = {
-      container,
-      fill,
-      feedName,
       total: Math.max(1, total),
       current: 0,
     };
+    this._refreshToast = showProgressToast(
+      'feed-refresh',
+      total === 1 ? 'Refreshing feed…' : 'Refreshing feeds…'
+    );
+    this._refreshToast.update(
+      'Starting…',
+      0
+    );
   }
 
   /**
-   * Update the progress panel with the current feed and fill percentage.
+   * Update the refresh progress toast with the current feed and percent.
    *
    * @param {number} current - Number of feeds completed so far.
    * @param {string} feedName - Name (or URL) of the feed now being fetched.
    * @returns {void}
    */
   _updateRefreshProgress(current, feedName) {
-    if (!this._refreshProgress) {
+    if (!this._refreshToast || !this._refreshProgress) {
       return;
     }
 
     this._refreshProgress.current = current;
     const pct = Math.round((current / this._refreshProgress.total) * 100);
-    this._refreshProgress.fill.style.width = `${pct}%`;
-    this._refreshProgress.feedName.textContent = feedName
-      ? `Fetching ${feedName}…`
-      : 'Starting…';
+    this._refreshToast.update(
+      feedName ? `Fetching ${feedName}…` : 'Starting…',
+      pct
+    );
   }
 
   /**
-   * Remove the refresh progress panel from the DOM.
+   * Remove the refresh progress toast.
    *
    * @returns {void}
    */
   _hideRefreshProgress() {
-    if (this._refreshProgress) {
-      this._refreshProgress.container.remove();
-      this._refreshProgress = null;
+    if (this._refreshToast) {
+      this._refreshToast.remove();
+      this._refreshToast = null;
     }
+    this._refreshProgress = null;
   }
 
   /**
@@ -2192,16 +2431,16 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {void}
    */
   _advanceRefreshProgress(feedName) {
-    if (!this._refreshProgress) {
+    if (!this._refreshToast || !this._refreshProgress) {
       return;
     }
 
     this._refreshProgress.current += 1;
     const pct = Math.round((this._refreshProgress.current / this._refreshProgress.total) * 100);
-    this._refreshProgress.fill.style.width = `${pct}%`;
-    this._refreshProgress.feedName.textContent = feedName
-      ? `Fetched ${feedName}`
-      : 'Working…';
+    this._refreshToast.update(
+      feedName ? `Fetched ${feedName}` : 'Working…',
+      pct
+    );
   }
 
   /**
@@ -2520,7 +2759,12 @@ class RSSFeedComponent extends DataroomElement {
     //   await this.openYouTubeViewer(article, feed);
     //   return;
     // }
-    if (isYouTubeURL(article.url)) {
+    // Route EVERY youtube.com/youtu.be URL to the YouTube viewer, even
+    // when the path does not carry a parseable video ID (attribution
+    // links, deleted-video redirects, malformed IDs). Generic article
+    // extraction against youtube.com fails with 403, which used to leave
+    // downloaded videos impossible to open from the viewer.
+    if (isYouTubeURL(article.url) || isYouTubeHostURL(article.url)) {
       await this.showYouTubeExternalViewer(article, feed);
       return;
     }
@@ -2542,7 +2786,10 @@ class RSSFeedComponent extends DataroomElement {
       const extracted = await extractArticle(article.url);
 
       this.renderArticleViewerContent(body, article, feed, extracted);
-      await this.markAsRead(feed.feedID, article.articleID);
+      // Dangling Videos-view entries (feed row gone) cannot be marked read.
+      if (feed?.feedID) {
+        await this.markAsRead(feed.feedID, article.articleID);
+      }
     } catch (error) {
       console.error('Failed to open article viewer:', error);
       body.innerHTML = '';
@@ -2705,7 +2952,9 @@ class RSSFeedComponent extends DataroomElement {
 
       body.innerHTML = '';
       this.renderSocialViewerContent(body, post);
-      await this.markAsRead(feed.feedID, article.articleID);
+      if (feed?.feedID) {
+        await this.markAsRead(feed.feedID, article.articleID);
+      }
     } catch (error) {
       console.error(`Failed to load ${platformName} post:`, error);
       body.innerHTML = '';
@@ -2753,7 +3002,14 @@ class RSSFeedComponent extends DataroomElement {
     const downloadButton = document.createElement('button');
     downloadButton.className = 'rss-action-button rss-youtube-download-button';
     downloadButton.textContent = article.downloadPath ? 'Downloaded ✓' : 'Download Video';
-    downloadButton.addEventListener('click', () => this._downloadYouTubeVideo(article, feed, downloadButton));
+    // Downloads need a feed row (the queue record references it); dangling
+    // entries with a deleted feed keep the panel but lose the action.
+    if (feed?.feedID) {
+      downloadButton.addEventListener('click', () => this._downloadYouTubeVideo(article, feed, downloadButton));
+    } else {
+      downloadButton.disabled = true;
+      downloadButton.title = 'The feed for this video no longer exists';
+    }
 
     const originalButton = overlay.querySelector('[data-action="open-original"]');
     if (originalButton) {
@@ -2774,7 +3030,7 @@ class RSSFeedComponent extends DataroomElement {
 
     // If the video has already been downloaded, play it inline from
     // disk (Electron only — plain browsers have no media:// protocol).
-    const hasDownload = this._embeddedDownloadedVideo(article, wrapper);
+    const hasDownload = this._embeddedDownloadedVideo(article, feed, wrapper);
     if (hasDownload) {
       const badgeHint = document.createElement('p');
       badgeHint.className = 'rss-youtube-external-hint';
@@ -2799,8 +3055,8 @@ class RSSFeedComponent extends DataroomElement {
 
     // A downloaded video stays embedded until the user deletes it. The
     // "Delete Video" button removes the file and marks the article read;
-    // until then the article remains unread so it stays visible in the
-    // unread list (watch-later semantics).
+    // until then the article stays out of the main feed (watch-later
+    // semantics) and is reachable from the Videos view.
     if (hasDownload) {
       const deleteButton = document.createElement('button');
       deleteButton.className = 'rss-action-button rss-button-danger rss-youtube-external-button rss-youtube-delete-button';
@@ -2821,9 +3077,11 @@ class RSSFeedComponent extends DataroomElement {
 
     body.appendChild(wrapper);
 
-    // Opening a downloaded video does not mark the article read — only
-    // deleting the video (or normal unread-toggle actions) does.
-    if (!hasDownload) {
+    // Opening a downloaded video does not change the article's read state
+    // beyond the mark-on-download above — only deleting the video (or
+    // normal unread-toggle actions) does. Articles whose feed row is gone
+    // cannot be marked read at all.
+    if (!hasDownload && feed?.feedID) {
       await this.markAsRead(feed.feedID, article.articleID);
     }
   }
@@ -2836,11 +3094,15 @@ class RSSFeedComponent extends DataroomElement {
    * in the Electron main process); in a plain browser there is no way
    * to read the file from disk, so nothing is embedded.
    *
+   * Embedding the player means the user is watching the downloaded copy,
+   * so the video's ready state is cleared (seen = 1) here.
+   *
    * @param {object} article - Article with a downloadPath (if downloaded)
+   * @param {object|null} feed - The article's feed (null for dangling entries)
    * @param {HTMLElement} wrapper - The .rss-youtube-external container
    * @returns {boolean} Whether a video element was added
    */
-  _embeddedDownloadedVideo(article, wrapper) {
+  _embeddedDownloadedVideo(article, feed, wrapper) {
     if (!article.downloadPath || !isElectronAvailable()) {
       return false;
     }
@@ -2857,6 +3119,10 @@ class RSSFeedComponent extends DataroomElement {
     } else {
       wrapper.appendChild(video);
     }
+
+    // Watching the downloaded copy clears its ready state so the Videos
+    // button badge stays accurate.
+    this._markDownloadedVideoSeen(feed?.feedID, article.articleID);
     return true;
   }
 
@@ -2865,9 +3131,10 @@ class RSSFeedComponent extends DataroomElement {
    * viewer if it is currently open (the external YouTube panel).
    *
    * @param {object} article - The downloaded article
+   * @param {object} feed - The article's feed
    * @returns {void}
    */
-  _embedDownloadedInOpenViewer(article) {
+  _embedDownloadedInOpenViewer(article, feed) {
     const viewer = this.activeModal;
     if (!viewer || !viewer.contains) {
       return;
@@ -2876,7 +3143,7 @@ class RSSFeedComponent extends DataroomElement {
     if (!wrapper || wrapper.querySelector('.rss-youtube-external-video')) {
       return;
     }
-    this._embeddedDownloadedVideo(article, wrapper);
+    this._embeddedDownloadedVideo(article, feed, wrapper);
   }
 
   /**
@@ -3019,12 +3286,14 @@ class RSSFeedComponent extends DataroomElement {
         button.textContent = 'Downloaded ✓';
       }
 
-      // A downloaded video should surface again in the feed: mark the
-      // article unread so it appears in the unread list.
-      await this.markAsUnread(feed.feedID, article.articleID);
+      // Downloaded videos live in the Videos view, not the main feed:
+      // mark the article read so it leaves the unread list. The ready
+      // badge on the footer Videos button points the user there.
+      await this.markAsRead(feed.feedID, article.articleID);
+      await this._refreshVideosReadyBadge();
       // If the article viewer is currently open on this article, play
-      // the fresh download inline.
-      this._embedDownloadedInOpenViewer(article);
+      // the fresh download inline (this also marks the video seen).
+      this._embedDownloadedInOpenViewer(article, feed);
     } catch (error) {
       console.error('Failed to download YouTube video:', error);
       toast.fail(`Download failed: ${error.message}`);
@@ -3055,16 +3324,28 @@ class RSSFeedComponent extends DataroomElement {
       button.textContent = 'Deleting…';
     }
 
+    // Videos-view entries may have a null feed (deleted feed row); the
+    // queue record still knows the feed/article IDs, so deletion works.
+    const feedID = feed?.feedID || article?.feedID || null;
+
     try {
       if (article.downloadPath) {
         // Removes the file, the downloaded_videos record, and the
         // article's denormalized download pointer in one step.
-        await deleteArticleYouTubeVideo(feed.feedID, article.articleID, article.downloadPath);
+        await deleteArticleYouTubeVideo(feedID, article.articleID, article.downloadPath);
         article.downloadPath = null;
+        await this._refreshVideosReadyBadge();
       }
-      await this.markAsRead(feed.feedID, article.articleID);
+      if (feedID) {
+        await this.markAsRead(feedID, article.articleID);
+      } else {
+        // No article row left to mark read; just refresh the view so the
+        // deleted entry disappears from the list.
+        await this.refreshFeeds();
+      }
     } catch (error) {
       console.error('Failed to delete downloaded video:', error);
+      this.showToast(`Could not delete video: ${error.message}`, 'error');
       if (button) {
         button.disabled = false;
         button.textContent = 'Delete Video';
@@ -3084,12 +3365,23 @@ class RSSFeedComponent extends DataroomElement {
     if (article.downloadPath) {
       // Removes the file, the downloaded_videos record, and the article's
       // denormalized download pointer in one step.
-      await deleteArticleYouTubeVideo(feed.feedID, article.articleID, article.downloadPath);
+      await deleteArticleYouTubeVideo(
+        feed?.feedID || article?.feedID || null,
+        article.articleID,
+        article.downloadPath
+      );
       article.downloadPath = null;
+      await this._refreshVideosReadyBadge();
     }
 
     this.closeModal();
-    await this.markAsRead(feed.feedID, article.articleID);
+    // Dangling entries (feed row gone) have nothing left to mark read.
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (feedID) {
+      await this.markAsRead(feedID, article.articleID);
+    } else if (this.viewMode === 'videos') {
+      await this.refreshFeeds();
+    }
   }
 
   /**
@@ -3407,7 +3699,9 @@ class RSSFeedComponent extends DataroomElement {
     const meta = document.createElement('div');
     meta.className = 'rss-article-viewer-meta';
 
-    if (feed.name) {
+    // feed can be null for dangling Videos-view entries whose feed row
+    // is gone; the viewer still works, just without the feed name.
+    if (feed?.name) {
       const source = document.createElement('span');
       source.textContent = feed.name;
       meta.appendChild(source);
@@ -3910,15 +4204,9 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {void}
    */
   showToast(message, type = 'info', duration = 3000) {
-    const toast = document.createElement('div');
-    toast.className = `rss-toast rss-toast-${type}`;
-    toast.textContent = message;
-    this.toastContainer.appendChild(toast);
-
-    setTimeout(() => {
-      toast.classList.add('rss-toast-fade');
-      setTimeout(() => toast.remove(), 300);
-    }, duration);
+    // Delegates to the central toast system so every toast in the app
+    // shares one container, one style and one lifecycle.
+    showAppToast(message, { type, duration });
   }
 
   /**
@@ -3960,6 +4248,15 @@ class RSSFeedComponent extends DataroomElement {
     // in _runEscapeAction() keeps the two delivery paths from double-firing.
     if (window.electron?.onEscapePressed) {
       window.electron.onEscapePressed(() => this._runEscapeAction());
+    }
+
+    // The native menu's "Quick Keys" item (Help menu) carries the
+    // Cmd+?/Ctrl+? accelerator, so Electron consumes the keystroke before
+    // this document sees it and asks the renderer to open the dialog over
+    // IPC instead. Browsers (no Electron preload) take the keydown path in
+    // _handleKeyDown below.
+    if (window.electron?.onShowQuickKeys) {
+      window.electron.onShowQuickKeys(() => this.showQuickKeysModal());
     }
   }
 
@@ -4025,6 +4322,15 @@ class RSSFeedComponent extends DataroomElement {
     if (isFindShortcut) {
       event.preventDefault();
       this._toggleFind();
+      return;
+    }
+
+    // Quick Keys reference: Cmd+? on macOS, Ctrl+? elsewhere. Deliberately
+    // sits before the typing/modal guard so the reference stays reachable
+    // from input fields and open dialogs, like the find shortcut.
+    if (isQuickKeysEvent(event)) {
+      event.preventDefault();
+      this.showQuickKeysModal();
       return;
     }
 

@@ -1,0 +1,79 @@
+/*
+  Central toast notifications
+
+  The single location for every toast in the app, rendered by
+  src/lib/toast.js. Toasts stack in a fixed container at the bottom-right
+  of the viewport. Simple toasts show just a status line; progress toasts
+  add a progress bar with a determinate fill or an indeterminate sweep.
+*/
+
+.app-toast-container {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Toasts are transient feedback for actions taken inside overlays (e.g. the
+     Share button in the article viewer at z-index 600) so they must paint
+     above every overlay, including the command palette at 1000. */
+  z-index: 1100;
+  font-family: var(--font-ui);
+}
+
+.app-toast {
+  background: var(--notification-color);
+  color: var(--background-color);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 240px;
+  max-width: 360px;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+/* Status line describing the current state */
+.app-toast-text {
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+.app-toast-progress {
+  height: 6px;
+  margin-top: 0.5rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--background-color) 40%, transparent);
+  overflow: hidden;
+}
+
+.app-toast-progress-fill {
+  height: 100%;
+  width: var(--app-toast-progress, 0%);
+  background: var(--background-color);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+/* Indeterminate sweep: no percent known yet, so glide back and forth */
+.app-toast-progress-fill.app-toast-indeterminate {
+  width: 30%;
+  animation: app-toast-sweep 1.2s linear infinite alternate;
+}
+
+@keyframes app-toast-sweep {
+  from {
+    margin-left: 0%;
+  }
+  to {
+    margin-left: 70%;
+  }
+}
+
+.app-toast-error {
+  background: var(--error-color);
+}
+
+.app-toast-fade {
+  opacity: 0;
+}

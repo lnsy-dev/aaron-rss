@@ -331,9 +331,21 @@ export async function initRSSSchema() {
       title TEXT,
       downloaded_at TEXT NOT NULL,
       file_size_bytes INTEGER,
+      seen INTEGER NOT NULL DEFAULT 0,
       UNIQUE (feed_id, article_id)
     )`,
   });
+
+  // Migration: add the downloaded video "seen" column to databases created
+  // before the Videos-ready badge was introduced. seen = 0 means the video
+  // is ready (downloaded but not yet watched); it powers both the Videos
+  // button badge and the exclusion of ready videos from the main feed.
+  const videoColumns = await callWorker('query', { sql: 'PRAGMA table_info(downloaded_videos)' });
+  if (!videoColumns.some((col) => col.name === 'seen')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE downloaded_videos ADD COLUMN seen INTEGER NOT NULL DEFAULT 0',
+    });
+  }
 
   // One-time backfill migration: queue rows for videos downloaded before
   // the downloaded_videos table existed. The UNIQUE constraints make this
@@ -695,6 +707,13 @@ export function loadFeedsForDisplay() {
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id AND a.read = 0
+        AND NOT EXISTS (
+          -- Ready (downloaded, unwatched) videos never appear in the main
+          -- feed; they surface through the Videos view and its button badge.
+          SELECT 1 FROM downloaded_videos rv
+          WHERE rv.feed_id = a.feed_id AND rv.article_id = a.article_id
+            AND rv.seen = 0 AND rv.file_path IS NOT NULL AND rv.file_path != ''
+        )
       LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
       ORDER BY f.name, a.date_published DESC, a.date_arrived DESC`,
   }).then(rowsToFeeds);
@@ -989,10 +1008,12 @@ function generateDownloadedVideoID() {
  */
 export async function recordDownloadedVideo(video) {
   const downloadedAt = video.downloadedAt || new Date();
+  // seen is written explicitly: a (re)download marks the video ready
+  // (unwatched) again, so it counts toward the Videos button badge.
   await callWorker('exec', {
     sql: `INSERT OR REPLACE INTO downloaded_videos
-      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     params: [
       generateDownloadedVideoID(),
       video.feedID || null,
@@ -1015,6 +1036,36 @@ export function listDownloadedVideos() {
   return callWorker('query', {
     sql: `SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC`,
   }).then((rows) => (rows || []).map(downloadedVideoFromRow));
+}
+
+/**
+ * Count downloaded videos that are ready (not yet watched).
+ *
+ * Drives the ready badge on the footer Videos button. Queue rows whose
+ * file is gone are not counted.
+ *
+ * @returns {Promise<number>} Number of downloaded-but-unwatched videos
+ */
+export function countUnseenDownloadedVideos() {
+  return callWorker('query', {
+    sql: `SELECT COUNT(*) AS ready_count FROM downloaded_videos
+      WHERE seen = 0 AND file_path IS NOT NULL AND file_path != ''`,
+  }).then((rows) => (rows && rows.length > 0 ? Number(rows[0].ready_count) || 0 : 0));
+}
+
+/**
+ * Mark a downloaded video as seen (watched) or unseen (ready).
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {boolean} [seen=true] - true when the video has been watched
+ * @returns {Promise<void>}
+ */
+export async function markDownloadedVideoSeen(feedID, articleID, seen = true) {
+  await callWorker('exec', {
+    sql: 'UPDATE downloaded_videos SET seen = ? WHERE feed_id = ? AND article_id = ?',
+    params: [seen ? 1 : 0, feedID, articleID],
+  });
 }
 
 /**
@@ -1052,7 +1103,8 @@ export function loadDownloadedArticles() {
         a.article_id, a.unique_id, COALESCE(a.title, v.title) AS title, a.content_html, a.content_text,
         COALESCE(a.url, v.youtube_url) AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
-        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
+        COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived,
+        v.feed_id AS video_feed_id, v.article_id AS video_article_id
       FROM downloaded_videos v
       LEFT JOIN feeds f ON f.feed_id = v.feed_id
       LEFT JOIN articles a ON a.feed_id = v.feed_id AND a.article_id = v.article_id
@@ -1074,7 +1126,11 @@ export function loadDownloadedArticles() {
     return {
       feed,
       article: {
-        articleID: row.article_id,
+        // Prefer the live article row's IDs, but fall back to the queue
+        // row's own feed_id/article_id so a dangling entry can still be
+        // opened and deleted from the Videos view.
+        articleID: row.article_id ?? row.video_article_id ?? null,
+        feedID: row.video_feed_id ?? row.feed_id ?? null,
         feedURL: row.feed_url,
         uniqueID: row.unique_id,
         title: row.title,

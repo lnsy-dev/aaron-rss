@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isYouTubeURL, isYouTubeStream, extractYouTubeVideoID, getYouTubeEmbedURL } from '../../src/lib/youtube.js';
+import { isYouTubeURL, isYouTubeHostURL, isYouTubeStream, extractYouTubeVideoID, getYouTubeEmbedURL } from '../../src/lib/youtube.js';
 
 describe('youtube helpers', () => {
   describe('isYouTubeURL', () => {
@@ -43,6 +43,39 @@ describe('youtube helpers', () => {
 
     it('rejects watch URLs without a valid video ID', () => {
       expect(isYouTubeURL('https://www.youtube.com/watch?v=short')).toBe(false);
+    });
+  });
+
+  describe('isYouTubeHostURL', () => {
+    it('accepts every standard YouTube host regardless of path', () => {
+      expect(isYouTubeHostURL('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(true);
+      expect(isYouTubeHostURL('https://youtube.com/feed/subscriptions')).toBe(true);
+      expect(isYouTubeHostURL('https://m.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(true);
+      expect(isYouTubeHostURL('https://music.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(true);
+      expect(isYouTubeHostURL('https://youtu.be/dQw4w9WgXcQ')).toBe(true);
+    });
+
+    it('accepts YouTube URL shapes without a valid video ID', () => {
+      // Feeds can carry URLs the strict isYouTubeURL() check rejects —
+      // attribution links, deleted-video redirects, malformed IDs. These
+      // must still be routed to the YouTube viewer, not article
+      // extraction (which 403s against youtube.com).
+      expect(isYouTubeHostURL('https://www.youtube.com/attribution_link?u=%2Fwatch%3Fv%3DdQw4w9WgXcQ')).toBe(true);
+      expect(isYouTubeHostURL('https://www.youtube.com/watch?v=deleted')).toBe(true);
+      expect(isYouTubeHostURL('https://www.youtube.com/watch_videos?video_ids=dQw4w9WgXcQ')).toBe(true);
+    });
+
+    it('rejects non-YouTube hosts and excluded subdomains', () => {
+      expect(isYouTubeHostURL('https://example.com/watch?v=dQw4w9WgXcQ')).toBe(false);
+      expect(isYouTubeHostURL('https://notyoutube.com/watch?v=dQw4w9WgXcQ')).toBe(false);
+      expect(isYouTubeHostURL('https://gaming.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(false);
+    });
+
+    it('rejects non-http(s) schemes and malformed input', () => {
+      expect(isYouTubeHostURL('ftp://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe(false);
+      expect(isYouTubeHostURL('')).toBe(false);
+      expect(isYouTubeHostURL('not-a-url')).toBe(false);
+      expect(isYouTubeHostURL(null)).toBe(false);
     });
   });
 

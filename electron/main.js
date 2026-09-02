@@ -264,11 +264,34 @@ function reopenWindow() {
 }
 
 /**
+ * Reference to the main application window so menu items can reach the
+ * renderer even while the menu itself holds focus (on macOS clicking the
+ * menu bar can leave no focused BrowserWindow).
+ */
+let mainWindow = null;
+
+/**
+ * Send a one-way message to the renderer of the main window.
+ *
+ * Falls back to the first existing window when none has focus.
+ *
+ * @param {string} channel - IPC channel name
+ * @returns {void}
+ */
+function sendToMainWindow(channel) {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send(channel);
+  }
+}
+
+/**
  * Build and install the application menu.
  *
  * Keeps the standard role-based menus (File/Edit/Window/Help) and adds
  * a "Reopen Window" item to the View menu so there is always a way to
- * get the main window back after closing it.
+ * get the main window back after closing it. The Help menu gains the
+ * "Quick Keys" reference dialog, also reachable with Cmd+?/Ctrl+?.
  */
 function createAppMenu() {
   const template = [
@@ -298,7 +321,17 @@ function createAppMenu() {
     { role: 'windowMenu' },
     {
       role: 'help',
-      submenu: [],
+      submenu: [
+        {
+          label: 'Quick Keys',
+          // Producing '?' requires Shift on most layouts; the accelerator
+          // matches the produced character, so Cmd+Shift+/ works as
+          // "Cmd+?". Electron consumes the keystroke and the renderer
+          // opens the dialog from the 'show-quick-keys' IPC message.
+          accelerator: 'CommandOrControl+?',
+          click: () => sendToMainWindow('show-quick-keys'),
+        },
+      ],
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -335,6 +368,8 @@ async function createWindow() {
 
   const startUrl = await resolveStartUrl();
   win.loadURL(startUrl);
+
+  mainWindow = win;
 
   // Keep the user from being navigated away from the app. External links
   // open in the system's default browser instead of a new Electron window.

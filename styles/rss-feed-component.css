@@ -75,7 +75,7 @@ body command-panel dialog {
   justify-content: center;
   min-width: 1.5rem;
   padding: 0.25rem 0.5rem;
-  background: var(--notification-color);
+  background: var(--neutral-2);
   color: var(--background-color);
   border-radius: 999px;
   font-size: 0.875rem;
@@ -444,7 +444,7 @@ body command-panel dialog {
 }
 
 .rss-article-link {
-  color: var(--notification-color);
+  color: var(--neutral-1);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.15em;

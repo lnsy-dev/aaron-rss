@@ -92,4 +92,34 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.on('youtube-download-progress', listener);
     return () => ipcRenderer.removeListener('youtube-download-progress', listener);
   },
+
+  /**
+   * Register the handler that answers the main process's Research
+   * Topics watch-API queries. The database lives in the renderer, so
+   * the main process forwards every API request here; the handler runs
+   * in the page and resolves with the query result.
+   *
+   * @param {(query: {type: string, params: object}) => Promise<unknown>} handler
+   * @returns {void}
+   */
+  onResearchApiQuery: (handler) => {
+    ipcRenderer.on('research-api-query', async (_event, payload) => {
+      let result = null;
+      let error = null;
+      try {
+        result = await handler(payload.query);
+      } catch (queryError) {
+        error = queryError.message || String(queryError);
+      }
+      ipcRenderer.send('research-api-response', { id: payload.id, result, error });
+    });
+  },
+
+  /**
+   * Ask the main process for the watch API's location so the UI can
+   * show the endpoint URLs users can watch from other applications.
+   *
+   * @returns {Promise<{baseUrl: string|null, endpoints: Array<{method: string, path: string, description: string}>}>}
+   */
+  getResearchApiInfo: () => ipcRenderer.invoke('research-api-info'),
 });

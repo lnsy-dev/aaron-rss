@@ -202,4 +202,43 @@ describe('article processor', () => {
       expect(article.skipPersist).toBeUndefined();
     });
   });
+
+  describe('processNewArticles with cleared-article memory', () => {
+    const existingFeed = { url: 'https://example.com/feed', articles: [] };
+
+    function makeParsedItem(uniqueID) {
+      return { uniqueID, url: `https://example.com/${uniqueID}`, title: uniqueID };
+    }
+
+    it('skips items whose uniqueID is in the seen set', () => {
+      const articles = processNewArticles(
+        [makeParsedItem('fresh'), makeParsedItem('cleared')],
+        existingFeed,
+        new Set(['cleared'])
+      );
+
+      expect(articles.map((a) => a.uniqueID)).toEqual(['fresh']);
+    });
+
+    it('treats nothing as seen when the set is omitted or null', () => {
+      const articles = processNewArticles(
+        [makeParsedItem('a'), makeParsedItem('b')],
+        existingFeed,
+        null
+      );
+      expect(articles).toHaveLength(2);
+    });
+
+    it('still excludes articles already in the existing feed', () => {
+      const feedWithArticles = {
+        url: existingFeed.url,
+        articles: [makeArticle('stored')],
+      };
+      const articles = processNewArticles(
+        [makeParsedItem('stored'), makeParsedItem('new')],
+        feedWithArticles
+      );
+      expect(articles.map((a) => a.uniqueID)).toEqual(['new']);
+    });
+  });
 });

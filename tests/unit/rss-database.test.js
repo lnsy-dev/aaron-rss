@@ -62,7 +62,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -120,7 +120,12 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec']);
+    expect(actions).toEqual([
+      'exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec',
+      // Research Topics, article markdown, and clear-memory tables close
+      // out the schema init.
+      'exec', 'exec', 'exec', 'exec',
+    ]);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>
       m.params.sql?.includes('ALTER TABLE')

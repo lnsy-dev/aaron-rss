@@ -56,11 +56,17 @@ function buildFailedFeed(existingFeed) {
  *   into link-diff mode against the fetched HTML.
  * @param {object} params.existingFeed - The feed record loaded from the DB
  * @param {number} params.maxArticles - Maximum articles to keep per feed
+ * @param {Array<string>} [params.clearedUniqueIDs] - UniqueIDs of articles
+ *   deliberately cleared (research-topic "clear articles"); items with
+ *   these ids arriving again from the source are not re-added as new
  * @returns {Promise<object>} The updated feed record, carrying a
  *   `snapshotLinks` property when refreshed in snapshot mode
  */
 async function refreshFeed(params) {
   const { feedText, htmlText, parsedFeed: preParsedFeed, existingFeed, maxArticles } = params;
+  const clearedUniqueIDs = Array.isArray(params.clearedUniqueIDs)
+    ? new Set(params.clearedUniqueIDs)
+    : null;
   const snapshotMode = Array.isArray(params.snapshotLinks);
 
   let parsedFeed;
@@ -92,7 +98,7 @@ async function refreshFeed(params) {
     return buildFailedFeed(existingFeed);
   }
 
-  const newArticles = processNewArticles(parsedFeed.items, existingFeed);
+  const newArticles = processNewArticles(parsedFeed.items, existingFeed, clearedUniqueIDs);
   const updatedArticles = updateExistingArticles(parsedFeed.items, existingFeed);
   const mergedArticles = mergeArticles(updatedArticles, newArticles, maxArticles);
 

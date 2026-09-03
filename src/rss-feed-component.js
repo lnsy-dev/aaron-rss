@@ -19,6 +19,12 @@ import {
   loadArticleContent,
   countUnseenDownloadedVideos,
   markDownloadedVideoSeen,
+  createResearchTopic,
+  deleteResearchTopic,
+  listResearchTopics,
+  listResearchTopicArticles,
+  addFeedToResearchTopic,
+  removeFeedFromResearchTopic,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -36,6 +42,8 @@ import {
   downloadArticleYouTubeVideo,
   deleteArticleYouTubeVideo,
   loadDownloadedArticles,
+  ensureFeedSubscribed,
+  clearResearchTopicArticles,
 } from './lib/feed-manager.js';
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
@@ -68,6 +76,7 @@ import {
 } from './lib/quick-keys.js';
 import { isYouTubeURL, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
+import { registerResearchApiBridge } from './lib/research-api-bridge.js';
 import {
   getUsableImageURL,
   deriveImageFilename,
@@ -124,6 +133,11 @@ class RSSFeedComponent extends DataroomElement {
     // Radio group of view-mode icons in the footer (timeline / feeds / videos).
     this.viewModeInputs = {};
     this.videosButton = null;
+    // Research Topic view state: which topic is open in the topic view.
+    this._topicView = null;
+    // Cached {feed, article} pairs for the topic view (see renderTopicView).
+    this._topicEntries = null;
+    this._topicRenderGeneration = 0;
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
@@ -163,10 +177,15 @@ class RSSFeedComponent extends DataroomElement {
     try {
       const status = await getStatus();
       await initRSSSchema();
+      // In Electron, answer the main process's external watch API
+      // queries (research topics, articles, scraped markdown). No-op in
+      // the browser, where there is no API server.
+      registerResearchApiBridge();
       this.settings = { ...DEFAULT_SETTINGS, ...(await loadSettings()) };
       const savedMode = this.settings.viewMode;
-      if (savedMode === 'videos') {
-        // Videos is a transient overlay; land on the return mode instead.
+      if (savedMode === 'videos' || savedMode === 'topic') {
+        // Videos and the Research Topic view are transient overlays; land
+        // on the return mode instead.
         this.viewMode = this._videosReturnMode;
         this.settings.viewMode = this.viewMode;
       } else {
@@ -445,6 +464,12 @@ class RSSFeedComponent extends DataroomElement {
     this.settings.viewMode = mode;
     this._syncViewToggle();
 
+    // Leaving the Research Topic view drops its state; entering Videos
+    // from it preserves it so returning from Videos reopens the topic.
+    if (mode === 'timeline' || mode === 'feeds') {
+      this._topicView = null;
+    }
+
     if (mode !== 'videos') {
       try {
         await saveSettings({ viewMode: mode });
@@ -516,6 +541,120 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Open a Research Topic as its own view.
+   *
+   * The topic's articles are presented like a standard feed (the same
+   * article rows and interactions as the Timeline view), merged across
+   * the topic's member feeds and ordered newest first. Opened from the
+   * Research Topics view; the footer radio menu returns to the regular
+   * timeline/feeds view.
+   *
+   * @param {string} topicID
+   * @returns {Promise<void>}
+   */
+  async openResearchTopicView(topicID) {
+    let name = 'Research Topic';
+    try {
+      const topics = await listResearchTopics();
+      name = topics.find((topic) => topic.topicID === topicID)?.name || name;
+    } catch (error) {
+      console.error('Failed to resolve research topic name:', error);
+    }
+
+    this._topicView = { topicID, name };
+    this.closeModal();
+    this.viewMode = 'topic';
+    this._syncViewToggle();
+    this.renderTopicView();
+  }
+
+  /**
+   * Render the Research Topic view: every article of the open topic,
+   * newest first, reusing the standard timeline article rendering.
+   *
+   * Like the Videos view, the entries are cached (`_topicEntries`) so
+   * the delegated click handler can act on articles that are not in
+   * `this.feeds` (read or cleared ones). A generation guard keeps stale
+   * async renders from overwriting a newer view.
+   *
+   * @returns {Promise<void>}
+   */
+  async renderTopicView() {
+    const view = this._topicView;
+    if (!view) {
+      this.viewMode = this._videosReturnMode || 'timeline';
+      this.renderFeeds();
+      return;
+    }
+
+    const generation = (this._topicRenderGeneration += 1);
+
+    let rows = [];
+    try {
+      rows = (await listResearchTopicArticles(view.topicID)) || [];
+    } catch (error) {
+      if (generation !== this._topicRenderGeneration) {
+        return;
+      }
+      console.error('Failed to load research topic articles:', error);
+      this.contentArea.innerHTML = '';
+      const errorState = document.createElement('div');
+      errorState.className = 'rss-no-articles';
+      errorState.textContent = 'Could not load research topic articles';
+      this.contentArea.appendChild(errorState);
+      return;
+    }
+
+    if (generation !== this._topicRenderGeneration) {
+      return;
+    }
+
+    this._topicEntries = rows.map((row) => ({
+      feed: { feedID: row.feedID, name: row.feedName || row.feedURL || 'Unknown Feed', url: row.feedURL },
+      article: row,
+    }));
+
+    const container = document.createElement('div');
+    container.className = 'rss-timeline rss-topic-view';
+    container.setAttribute('data-topic-id', view.topicID);
+
+    const header = document.createElement('div');
+    header.className = 'rss-topic-view-header';
+    const readyCount = rows.filter((row) => row.markdownReady).length;
+    header.textContent = `${view.name} — ${rows.length} article${rows.length === 1 ? '' : 's'} (${readyCount} scraped)`;
+    container.appendChild(header);
+
+    if (rows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'rss-no-articles';
+      empty.textContent = 'No articles in this topic yet';
+      container.appendChild(empty);
+    } else {
+      for (const { feed, article } of this._topicEntries) {
+        // The wrapper carries the member feed's data-feed-id so the
+        // delegated click handler and article actions resolve the real
+        // feed for read/star updates and the article viewer.
+        const entry = document.createElement('div');
+        entry.className = 'rss-timeline-item';
+        entry.setAttribute('data-feed-id', feed.feedID);
+
+        this.renderArticle(entry, article, feed, { showFeedName: true });
+        container.appendChild(entry);
+      }
+    }
+
+    this.contentArea.innerHTML = '';
+    this.contentArea.appendChild(container);
+
+    this._restoreSelection();
+    this._ensureFirstArticleSelected();
+
+    if (this._findBar?.classList.contains('rss-find-bar--visible')) {
+      this._runFind({ selectFirst: true });
+    }
+  }
+
+  /**
    * Refresh the ready badge on the footer Videos button.
    *
    * The badge shows how many downloaded videos are ready (downloaded but
@@ -582,6 +721,7 @@ class RSSFeedComponent extends DataroomElement {
     const commands = [
       { name: 'Add RSS Feed', action: () => this.openAddFeedModal() },
       { name: 'Manage Feeds', action: () => this.openManageFeedsModal() },
+      { name: 'Research Topics', action: () => this.openResearchTopicsModal() },
       { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
       { name: 'Videos', action: () => this._handleVideosViewButton() },
@@ -683,9 +823,24 @@ class RSSFeedComponent extends DataroomElement {
     // feed was deleted all live only in the queue. Resolve those clicks
     // from the cached view data instead of this.feeds, otherwise "Read"
     // and "Delete Video" silently do nothing for exactly those videos.
+    // The Research Topic view renders straight from the topic's article
+    // query, so its entries may not be in this.feeds either (read or
+    // cleared articles). Resolve those clicks from the cached view data.
     let feed;
     let article;
-    if (event.target.closest('.rss-videos-view')) {
+    if (event.target.closest('.rss-topic-view')) {
+      const entry = (this._topicEntries || []).find((candidate) => {
+        if (candidate.article?.articleID !== articleID) {
+          return false;
+        }
+        return !feedID || candidate.feed?.feedID === feedID;
+      });
+      feed = entry?.feed || null;
+      article = entry?.article;
+      if (!article) {
+        return;
+      }
+    } else if (event.target.closest('.rss-videos-view')) {
       const entry = (this._videosEntries || []).find((candidate) => {
         if (candidate.article?.articleID !== articleID) {
           return false;
@@ -1041,6 +1196,12 @@ class RSSFeedComponent extends DataroomElement {
     // The Videos view lists every article with a downloaded video.
     if (this.viewMode === 'videos') {
       this.renderVideosView();
+      return;
+    }
+
+    // The Research Topic view lists a topic's articles as a standard feed.
+    if (this.viewMode === 'topic') {
+      this.renderTopicView();
       return;
     }
 
@@ -1883,6 +2044,413 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     body.appendChild(list);
+  }
+
+  /**
+   * Open the Research Topics view.
+   *
+   * Research Topics are named groups of feeds scraped together; the view
+   * lets the user create and delete topics, add and remove feeds, and
+   * check the scrape status (article counts, last refresh) of each.
+   *
+   * @returns {Promise<void>}
+   */
+  async openResearchTopicsModal() {
+    const modal = this.createModal('Research Topics', { fullPage: true });
+    await this._refreshResearchTopicsBody(modal.body);
+  }
+
+  /**
+   * Reload research topics and feeds from the database and re-render the
+   * Research Topics view body.
+   *
+   * @param {HTMLElement} body
+   * @returns {Promise<void>}
+   */
+  async _refreshResearchTopicsBody(body) {
+    try {
+      const [topics, allFeeds, apiInfo] = await Promise.all([
+        listResearchTopics(),
+        loadAllFeeds(),
+        this._loadResearchApiInfo(),
+      ]);
+      this.renderResearchTopicsBody(body, topics, allFeeds, apiInfo);
+    } catch (error) {
+      console.error('Failed to load research topics:', error);
+      body.innerHTML = '';
+      const message = document.createElement('p');
+      message.className = 'rss-empty-state';
+      message.textContent = `Failed to load research topics: ${error.message}`;
+      body.appendChild(message);
+    }
+  }
+
+  /**
+   * Ask the Electron main process where the external watch API listens.
+   *
+   * Returns null outside Electron or when the API failed to start; the
+   * view then simply hides the endpoint hints.
+   *
+   * @returns {Promise<{baseUrl: string|null, endpoints: Array}|null>}
+   */
+  async _loadResearchApiInfo() {
+    try {
+      if (!window.electron || typeof window.electron.getResearchApiInfo !== 'function') {
+        return null;
+      }
+      return await window.electron.getResearchApiInfo();
+    } catch (error) {
+      console.error('Failed to load research API info:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Render the body of the Research Topics view.
+   *
+   * @param {HTMLElement} body
+   * @param {Array<object>} topics - Topics with member feeds and status
+   * @param {Array<object>} allFeeds - Every subscribed feed (for the picker)
+   * @param {{baseUrl: string|null, endpoints: Array}|null} [apiInfo] - Watch API location
+   * @returns {void}
+   */
+  renderResearchTopicsBody(body, topics, allFeeds, apiInfo = null) {
+    body.innerHTML = '';
+
+    const help = document.createElement('p');
+    help.className = 'rss-modal-help';
+    help.textContent = 'Research Topics group feeds that are scraped together. Create a topic, add feeds to it, and watch each topic\'s scrape status here.';
+    body.appendChild(help);
+
+    if (apiInfo?.baseUrl) {
+      const apiLine = document.createElement('p');
+      apiLine.className = 'rss-modal-help rss-research-api-info';
+      apiLine.textContent = `Other applications can watch this data at ${apiInfo.baseUrl} (read-only localhost API).`;
+      body.appendChild(apiLine);
+    }
+
+    // Create-topic form.
+    const createForm = document.createElement('div');
+    createForm.className = 'rss-research-create';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'rss-research-create-name';
+    nameInput.placeholder = 'New research topic name…';
+    nameInput.setAttribute('aria-label', 'New research topic name');
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') createButton.click();
+    });
+    createForm.appendChild(nameInput);
+
+    const createButton = document.createElement('button');
+    createButton.className = 'rss-button-primary rss-research-create-button';
+    createButton.textContent = 'Create Topic';
+    createButton.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      if (!name) return;
+      try {
+        await createResearchTopic(name);
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to create topic: ${error.message}`, 'error');
+      }
+    });
+    createForm.appendChild(createButton);
+
+    body.appendChild(createForm);
+
+    if (topics.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'rss-empty-state rss-research-empty';
+      empty.textContent = 'No research topics yet. Create one above.';
+      body.appendChild(empty);
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'rss-research-topic-list';
+
+    for (const topic of topics) {
+      list.appendChild(this._renderResearchTopic(topic, allFeeds, body, apiInfo));
+    }
+
+    body.appendChild(list);
+  }
+
+  /**
+   * Render one research topic section: header with status, member feed
+   * rows with remove buttons, and add-feed controls.
+   *
+   * @param {object} topic - Topic with member feeds and status
+   * @param {Array<object>} allFeeds - Every subscribed feed (for the picker)
+   * @param {HTMLElement} body - The view body, re-rendered after changes
+   * @param {{baseUrl: string|null, endpoints: Array}|null} [apiInfo] - Watch API location
+   * @returns {HTMLElement} The topic section element
+   */
+  _renderResearchTopic(topic, allFeeds, body, apiInfo = null) {
+    const section = document.createElement('section');
+    section.className = 'rss-research-topic';
+    section.setAttribute('data-topic-id', topic.topicID);
+
+    const header = document.createElement('div');
+    header.className = 'rss-research-topic-header';
+
+    const heading = document.createElement('h3');
+    heading.textContent = topic.name;
+    header.appendChild(heading);
+
+    const idLabel = document.createElement('span');
+    idLabel.className = 'rss-research-topic-id';
+    idLabel.textContent = `#${topic.topicID}`;
+    idLabel.title = 'Topic id';
+    header.appendChild(idLabel);
+
+    const headerActions = document.createElement('div');
+    headerActions.className = 'rss-research-topic-actions';
+
+    // View the topic's articles as a standard feed.
+    const viewButton = document.createElement('button');
+    viewButton.className = 'rss-research-topic-view';
+    viewButton.textContent = 'View Articles';
+    viewButton.title = 'Show this topic\'s articles as a feed';
+    viewButton.addEventListener('click', () => this.openResearchTopicView(topic.topicID));
+    headerActions.appendChild(viewButton);
+
+    // Clear Articles: wipe the topic's articles from the database while
+    // remembering what was scraped, so refreshes do not re-download
+    // them. Two-step confirm keeps the topic view open.
+    const clearButton = document.createElement('button');
+    clearButton.className = 'rss-research-topic-clear';
+    clearButton.textContent = 'Clear Articles';
+    clearButton.title = 'Remove this topic\'s articles from the database (scraped items are remembered and will not be re-downloaded)';
+    clearButton.addEventListener('click', async () => {
+      if (clearButton.dataset.armed !== 'true') {
+        clearButton.dataset.armed = 'true';
+        clearButton.textContent = 'Confirm Clear';
+        return;
+      }
+      try {
+        const clearedCount = await clearResearchTopicArticles(topic.topicID);
+        this.showToast(`Cleared ${clearedCount} article${clearedCount === 1 ? '' : 's'}`);
+        await this.refreshFeeds();
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to clear articles: ${error.message}`, 'error');
+      }
+    });
+    headerActions.appendChild(clearButton);
+
+    // Two-step delete: the first click arms the button, the second
+    // confirms. Inline confirmation keeps the topic view open, unlike
+    // the confirm-modal flow used by Manage Feeds.
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'rss-button-danger rss-research-topic-delete';
+    deleteButton.textContent = 'Delete Topic';
+    deleteButton.addEventListener('click', async () => {
+      if (deleteButton.dataset.armed !== 'true') {
+        deleteButton.dataset.armed = 'true';
+        deleteButton.textContent = 'Confirm Delete';
+        return;
+      }
+      try {
+        await deleteResearchTopic(topic.topicID);
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to delete topic: ${error.message}`, 'error');
+      }
+    });
+    headerActions.appendChild(deleteButton);
+
+    header.appendChild(headerActions);
+    section.appendChild(header);
+
+    const feedList = document.createElement('ul');
+    feedList.className = 'rss-research-feed-list';
+
+    if (topic.feeds.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'rss-research-feed-empty';
+      empty.textContent = 'No feeds in this topic yet.';
+      feedList.appendChild(empty);
+    }
+
+    for (const feed of topic.feeds) {
+      feedList.appendChild(this._renderResearchTopicFeed(topic, feed, body, apiInfo));
+    }
+
+    section.appendChild(feedList);
+
+    // The endpoint other applications watch for this topic's articles.
+    if (apiInfo?.baseUrl) {
+      const apiLine = document.createElement('p');
+      apiLine.className = 'rss-research-topic-api';
+      apiLine.textContent = `Watch API: GET ${apiInfo.baseUrl}/api/research-topics/${topic.topicID}/articles`;
+      section.appendChild(apiLine);
+    }
+
+    section.appendChild(this._renderResearchTopicAddControls(topic, allFeeds, body));
+
+    return section;
+  }
+
+  /**
+   * Render one member feed row: name, URL, scrape status, remove button.
+   *
+   * @param {object} topic
+   * @param {object} feed - Member feed with article/unread counts
+   * @param {HTMLElement} body - The view body, re-rendered after changes
+   * @param {{baseUrl: string|null, endpoints: Array}|null} [apiInfo] - Watch API location
+   * @returns {HTMLElement} The feed row element
+   */
+  _renderResearchTopicFeed(topic, feed, body, apiInfo = null) {
+    const item = document.createElement('li');
+    item.className = 'rss-research-feed-item';
+    item.setAttribute('data-feed-id', feed.feedID);
+
+    const info = document.createElement('div');
+    info.className = 'rss-research-feed-info';
+
+    const name = document.createElement('span');
+    name.className = 'rss-research-feed-name';
+    name.textContent = feed.name || 'Untitled Feed';
+    info.appendChild(name);
+
+    const url = document.createElement('span');
+    url.className = 'rss-research-feed-url';
+    url.textContent = feed.url;
+    info.appendChild(url);
+
+    const stats = document.createElement('span');
+    stats.className = 'rss-research-feed-stats';
+    const statsParts = [`${feed.unreadCount}/${feed.articleCount} unread`];
+    if (feed.lastFetchEndTime) {
+      statsParts.push(`updated ${feed.lastFetchEndTime.toLocaleString()}`);
+    } else {
+      statsParts.push('never refreshed');
+    }
+    stats.textContent = statsParts.join(' · ');
+    if (!feed.lastFetchSuccessful) {
+      stats.classList.add('rss-research-feed-stats--error');
+      stats.title = 'The last fetch of this feed failed';
+    }
+    info.appendChild(stats);
+
+    // The endpoint other applications watch for this feed's articles.
+    if (apiInfo?.baseUrl) {
+      const apiLine = document.createElement('span');
+      apiLine.className = 'rss-research-feed-api';
+      apiLine.textContent = `GET ${apiInfo.baseUrl}/api/feeds/${feed.feedID}/articles`;
+      info.appendChild(apiLine);
+    }
+
+    item.appendChild(info);
+
+    const removeButton = document.createElement('button');
+    removeButton.className = 'rss-research-feed-remove';
+    removeButton.textContent = 'Remove';
+    removeButton.title = 'Remove this feed from the topic (the feed itself stays subscribed)';
+    removeButton.addEventListener('click', async () => {
+      try {
+        await removeFeedFromResearchTopic(topic.topicID, feed.feedID);
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to remove feed: ${error.message}`, 'error');
+      }
+    });
+    item.appendChild(removeButton);
+
+    return item;
+  }
+
+  /**
+   * Render the add-feed controls for a topic: a picker of subscribed
+   * feeds not yet in the topic, plus an "add by URL" input that
+   * subscribes (with discovery) and links the feed in one step.
+   *
+   * @param {object} topic
+   * @param {Array<object>} allFeeds - Every subscribed feed
+   * @param {HTMLElement} body - The view body, re-rendered after changes
+   * @returns {HTMLElement} The controls container
+   */
+  _renderResearchTopicAddControls(topic, allFeeds, body) {
+    const controls = document.createElement('div');
+    controls.className = 'rss-research-add-feed';
+
+    const memberIDs = new Set(topic.feeds.map((feed) => feed.feedID));
+    const candidates = allFeeds
+      .filter((feed) => !memberIDs.has(feed.feedID))
+      .sort((a, b) => (a.name || 'Untitled Feed').localeCompare(b.name || 'Untitled Feed'));
+
+    const select = document.createElement('select');
+    select.className = 'rss-research-feed-select';
+    select.setAttribute('aria-label', `Add a subscribed feed to ${topic.name}`);
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Choose a subscribed feed…';
+    select.appendChild(placeholder);
+
+    for (const feed of candidates) {
+      const option = document.createElement('option');
+      option.value = feed.feedID;
+      option.textContent = feed.name || 'Untitled Feed';
+      select.appendChild(option);
+    }
+    controls.appendChild(select);
+
+    const addButton = document.createElement('button');
+    addButton.textContent = 'Add Feed';
+    addButton.disabled = candidates.length === 0;
+    addButton.addEventListener('click', async () => {
+      const feedID = select.value;
+      if (!feedID) return;
+      try {
+        await addFeedToResearchTopic(topic.topicID, feedID);
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to add feed: ${error.message}`, 'error');
+      }
+    });
+    controls.appendChild(addButton);
+
+    const urlInput = document.createElement('input');
+    urlInput.type = 'url';
+    urlInput.className = 'rss-research-add-url';
+    urlInput.placeholder = '…or add a new feed by URL';
+    urlInput.setAttribute('aria-label', `Add a new feed by URL to ${topic.name}`);
+    urlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') urlAddButton.click();
+    });
+    controls.appendChild(urlInput);
+
+    const urlAddButton = document.createElement('button');
+    urlAddButton.className = 'rss-research-add-url-button';
+    urlAddButton.textContent = 'Add by URL';
+    urlAddButton.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      if (!url) return;
+      urlAddButton.disabled = true;
+      urlAddButton.textContent = 'Adding…';
+      try {
+        const feed = await ensureFeedSubscribed(url);
+        if (!feed) {
+          this.showToast('No RSS feeds found. Try a direct feed URL.', 'error');
+          return;
+        }
+        await addFeedToResearchTopic(topic.topicID, feed.feedID);
+        await this.refreshFeeds();
+        await this._refreshResearchTopicsBody(body);
+      } catch (error) {
+        this.showToast(`Failed to add feed: ${error.message}`, 'error');
+      } finally {
+        urlAddButton.disabled = false;
+        urlAddButton.textContent = 'Add by URL';
+      }
+    });
+    controls.appendChild(urlAddButton);
+
+    return controls;
   }
 
   /**

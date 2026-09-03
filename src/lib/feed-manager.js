@@ -27,6 +27,11 @@ import {
   deleteDownloadedVideosForArticle as dbDeleteDownloadedVideosForArticle,
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
+  listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
+  saveArticleMarkdown as dbSaveArticleMarkdown,
+  listClearedUniqueIDs as dbListClearedUniqueIDs,
+  listTopicDownloadedVideos as dbListTopicDownloadedVideos,
+  clearResearchTopicArticles as dbClearResearchTopicArticles,
 } from './database.js';
 import { fetchText, normalizeFeedURL } from './rss-network.js';
 import { parseFeedText } from './rss-parser.js';
@@ -38,6 +43,7 @@ import { refreshFeedInWorker } from './feed-refresh-bridge.js';
 import { enrichBlueskyFeedItems } from './social-post.js';
 import { downloadYouTubeVideo, deleteDownloadedVideo } from './youtube-bridge.js';
 import { isYouTubeURL, isYouTubeStream } from './youtube.js';
+import { extractArticle } from './article-extractor.js';
 
 /**
  * Generate a feed ID from a URL.
@@ -45,7 +51,7 @@ import { isYouTubeURL, isYouTubeStream } from './youtube.js';
  * @param {string} url
  * @returns {string}
  */
-function generateFeedID(url) {
+export function generateFeedID(url) {
   let hash = 0;
   for (let i = 0; i < url.length; i++) {
     const char = url.charCodeAt(i);
@@ -121,6 +127,27 @@ export async function discoverAndAddFeed(url) {
 
   const best = discovered[0];
   return addFeed(best.url, best.title, best.synthetic);
+}
+
+/**
+ * Make sure a feed is subscribed and return its stored record.
+ *
+ * If the URL is already subscribed (same feed ID), the existing feed is
+ * returned untouched; otherwise the URL goes through normal feed
+ * discovery and is added. Used by Research Topics so a topic can add a
+ * feed that is not (yet) in the subscription list.
+ *
+ * @param {string} url - Website or feed URL
+ * @returns {Promise<object|null>} The subscribed feed, or null on failure
+ */
+export async function ensureFeedSubscribed(url) {
+  url = normalizeFeedURL(url);
+  const feedID = generateFeedID(url);
+  const existing = await dbLoadFeed(feedID);
+  if (existing) {
+    return existing;
+  }
+  return discoverAndAddFeed(url);
 }
 
 /**
@@ -310,6 +337,10 @@ export async function refreshFeed(feedID, maxArticles = 50) {
       };
     }
 
+    // Articles deliberately cleared from a research topic must not come
+    // back as "new" on the next refresh.
+    workerParams.clearedUniqueIDs = await dbListClearedUniqueIDs(feedID);
+
     const updatedFeed = await refreshFeedInWorker(workerParams);
 
     // Persist the refreshed snapshot so future refreshes diff against it.
@@ -329,11 +360,110 @@ export async function refreshFeed(feedID, maxArticles = 50) {
     );
     await purgeOldReadArticles(feedID);
 
+    // Research-topic feeds scrape their new articles to full markdown
+    // immediately, so the external watch API can serve fully scraped
+    // content as soon as it lands.
+    await scrapeNewArticleMarkdown(feedID, existingFeed, updatedFeed);
+
     return updatedFeed;
   } catch (error) {
     console.error('Failed to refresh feed:', error);
     return null;
   }
+}
+
+/**
+ * Immediately scrape the full markdown of newly arrived articles for
+ * feeds that belong to a research topic.
+ *
+ * Runs after a refresh has persisted its merge. Only articles that were
+ * not in the pre-refresh feed are scraped (existing content is never
+ * re-fetched), YouTube video pages are skipped, and per-article failures
+ * never fail the refresh itself. The extracted markdown is stored in the
+ * article_markdown table so the external watch API can serve fully
+ * scraped articles without re-scraping.
+ *
+ * @param {string} feedID
+ * @param {object|null} existingFeed - Pre-refresh feed (slim articles)
+ * @param {object} updatedFeed - Merged post-refresh feed
+ * @returns {Promise<void>}
+ */
+export async function scrapeNewArticleMarkdown(feedID, existingFeed, updatedFeed) {
+  let topicFeedIDs;
+  try {
+    topicFeedIDs = (await dbListFeedIDsInResearchTopics()) || [];
+  } catch (error) {
+    // Membership lookup failing should never break the refresh.
+    console.error('Failed to list research topic feed IDs:', error);
+    return;
+  }
+  if (!topicFeedIDs.includes(feedID)) {
+    return;
+  }
+
+  const existingIDs = new Set(
+    (existingFeed?.articles || []).map((article) => article.articleID)
+  );
+  const newArticles = (updatedFeed.articles || []).filter(
+    (article) =>
+      !existingIDs.has(article.articleID) &&
+      !article.skipPersist &&
+      article.url &&
+      !isYouTubeURL(article.url)
+  );
+
+  for (const article of newArticles) {
+    try {
+      const extracted = await extractArticle(article.url);
+      if (extracted?.markdown) {
+        await dbSaveArticleMarkdown(feedID, article.articleID, article.url, extracted.markdown);
+      }
+    } catch (error) {
+      // One unscrapeable article must not block the rest of the batch.
+      console.error('Failed to scrape markdown for article:', article.url, error);
+    }
+  }
+}
+
+/**
+ * Clear every article of a research topic's member feeds while keeping
+ * the scrape memory.
+ *
+ * Downloaded video files on the affected articles are deleted first
+ * (their article rows are about to disappear), then the database helper
+ * records each article in cleared_articles — what it was and when it
+ * was cleared — and deletes the article and scraped-markdown rows. The
+ * memory keeps the next refresh from treating those items as new and
+ * re-downloading them.
+ *
+ * @param {string} topicID
+ * @returns {Promise<number>} The number of articles cleared
+ */
+export async function clearResearchTopicArticles(topicID) {
+  let downloadable;
+  try {
+    downloadable = (await dbListTopicDownloadedVideos(topicID)) || [];
+  } catch (error) {
+    // Video cleanup failures must not prevent the articles from being
+    // cleared; dangling queue rows are tolerated elsewhere.
+    console.error('Failed to list topic downloaded videos:', error);
+    downloadable = [];
+  }
+
+  for (const item of downloadable) {
+    try {
+      await deleteDownloadedVideo(item.downloadPath);
+    } catch (error) {
+      console.error('Failed to delete cleared article video file:', item.downloadPath, error);
+    }
+    try {
+      await dbDeleteDownloadedVideosForArticle(item.feedID, item.articleID);
+    } catch (error) {
+      console.error('Failed to delete cleared article video record:', item.articleID, error);
+    }
+  }
+
+  return dbClearResearchTopicArticles(topicID);
 }
 
 /**

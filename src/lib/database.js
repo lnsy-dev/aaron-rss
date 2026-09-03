@@ -358,6 +358,54 @@ export async function initRSSSchema() {
       FROM articles
       WHERE download_path IS NOT NULL AND download_path != ''`,
   });
+
+  // Research Topics: named groups of feeds scraped together. Membership
+  // rows are soft references to the feeds table — deleting a topic (or
+  // removing a feed from one) never touches the feed or its articles.
+  await callWorker('exec', {
+    sql: `CREATE TABLE IF NOT EXISTS research_topics (
+      topic_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+  });
+  await callWorker('exec', {
+    sql: `CREATE TABLE IF NOT EXISTS research_topic_feeds (
+      topic_id TEXT NOT NULL,
+      feed_id TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      PRIMARY KEY (topic_id, feed_id)
+    )`,
+  });
+
+  // Fully scraped article markdown for research-topic feeds. Rows are
+  // written as soon as a new article arrives on refresh, so the external
+  // watch API can serve the complete article without re-scraping.
+  await callWorker('exec', {
+    sql: `CREATE TABLE IF NOT EXISTS article_markdown (
+      feed_id TEXT NOT NULL,
+      article_id TEXT NOT NULL,
+      url TEXT,
+      markdown TEXT NOT NULL,
+      scraped_at TEXT NOT NULL,
+      PRIMARY KEY (feed_id, article_id)
+    )`,
+  });
+
+  // "Clear articles" memory: when a research topic's articles are wiped,
+  // each article's identity is recorded here so the next refresh does not
+  // treat it as new (and re-download/scrape it). Feed deletion cleans up.
+  await callWorker('exec', {
+    sql: `CREATE TABLE IF NOT EXISTS cleared_articles (
+      feed_id TEXT NOT NULL,
+      article_id TEXT NOT NULL,
+      unique_id TEXT,
+      url TEXT,
+      title TEXT,
+      cleared_at TEXT NOT NULL,
+      PRIMARY KEY (feed_id, article_id)
+    )`,
+  });
 }
 
 /**
@@ -837,6 +885,11 @@ export async function deleteFeed(feedID) {
     sql: 'DELETE FROM page_snapshots WHERE feed_id = ?',
     params: [feedID],
   });
+  // The clear-articles memory is only meaningful while the feed exists.
+  await callWorker('exec', {
+    sql: 'DELETE FROM cleared_articles WHERE feed_id = ?',
+    params: [feedID],
+  });
 }
 
 /**
@@ -1238,4 +1291,393 @@ export async function saveSettings(settings) {
       params: [key, String(value)],
     });
   }
+}
+
+// ============================================================================
+// Research Topics
+// ============================================================================
+
+/**
+ * Generate a unique research topic id. Uses the standard crypto API when
+ * available and falls back to a random string otherwise.
+ *
+ * @returns {string}
+ */
+function generateResearchTopicID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `rt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Create a research topic (a named group of feeds to scrape together).
+ *
+ * @param {string} name - Display name of the topic
+ * @returns {Promise<{topicID: string, name: string, createdAt: string, feeds: Array}>}
+ */
+export async function createResearchTopic(name) {
+  const topicID = generateResearchTopicID();
+  const createdAt = new Date().toISOString();
+  await callWorker('exec', {
+    sql: 'INSERT INTO research_topics (topic_id, name, created_at) VALUES (?, ?, ?)',
+    params: [topicID, name, createdAt],
+  });
+  return { topicID, name, createdAt, feeds: [] };
+}
+
+/**
+ * Delete a research topic and its membership rows. The member feeds
+ * themselves (and their articles) are left untouched.
+ *
+ * @param {string} topicID
+ * @returns {Promise<void>}
+ */
+export async function deleteResearchTopic(topicID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM research_topic_feeds WHERE topic_id = ?',
+    params: [topicID],
+  });
+  await callWorker('exec', {
+    sql: 'DELETE FROM research_topics WHERE topic_id = ?',
+    params: [topicID],
+  });
+}
+
+/**
+ * Add a feed to a research topic. Re-adding an existing member is a no-op.
+ *
+ * @param {string} topicID
+ * @param {string} feedID
+ * @returns {Promise<void>}
+ */
+export async function addFeedToResearchTopic(topicID, feedID) {
+  await callWorker('exec', {
+    sql: 'INSERT OR IGNORE INTO research_topic_feeds (topic_id, feed_id, added_at) VALUES (?, ?, ?)',
+    params: [topicID, feedID, new Date().toISOString()],
+  });
+}
+
+/**
+ * Remove a feed from a research topic. The feed itself stays subscribed.
+ *
+ * @param {string} topicID
+ * @param {string} feedID
+ * @returns {Promise<void>}
+ */
+export async function removeFeedFromResearchTopic(topicID, feedID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM research_topic_feeds WHERE topic_id = ? AND feed_id = ?',
+    params: [topicID, feedID],
+  });
+}
+
+/**
+ * Convert the research-topic join query rows into topic objects with
+ * nested feed entries.
+ *
+ * @param {Array<object>} rows - Rows from the topic/feed/articles query
+ * @returns {Array<{topicID: string, name: string, createdAt: string, feeds: Array<object>}>}
+ */
+function rowsToResearchTopics(rows) {
+  const topicsByID = new Map();
+
+  for (const row of rows) {
+    if (!topicsByID.has(row.topic_id)) {
+      topicsByID.set(row.topic_id, {
+        topicID: row.topic_id,
+        name: row.name,
+        createdAt: row.created_at,
+        feeds: [],
+      });
+    }
+
+    if (row.feed_id) {
+      topicsByID.get(row.topic_id).feeds.push({
+        feedID: row.feed_id,
+        url: row.feed_url,
+        name: row.feed_name,
+        lastFetchSuccessful: Boolean(row.last_fetch_successful),
+        lastFetchEndTime: row.last_fetch_end_time ? new Date(row.last_fetch_end_time) : undefined,
+        articleCount: Number(row.article_count) || 0,
+        unreadCount: Number(row.unread_count) || 0,
+      });
+    }
+  }
+
+  return Array.from(topicsByID.values());
+}
+
+/**
+ * List every research topic with its member feeds and scrape status.
+ *
+ * Status per feed: total/unread article counts plus the last fetch time
+ * and success flag, so the view can report how a topic is scraping.
+ * Feeds that dangle (deleted while still a member) are skipped.
+ *
+ * @returns {Promise<Array<object>>}
+ */
+export async function listResearchTopics() {
+  const rows = (await callWorker('query', {
+    sql: `SELECT
+        t.topic_id, t.name, t.created_at,
+        tf.feed_id, f.url AS feed_url, f.name AS feed_name,
+        f.last_fetch_successful, f.last_fetch_end_time,
+        (SELECT COUNT(*) FROM articles a WHERE a.feed_id = tf.feed_id) AS article_count,
+        (SELECT COUNT(*) FROM articles a WHERE a.feed_id = tf.feed_id AND a.read = 0) AS unread_count
+      FROM research_topics t
+      LEFT JOIN research_topic_feeds tf ON tf.topic_id = t.topic_id
+      LEFT JOIN feeds f ON f.feed_id = tf.feed_id AND f.feed_id IS NOT NULL
+      ORDER BY t.created_at ASC, tf.added_at ASC`,
+  })) || [];
+
+  // Drop membership rows whose feed no longer exists (LEFT JOIN miss);
+  // feeds.url is NOT NULL so a null url marks a dangling membership.
+  return rowsToResearchTopics(rows.filter((row) => !row.feed_id || row.feed_url !== null));
+}
+
+/**
+ * List the feed IDs that belong to at least one research topic.
+ *
+ * The refresh pipeline uses this to decide which feeds must scrape their
+ * new articles to full markdown immediately.
+ *
+ * @returns {Promise<Array<string>>}
+ */
+export async function listFeedIDsInResearchTopics() {
+  const rows = (await callWorker('query', {
+    sql: 'SELECT DISTINCT feed_id FROM research_topic_feeds',
+  })) || [];
+  return rows.map((row) => row.feed_id);
+}
+
+/**
+ * Persist the fully scraped markdown of an article (upsert).
+ *
+ * Re-scraping the same article replaces the stored markdown and bumps
+ * scraped_at, so consumers always see the latest scrape.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {string|null} url - The URL the markdown was scraped from
+ * @param {string} markdown - Full extracted article markdown
+ * @returns {Promise<void>}
+ */
+export async function saveArticleMarkdown(feedID, articleID, url, markdown) {
+  await callWorker('exec', {
+    sql: `INSERT INTO article_markdown (feed_id, article_id, url, markdown, scraped_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(feed_id, article_id) DO UPDATE SET
+        url = excluded.url,
+        markdown = excluded.markdown,
+        scraped_at = excluded.scraped_at`,
+    params: [feedID, articleID, url || null, markdown, new Date().toISOString()],
+  });
+}
+
+/**
+ * Load the scraped markdown for an article.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<{feedID: string, articleID: string, url: string|null, markdown: string, scrapedAt: string}|null>}
+ */
+export async function getArticleMarkdown(feedID, articleID) {
+  const rows = (await callWorker('query', {
+    sql: 'SELECT feed_id, article_id, url, markdown, scraped_at FROM article_markdown WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  })) || [];
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const row = rows[0];
+  return {
+    feedID: row.feed_id,
+    articleID: row.article_id,
+    url: row.url,
+    markdown: row.markdown,
+    scrapedAt: row.scraped_at,
+  };
+}
+
+/**
+ * Shared SELECT for listing articles with markdown readiness.
+ *
+ * Used by the Research Topics watch API: each row reports whether the
+ * fully scraped markdown is ready (article_markdown join) so consumers
+ * only fetch markdown that exists.
+ *
+ * @type {string}
+ */
+const ARTICLE_WITH_MARKDOWN_SELECT = `
+  SELECT
+    a.article_id, a.feed_id, a.unique_id, a.title,
+    a.url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+    a.date_published, a.date_arrived, a.read, a.starred,
+    f.name AS feed_name, f.url AS feed_url,
+    m.scraped_at AS markdown_scraped_at
+  FROM articles a
+  LEFT JOIN feeds f ON f.feed_id = a.feed_id
+  LEFT JOIN article_markdown m ON m.feed_id = a.feed_id AND m.article_id = a.article_id
+`;
+
+/**
+ * Convert one article-with-markdown row into the watch-API shape.
+ *
+ * @param {object} row
+ * @returns {object}
+ */
+function articleWithMarkdownFromRow(row) {
+  return {
+    articleID: row.article_id,
+    feedID: row.feed_id,
+    feedName: row.feed_name,
+    feedURL: row.feed_url,
+    uniqueID: row.unique_id,
+    title: row.title,
+    url: row.url,
+    externalURL: row.external_url,
+    summary: row.summary,
+    imageURL: row.image_url,
+    bannerImageURL: row.banner_image_url,
+    datePublished: row.date_published,
+    dateArrived: row.date_arrived,
+    read: Boolean(row.read),
+    starred: Boolean(row.starred),
+    markdownReady: Boolean(row.markdown_scraped_at),
+    markdownScrapedAt: row.markdown_scraped_at || null,
+  };
+}
+
+/**
+ * List a feed's articles for the external watch API, newest first.
+ *
+ * @param {string} feedID
+ * @returns {Promise<Array<object>>}
+ */
+export async function listFeedArticles(feedID) {
+  const rows = (await callWorker('query', {
+    sql: `${ARTICLE_WITH_MARKDOWN_SELECT}
+      WHERE a.feed_id = ?
+      ORDER BY COALESCE(a.date_published, a.date_arrived) DESC`,
+    params: [feedID],
+  })) || [];
+  return rows.map(articleWithMarkdownFromRow);
+}
+
+/**
+ * Look up a feed's display name without loading its articles.
+ *
+ * Used by the watch API to distinguish "unknown feed" (null) from
+ * "feed without articles yet".
+ *
+ * @param {string} feedID
+ * @returns {Promise<string|null>}
+ */
+export async function getFeedName(feedID) {
+  const rows = (await callWorker('query', {
+    sql: 'SELECT name FROM feeds WHERE feed_id = ?',
+    params: [feedID],
+  })) || [];
+  return rows.length > 0 ? rows[0].name : null;
+}
+
+/**
+ * List every article across a research topic's member feeds, newest
+ * first. Articles whose markdown scrape is ready carry markdownReady.
+ *
+ * @param {string} topicID
+ * @returns {Promise<Array<object>>}
+ */
+export async function listResearchTopicArticles(topicID) {
+  const rows = (await callWorker('query', {
+    sql: `${ARTICLE_WITH_MARKDOWN_SELECT}
+      JOIN research_topic_feeds tf ON tf.feed_id = a.feed_id AND tf.topic_id = ?
+      ORDER BY COALESCE(a.date_published, a.date_arrived) DESC`,
+    params: [topicID],
+  })) || [];
+  return rows.map(articleWithMarkdownFromRow);
+}
+
+// ============================================================================
+// Research Topics: clear articles
+// ============================================================================
+
+/**
+ * List downloaded-video pointers on a research topic's articles.
+ *
+ * The clear-articles flow removes these files and queue records before
+ * the article rows themselves are deleted.
+ *
+ * @param {string} topicID
+ * @returns {Promise<Array<{feedID: string, articleID: string, downloadPath: string}>>}
+ */
+export async function listTopicDownloadedVideos(topicID) {
+  const rows = (await callWorker('query', {
+    sql: `SELECT a.feed_id, a.article_id, a.download_path
+      FROM articles a
+      JOIN research_topic_feeds tf ON tf.feed_id = a.feed_id AND tf.topic_id = ?
+      WHERE a.download_path IS NOT NULL AND a.download_path != ''`,
+    params: [topicID],
+  })) || [];
+  return rows.map((row) => ({
+    feedID: row.feed_id,
+    articleID: row.article_id,
+    downloadPath: row.download_path,
+  }));
+}
+
+/**
+ * Clear every article of a research topic's member feeds while keeping
+ * the scrape memory.
+ *
+ * Each deleted article is first recorded in cleared_articles (what it
+ * was, its unique id/url, and when it was cleared) so the next refresh
+ * does not treat it as new and re-download it. The scraped markdown
+ * rows of the member feeds are removed too.
+ *
+ * @param {string} topicID
+ * @returns {Promise<number>} The number of articles cleared
+ */
+export async function clearResearchTopicArticles(topicID) {
+  // Remember what existed before it is wiped.
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO cleared_articles (feed_id, article_id, unique_id, url, title, cleared_at)
+      SELECT a.feed_id, a.article_id, a.unique_id, a.url, a.title, ?
+      FROM articles a
+      JOIN research_topic_feeds tf ON tf.feed_id = a.feed_id AND tf.topic_id = ?`,
+    params: [new Date().toISOString(), topicID],
+  });
+
+  await callWorker('exec', {
+    sql: 'DELETE FROM article_markdown WHERE feed_id IN (SELECT feed_id FROM research_topic_feeds WHERE topic_id = ?)',
+    params: [topicID],
+  });
+
+  const rows = await callWorker('query', {
+    sql: `DELETE FROM articles WHERE feed_id IN (SELECT feed_id FROM research_topic_feeds WHERE topic_id = ?);
+      SELECT changes() AS count`,
+    params: [topicID],
+  });
+
+  return rows[0]?.count || 0;
+}
+
+/**
+ * List the uniqueIDs of articles previously cleared for a feed.
+ *
+ * The refresh pipeline passes this set into the merge so cleared items
+ * arriving again from the feed source are not re-added as new.
+ *
+ * @param {string} feedID
+ * @returns {Promise<Array<string>>}
+ */
+export async function listClearedUniqueIDs(feedID) {
+  const rows = (await callWorker('query', {
+    sql: 'SELECT unique_id FROM cleared_articles WHERE feed_id = ?',
+    params: [feedID],
+  })) || [];
+  return rows.map((row) => row.unique_id).filter((uniqueID) => uniqueID !== null);
 }

@@ -27,10 +27,16 @@ vi.mock('../../src/lib/database.js', () => ({
   recordDownloadedVideo: vi.fn(),
   deleteDownloadedVideosForArticle: vi.fn(),
   deleteDownloadedVideosForFeed: vi.fn(),
+  listFeedIDsInResearchTopics: vi.fn(),
+  saveArticleMarkdown: vi.fn(),
+  listClearedUniqueIDs: vi.fn(),
+  listTopicDownloadedVideos: vi.fn(),
+  clearResearchTopicArticles: vi.fn(),
 }));
 
 vi.mock('../../src/lib/rss-network.js', () => ({
   fetchText: vi.fn(),
+  normalizeFeedURL: (url) => url,
 }));
 
 vi.mock('../../src/lib/rss-parser.js', () => ({
@@ -39,6 +45,10 @@ vi.mock('../../src/lib/rss-parser.js', () => ({
 
 vi.mock('../../src/lib/feed-finder.js', () => ({
   findFeeds: vi.fn(),
+}));
+
+vi.mock('../../src/lib/article-extractor.js', () => ({
+  extractArticle: vi.fn(),
 }));
 
 vi.mock('../../src/lib/html-to-rss.js', () => ({
@@ -76,6 +86,15 @@ import {
 } from '../../src/lib/database.js';
 import { fetchText } from '../../src/lib/rss-network.js';
 import { parseFeedText } from '../../src/lib/rss-parser.js';
+import { findFeeds } from '../../src/lib/feed-finder.js';
+import { extractArticle } from '../../src/lib/article-extractor.js';
+import {
+  listFeedIDsInResearchTopics,
+  saveArticleMarkdown,
+  listClearedUniqueIDs,
+  listTopicDownloadedVideos,
+  clearResearchTopicArticles as dbClearResearchTopicArticles,
+} from '../../src/lib/database.js';
 import {
   processNewArticles,
   updateExistingArticles,
@@ -733,6 +752,219 @@ describe('feed manager', () => {
 
       expect(deleteDownloadedVideo).not.toHaveBeenCalled();
       expect(dbDeleteFeed).toHaveBeenCalledWith('feed-text');
+    });
+  });
+
+  describe('ensureFeedSubscribed (research topics)', () => {
+    it('returns the existing feed untouched when the URL is already subscribed', async () => {
+      const existing = {
+        feedID: 'feed-existing',
+        url: 'https://example.com/feed.xml',
+        name: 'Existing Feed',
+        articles: [],
+      };
+      loadFeed.mockResolvedValue(existing);
+
+      const { ensureFeedSubscribed, generateFeedID } = await importFeedManager();
+      const feed = await ensureFeedSubscribed('https://example.com/feed.xml');
+
+      expect(loadFeed).toHaveBeenCalledWith(generateFeedID('https://example.com/feed.xml'));
+      expect(feed).toBe(existing);
+      // No discovery fetch for an already-subscribed feed.
+      expect(fetchText).not.toHaveBeenCalled();
+    });
+
+    it('discovers and adds the feed when the URL is not subscribed', async () => {
+      loadFeed.mockResolvedValue(null);
+      findFeeds.mockResolvedValue([{ url: 'https://new.example.com/rss', title: 'New', synthetic: false }]);
+      saveFeed.mockResolvedValue(undefined);
+      processNewArticles.mockReturnValue([]);
+
+      const { ensureFeedSubscribed, generateFeedID } = await importFeedManager();
+      const feed = await ensureFeedSubscribed('https://new.example.com');
+
+      expect(feed).not.toBeNull();
+      expect(feed.feedID).toBe(generateFeedID('https://new.example.com/rss'));
+      expect(feed.url).toBe('https://new.example.com/rss');
+      expect(feed.name).toBe('New');
+      expect(saveFeed).toHaveBeenCalled();
+    });
+
+    it('returns null when discovery finds no feeds', async () => {
+      loadFeed.mockResolvedValue(null);
+      findFeeds.mockResolvedValue([]);
+
+      const { ensureFeedSubscribed } = await importFeedManager();
+      const feed = await ensureFeedSubscribed('https://no-feed.example.com');
+
+      expect(feed).toBeNull();
+      expect(saveFeed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('scrapeNewArticleMarkdown (research topics)', () => {
+    beforeEach(() => {
+      listFeedIDsInResearchTopics.mockResolvedValue(['feed-topic']);
+      saveArticleMarkdown.mockResolvedValue(undefined);
+      extractArticle.mockResolvedValue({ url: '', markdown: '# Scraped', title: 'T' });
+    });
+
+    const baseFeed = {
+      feedID: 'feed-topic',
+      url: 'https://example.com/feed',
+      name: 'Topic Feed',
+      synthetic: false,
+      articles: [],
+    };
+
+    it('scrapes and stores markdown for new articles of topic feeds', async () => {
+      const existingFeed = { ...baseFeed, articles: [{ articleID: 'old-1' }] };
+      const updatedFeed = {
+        ...baseFeed,
+        articles: [
+          { articleID: 'old-1', url: 'https://example.com/old' },
+          { articleID: 'new-1', url: 'https://example.com/new' },
+        ],
+      };
+
+      const { scrapeNewArticleMarkdown } = await importFeedManager();
+      await scrapeNewArticleMarkdown('feed-topic', existingFeed, updatedFeed);
+
+      // Only the new article is scraped; existing content is never re-fetched.
+      expect(extractArticle).toHaveBeenCalledTimes(1);
+      expect(extractArticle).toHaveBeenCalledWith('https://example.com/new');
+      expect(saveArticleMarkdown).toHaveBeenCalledWith(
+        'feed-topic',
+        'new-1',
+        'https://example.com/new',
+        '# Scraped'
+      );
+    });
+
+    it('does nothing for feeds that are not in any research topic', async () => {
+      listFeedIDsInResearchTopics.mockResolvedValue(['feed-topic']);
+
+      const { scrapeNewArticleMarkdown } = await importFeedManager();
+      await scrapeNewArticleMarkdown(
+        'feed-other',
+        null,
+        { ...baseFeed, feedID: 'feed-other', articles: [{ articleID: 'a1', url: 'https://example.com/a' }] }
+      );
+
+      expect(extractArticle).not.toHaveBeenCalled();
+      expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+
+    it('skips YouTube article URLs', async () => {
+      const { scrapeNewArticleMarkdown } = await importFeedManager();
+      await scrapeNewArticleMarkdown(
+        'feed-topic',
+        null,
+        {
+          ...baseFeed,
+          articles: [{ articleID: 'yt-1', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' }],
+        }
+      );
+
+      expect(extractArticle).not.toHaveBeenCalled();
+    });
+
+    it('continues scraping when one article fails', async () => {
+      extractArticle.mockImplementation(async (url) => {
+        if (url === 'https://example.com/broken') {
+          throw new Error('404');
+        }
+        return { url, markdown: '# Ok' };
+      });
+
+      const { scrapeNewArticleMarkdown } = await importFeedManager();
+      await scrapeNewArticleMarkdown(
+        'feed-topic',
+        null,
+        {
+          ...baseFeed,
+          articles: [
+            { articleID: 'a1', url: 'https://example.com/broken' },
+            { articleID: 'a2', url: 'https://example.com/fine' },
+          ],
+        }
+      );
+
+      expect(extractArticle).toHaveBeenCalledTimes(2);
+      expect(saveArticleMarkdown).toHaveBeenCalledTimes(1);
+      expect(saveArticleMarkdown).toHaveBeenCalledWith(
+        'feed-topic',
+        'a2',
+        'https://example.com/fine',
+        '# Ok'
+      );
+    });
+
+    it('skips new articles without markdown extraction results', async () => {
+      extractArticle.mockResolvedValue({ url: '', markdown: '' });
+
+      const { scrapeNewArticleMarkdown } = await importFeedManager();
+      await scrapeNewArticleMarkdown(
+        'feed-topic',
+        null,
+        { ...baseFeed, articles: [{ articleID: 'a1', url: 'https://example.com/empty' }] }
+      );
+
+      expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('clearResearchTopicArticles (memory-preserving clear)', () => {
+    beforeEach(() => {
+      listTopicDownloadedVideos.mockResolvedValue([]);
+      dbClearResearchTopicArticles.mockResolvedValue(3);
+      deleteDownloadedVideo.mockResolvedValue(true);
+    });
+
+    it('passes cleared uniqueIDs into the refresh merge', async () => {
+      listClearedUniqueIDs.mockResolvedValue(['u-cleared']);
+      loadFeedForRefresh.mockResolvedValue({
+        feedID: 'feed-a',
+        url: 'https://example.com/feed',
+        synthetic: false,
+        articles: [],
+      });
+      refreshFeedInWorker.mockImplementation(({ existingFeed }) =>
+        Promise.resolve({ ...existingFeed, articles: [] })
+      );
+
+      const { refreshFeed } = await importFeedManager();
+      await refreshFeed('feed-a', 50);
+
+      expect(listClearedUniqueIDs).toHaveBeenCalledWith('feed-a');
+      expect(refreshFeedInWorker).toHaveBeenCalledWith(
+        expect.objectContaining({ clearedUniqueIDs: ['u-cleared'] })
+      );
+    });
+
+    it('deletes downloaded video files before clearing the articles', async () => {
+      listTopicDownloadedVideos.mockResolvedValue([
+        { feedID: 'feed-1', articleID: 'a1', downloadPath: '/downloads/video.mp4' },
+      ]);
+
+      const { clearResearchTopicArticles } = await importFeedManager();
+      const count = await clearResearchTopicArticles('topic-1');
+
+      expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/video.mp4');
+      expect(dbClearResearchTopicArticles).toHaveBeenCalledWith('topic-1');
+      expect(count).toBe(3);
+    });
+
+    it('still clears when a video file deletion fails', async () => {
+      listTopicDownloadedVideos.mockResolvedValue([
+        { feedID: 'feed-1', articleID: 'a1', downloadPath: '/downloads/locked.mp4' },
+      ]);
+      deleteDownloadedVideo.mockRejectedValue(new Error('file locked'));
+
+      const { clearResearchTopicArticles } = await importFeedManager();
+      await clearResearchTopicArticles('topic-1');
+
+      expect(dbClearResearchTopicArticles).toHaveBeenCalledWith('topic-1');
     });
   });
 });

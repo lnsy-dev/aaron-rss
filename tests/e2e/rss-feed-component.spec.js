@@ -320,6 +320,7 @@ test.describe('Aaron RSS', () => {
     await expect(page.locator('command-panel .command-name')).toHaveText([
       'Add RSS Feed',
       'Manage Feeds',
+      'Research Topics',
       'Refresh All Feeds',
       'Mark All Read',
       'Videos',

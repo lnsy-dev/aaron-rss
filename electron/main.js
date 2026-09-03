@@ -35,6 +35,7 @@ import {
   getDownloadDirectory,
 } from './youtube-download.js';
 import { createMediaRequestHandler } from './media-protocol.js';
+import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 
 /**
  * Content-Security-Policy for production builds served over app://.
@@ -465,8 +466,7 @@ async function fetchBinary(url) {
 
 ipcMain.handle('fetch-text', async (_, url) => fetchText(url));
 ipcMain.handle('fetch-binary', async (_, url) => fetchBinary(url));
-ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));
-ipcMain.handle('download-youtube-video', async (event, url) => {
+ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));ipcMain.handle('download-youtube-video', async (event, url) => {
   // Stream download progress to the requesting window so the renderer
   // can render a live progress toast while yt-dlp runs.
   const sender = event.sender;
@@ -477,6 +477,103 @@ ipcMain.handle('download-youtube-video', async (event, url) => {
   });
 });
 ipcMain.handle('delete-downloaded-video', async (_, filePath) => deleteDownloadedVideo(filePath));
+
+// ============================================================================
+// Research Topics watch API
+// ============================================================================
+
+/**
+ * Bind port for the external watch API. Override with RESEARCH_API_PORT;
+ * 0 picks an ephemeral port.
+ *
+ * @type {number}
+ */
+const RESEARCH_API_PORT = Number(process.env.RESEARCH_API_PORT) || 4527;
+
+/**
+ * The running watch API server (null until started or on failure).
+ *
+ * @type {ReturnType<typeof createResearchApiServer>|null}
+ */
+let researchApiServer = null;
+
+/**
+ * In-flight renderer queries awaiting a response, by request id.
+ *
+ * @type {Map<number, {resolve: Function, reject: Function, timeout: NodeJS.Timeout}>}
+ */
+const pendingResearchQueries = new Map();
+
+/** @type {number} Monotonic id for renderer queries */
+let nextResearchQueryId = 1;
+
+/**
+ * Ask the renderer (which owns the OPFS database) to answer one API
+ * query, and wait for the matching response over IPC.
+ *
+ * @param {{type: string, params: object}} query
+ * @returns {Promise<unknown>}
+ */
+function queryRenderer(query) {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) {
+    return Promise.reject(new Error('No application window is available'));
+  }
+
+  const id = nextResearchQueryId++;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingResearchQueries.delete(id);
+      reject(new Error('Renderer query timed out'));
+    }, 15000);
+    pendingResearchQueries.set(id, { resolve, reject, timeout });
+    win.webContents.send('research-api-query', { id, query });
+  });
+}
+
+ipcMain.on('research-api-response', (_event, { id, result, error }) => {
+  const pending = pendingResearchQueries.get(id);
+  if (!pending) {
+    return;
+  }
+  clearTimeout(pending.timeout);
+  pendingResearchQueries.delete(id);
+  if (error) {
+    pending.reject(new Error(error));
+  } else {
+    pending.resolve(result);
+  }
+});
+
+ipcMain.handle('research-api-info', () => ({
+  baseUrl: researchApiServer ? `http://${RESEARCH_API_HOST}:${researchApiServer.port}` : null,
+  endpoints: API_ENDPOINTS,
+}));
+
+/**
+ * Start the localhost watch API server. Data queries are proxied to the
+ * renderer; a startup failure is logged but never fatal — the reader
+ * itself works fine without the API.
+ *
+ * @returns {void}
+ */
+function startResearchApiServer() {
+  researchApiServer = createResearchApiServer({
+    port: RESEARCH_API_PORT,
+    query: queryRenderer,
+    log: (message) => console.log(`[electron] ${message}`),
+  });
+
+  researchApiServer
+    .start()
+    .then(({ port }) => {
+      console.log(`[electron] Research Topics watch API listening on http://${RESEARCH_API_HOST}:${port}`);
+    })
+    .catch((error) => {
+      console.error('[electron] Research Topics watch API failed to start:', error);
+      researchApiServer = null;
+    });
+}
 
 app.whenReady().then(async () => {
   protocol.handle('app', handleAppRequest);
@@ -519,6 +616,10 @@ app.whenReady().then(async () => {
   // Install the application menu (View > Reopen Window etc.) now that
   // the first window exists and createWindow() can be referenced.
   createAppMenu();
+
+  // External watch API: serve Research Topics over localhost HTTP once
+  // the window (and thus the database bridge) is up.
+  startResearchApiServer();
 
   // Check for yt-dlp updates on startup and then every 24 hours so
   // YouTube downloads keep working as the site changes.

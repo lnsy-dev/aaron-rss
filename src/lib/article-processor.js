@@ -61,10 +61,19 @@ export function skipPersist(article) {
  *
  * @param {Array<object>} parsedItems
  * @param {object} existingFeed
+ * @param {Set<string>|null} [seenUniqueIDs=null] - Additional already-seen
+ *   uniqueIDs (e.g. articles deliberately cleared from a research topic)
+ *   that must not be re-added as new
  * @returns {Array<object>}
  */
-export function processNewArticles(parsedItems, existingFeed) {
+export function processNewArticles(parsedItems, existingFeed, seenUniqueIDs = null) {
   const existingArticleIDs = new Set(existingFeed.articles.map((a) => a.uniqueID));
+  if (seenUniqueIDs) {
+    for (const uniqueID of seenUniqueIDs) {
+      existingArticleIDs.add(uniqueID);
+    }
+  }
+
   const newArticles = [];
 
   for (const item of parsedItems) {

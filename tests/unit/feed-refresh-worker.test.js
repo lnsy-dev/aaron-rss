@@ -88,4 +88,37 @@ describe('feed refresh worker', () => {
     expect(response.ok).toBe(false);
     expect(response.error).toContain('Unknown feed-refresh-worker action');
   });
+
+  it('does not re-add cleared articles as new items', async () => {
+    const existingFeed = {
+      feedID: 'feed-clear',
+      url: 'https://example.com/feed',
+      articles: [],
+    };
+
+    const feedText = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1.1',
+      title: 'Test Feed',
+      home_page_url: 'https://example.com',
+      items: [
+        { id: 'u1', url: 'https://example.com/1', title: 'Kept' },
+        { id: 'u2', url: 'https://example.com/2', title: 'Cleared earlier' },
+      ],
+    });
+
+    await send({
+      feedText,
+      existingFeed,
+      maxArticles: 50,
+      // u2 was deliberately cleared from a research topic; it must not
+      // come back as a new article.
+      clearedUniqueIDs: ['u2'],
+    });
+
+    const response = lastResult();
+    expect(response.ok).toBe(true);
+    const uniqueIDs = response.result.articles.map((article) => article.uniqueID);
+    expect(uniqueIDs).toContain('u1');
+    expect(uniqueIDs).not.toContain('u2');
+  });
 });

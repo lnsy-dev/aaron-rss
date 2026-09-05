@@ -17,6 +17,11 @@
   flex: 1;
 }
 
+.rss-research-create .rss-research-create-summary {
+  flex: 2;
+  min-width: 12rem;
+}
+
 /* Topic sections */
 .rss-research-topic-list {
   display: flex;
@@ -56,6 +61,35 @@
 
 .rss-research-topic-clear {
   color: var(--warning-color);
+}
+
+/* Topic summary: display text plus an inline edit form */
+.rss-research-topic-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.rss-research-topic-summary-text {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--foreground-color);
+}
+
+.rss-research-topic-summary-edit {
+  flex-shrink: 0;
+}
+
+.rss-research-topic-summary-input {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.rss-research-topic-summary-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 /* Member feed rows */
@@ -110,7 +144,7 @@
 /* Topic view (Research Topic rendered as a standard feed) */
 .rss-topic-view-header {
   font-family: var(--font-ui);
-  color: var(--trinary-color);
+  color: var(--foreground-color);
   padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--quaternary-color);
 }

@@ -202,6 +202,80 @@ describe('feed manager', () => {
     expect(updatedFeeds[1].feedID).toBe('feed-b');
   });
 
+  it('refreshAllFeeds fetches several feeds concurrently', async () => {
+    const feeds = Array.from({ length: 6 }, (_, i) => ({
+      feedID: `feed-${i}`,
+      url: `https://feed-${i}.example.com/rss`,
+      name: `Feed ${i}`,
+      synthetic: false,
+      articles: [],
+    }));
+
+    loadAllFeeds.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockImplementation((feedID) => {
+      return Promise.resolve(feeds.find((f) => f.feedID === feedID));
+    });
+
+    // Track how many refreshes are in flight at once.
+    let active = 0;
+    let maxActive = 0;
+    refreshFeedInWorker.mockImplementation(async ({ existingFeed }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return {
+        ...existingFeed,
+        lastFetchWasSuccessful: true,
+        lastFetchEndTime: new Date(),
+        articles: [],
+      };
+    });
+
+    const { refreshAllFeeds, REFRESH_CONCURRENCY } = await importFeedManager();
+    const results = await refreshAllFeeds(50);
+
+    expect(maxActive).toBe(Math.min(REFRESH_CONCURRENCY, feeds.length));
+    // Results preserve the feed list order regardless of completion order.
+    expect(results.map((r) => r.feedID)).toEqual(feeds.map((f) => f.feedID));
+    expect(results.every((r) => r.success)).toBe(true);
+  });
+
+  it('refreshAllFeeds honors an explicit concurrency limit', async () => {
+    const feeds = Array.from({ length: 6 }, (_, i) => ({
+      feedID: `feed-${i}`,
+      url: `https://feed-${i}.example.com/rss`,
+      name: `Feed ${i}`,
+      synthetic: false,
+      articles: [],
+    }));
+
+    loadAllFeeds.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockImplementation((feedID) => {
+      return Promise.resolve(feeds.find((f) => f.feedID === feedID));
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    refreshFeedInWorker.mockImplementation(async ({ existingFeed }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return {
+        ...existingFeed,
+        lastFetchWasSuccessful: true,
+        lastFetchEndTime: new Date(),
+        articles: [],
+      };
+    });
+
+    const { refreshAllFeeds } = await importFeedManager();
+    await refreshAllFeeds(50, null, null, 2);
+
+    expect(maxActive).toBe(2);
+  });
+
   it('refreshFeed offloads parsing and merging to the worker', async () => {
     const feeds = [
       { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha', synthetic: false, articles: [] },

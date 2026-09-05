@@ -296,6 +296,7 @@ test.describe('Aaron RSS', () => {
     await expect(modal).toBeVisible();
     await expect(modal.locator('h2')).toHaveText('Add RSS Feed');
     await expect(modal.locator('input[type="url"]')).toBeVisible();
+    await expect(modal.locator('.rss-add-feed-url')).toBeFocused();
   });
 
   test('hamburger menu opens the command panel and focuses the search input', async ({ page }) => {
@@ -321,6 +322,7 @@ test.describe('Aaron RSS', () => {
       'Add RSS Feed',
       'Manage Feeds',
       'Research Topics',
+      'New Research Topic',
       'Refresh All Feeds',
       'Mark All Read',
       'Videos',
@@ -525,6 +527,9 @@ test.describe('Aaron RSS', () => {
     await expect(modal).toBeVisible();
     await expect(modal.locator('h2')).toHaveText('Add RSS Feed');
     await expect(modal.locator('input[type="url"]')).toBeVisible();
+    // The command panel closes itself after running the command and
+    // restores its own focus — the URL input must end up focused anyway.
+    await expect(modal.locator('.rss-add-feed-url')).toBeFocused();
   });
 
   test('clicking Settings opens the full-page settings modal', async ({ page }) => {
@@ -563,6 +568,25 @@ test.describe('Aaron RSS', () => {
     await expect(input).toHaveValue('5');
     await expect(input).toHaveAttribute('min', '0');
     await expect(input).toHaveAttribute('max', '1440');
+  });
+
+  test('settings modal has a concurrent fetches input defaulting to 4', async ({ page }) => {
+    await page.locator('.rss-hamburger').click();
+    await page.locator('command-panel .command-item', { hasText: 'Settings' }).click();
+
+    const input = page.locator('.rss-refresh-concurrency-input');
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue('4');
+    await expect(input).toHaveAttribute('min', '1');
+    await expect(input).toHaveAttribute('max', '16');
+
+    // Saving persists the value onto the component settings.
+    const component = page.locator('rss-feed-component');
+    await input.fill('2');
+    await page.locator('.rss-modal-dialog--full button', { hasText: 'Save' }).click();
+    await expect
+      .poll(() => component.evaluate((el) => el.settings.refreshConcurrency))
+      .toBe(2);
   });
 
   test('auto-refresh pauses while the page is hidden', async ({ page }) => {

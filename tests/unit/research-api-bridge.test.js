@@ -95,7 +95,7 @@ describe('research api bridge', () => {
     vi.stubGlobal('window', {
       electron: { onResearchApiQuery: (handler) => { registeredHandler = handler; } },
     });
-    const topic = { topicID: 't1', name: 'Topic', feeds: [] };
+    const topic = { topicID: 't1', name: 'Topic', summary: 'What it tracks', feeds: [] };
     const articles = [{ articleID: 'a1', markdownReady: true }];
     listResearchTopics.mockResolvedValue([topic]);
     listResearchTopicArticles.mockResolvedValue(articles);
@@ -104,7 +104,7 @@ describe('research api bridge', () => {
     bridge.registerResearchApiBridge();
 
     await expect(registeredHandler({ type: 'getResearchTopicArticles', params: { topicID: 't1' } }))
-      .resolves.toEqual({ topicID: 't1', name: 'Topic', articles });
+      .resolves.toEqual({ topicID: 't1', name: 'Topic', summary: 'What it tracks', articles });
     // Unknown topic maps to null, which the server turns into a 404.
     await expect(registeredHandler({ type: 'getResearchTopicArticles', params: { topicID: 'nope' } }))
       .resolves.toBeNull();

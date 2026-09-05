@@ -141,7 +141,7 @@ export function createResearchApiServer({ query, host = RESEARCH_API_HOST, port 
         ...article,
         markdownUrl: markdownPath(article.feedID, article.articleID),
       }));
-      sendJson(res, 200, { topicID: result.topicID, name: result.name, articles });
+      sendJson(res, 200, { topicID: result.topicID, name: result.name, summary: result.summary, articles });
       return;
     }
 

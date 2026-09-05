@@ -22,7 +22,7 @@
 }
 
 .app-toast {
-  background: var(--notification-color);
+  background: var(--neutral-1);
   color: var(--background-color);
   padding: 0.75rem 1rem;
   border-radius: 6px;

@@ -3,9 +3,11 @@
  *
  * Research Topics are named groups of feeds scraped together. These
  * specs drive the full-page view through the command panel and exercise
- * the real (OPFS-backed) database: creating a topic, adding a feed by
- * URL (network is stubbed with a route), reading the scrape status,
- * removing the feed, and deleting the topic.
+ * the real (OPFS-backed) database: creating a topic with a name and
+ * summary, editing the summary inline, opening the view from the
+ * "New Research Topic" command, adding a feed by URL (network is stubbed
+ * with a route), reading the scrape status, removing the feed, and
+ * deleting the topic.
  */
 
 import { test, expect } from '@playwright/test';
@@ -68,17 +70,65 @@ test.describe('Research Topics', () => {
     const body = page.locator('.rss-modal-dialog--full .rss-modal-body');
     await expect(body).toBeVisible();
 
-    // Create a topic.
+    // Create a topic with a name and a summary.
     await body.locator('.rss-research-create-name').fill('LLM Papers');
+    await body.locator('.rss-research-create-summary').fill('Papers about LLM agents');
     await body.locator('.rss-research-create-button').click();
 
     const topic = body.locator('.rss-research-topic');
     await expect(topic).toHaveCount(1, { timeout: 15000 });
     await expect(topic.locator('h3')).toHaveText('LLM Papers');
     await expect(topic.locator('.rss-research-topic-id')).toContainText('#');
+    await expect(topic.locator('.rss-research-topic-summary-text')).toHaveText(
+      'Papers about LLM agents'
+    );
     await expect(topic.locator('.rss-research-feed-empty')).toHaveText(
       'No feeds in this topic yet.'
     );
+  });
+
+  test('edits a topic summary inline', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await component.evaluate((el) => el.openResearchTopicsModal());
+
+    const body = page.locator('.rss-modal-dialog--full .rss-modal-body');
+    await expect(body).toBeVisible();
+
+    await body.locator('.rss-research-create-name').fill('Summary Topic');
+    await body.locator('.rss-research-create-button').click();
+
+    const topic = body.locator('.rss-research-topic');
+    await expect(topic).toHaveCount(1, { timeout: 15000 });
+    await expect(topic.locator('.rss-research-topic-summary-text')).toHaveText('No summary yet.');
+
+    await topic.locator('.rss-research-topic-summary-edit').click();
+    const input = topic.locator('.rss-research-topic-summary-input');
+    await expect(input).toBeVisible();
+    await input.fill('What this topic watches');
+    await topic.locator('.rss-research-topic-summary-actions .rss-button-primary').click();
+
+    await expect(topic.locator('.rss-research-topic-summary-text')).toHaveText(
+      'What this topic watches',
+      { timeout: 15000 }
+    );
+  });
+
+  test('New Research Topic command opens the view focused on the name input', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+
+    const hasCommand = await component.evaluate((el) =>
+      Array.isArray(el.commandPanel?.commands) &&
+      el.commandPanel.commands.some((command) => command?.name === 'New Research Topic')
+    );
+    expect(hasCommand).toBe(true);
+
+    await component.evaluate((el) => el.commandPanel.openPanel());
+    await page.locator('.command-search').fill('New Research Topic');
+    await page.locator('.command-item', { hasText: 'New Research Topic' }).click();
+
+    const body = page.locator('.rss-modal-dialog--full .rss-modal-body');
+    await expect(body).toBeVisible();
+    await expect(body.locator('.rss-research-create-name')).toBeFocused();
   });
 
   test('shows watch API endpoints when the Electron bridge is available', async ({ page }) => {

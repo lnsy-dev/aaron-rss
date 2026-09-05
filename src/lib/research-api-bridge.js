@@ -56,7 +56,7 @@ export function registerResearchApiBridge() {
           return null;
         }
         const articles = await listResearchTopicArticles(params.topicID);
-        return { topicID: topic.topicID, name: topic.name, articles };
+        return { topicID: topic.topicID, name: topic.name, summary: topic.summary, articles };
       }
 
       case 'getFeedArticles': {

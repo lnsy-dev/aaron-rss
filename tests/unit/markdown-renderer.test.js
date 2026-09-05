@@ -47,4 +47,19 @@ describe('markdown-renderer', () => {
     expect(mockSanitize).toHaveBeenCalledWith(html, expect.any(Object));
     expect(result).toBe(html);
   });
+
+  it('expands :shortcode: emoji aliases before parsing', () => {
+    const result = renderMarkdown('Great news :smile: :rocket:');
+
+    // The real node-emoji emojify runs, so marked receives unicode emoji.
+    expect(mockParse).toHaveBeenCalledWith('Great news 😄 🚀');
+    expect(result).toBe('<p>Great news 😄 🚀</p>');
+  });
+
+  it('leaves unknown shortcodes untouched', () => {
+    const result = renderMarkdown('Not an emoji :not_a_thing: here');
+
+    expect(mockParse).toHaveBeenCalledWith('Not an emoji :not_a_thing: here');
+    expect(result).toBe('<p>Not an emoji :not_a_thing: here</p>');
+  });
 });

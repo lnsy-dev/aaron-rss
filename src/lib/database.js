@@ -366,9 +366,20 @@ export async function initRSSSchema() {
     sql: `CREATE TABLE IF NOT EXISTS research_topics (
       topic_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      summary TEXT,
       created_at TEXT NOT NULL
     )`,
   });
+  // Migration: add the summary column to databases created before research
+  // topics had summaries. PRAGMA table_info because ADD COLUMN IF NOT EXISTS
+  // is not supported by every SQLite build.
+  const researchTopicColumns =
+    (await callWorker('query', { sql: 'PRAGMA table_info(research_topics)' })) || [];
+  if (!researchTopicColumns.some((col) => col.name === 'summary')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE research_topics ADD COLUMN summary TEXT',
+    });
+  }
   await callWorker('exec', {
     sql: `CREATE TABLE IF NOT EXISTS research_topic_feeds (
       topic_id TEXT NOT NULL,
@@ -1258,6 +1269,7 @@ export async function loadSettings() {
     sourcesFolder: 'sources',
     refreshInterval: 5,
     maxArticlesPerFeed: 50,
+    refreshConcurrency: 4,
     showUnreadOnly: false,
     viewMode: 'timeline',
     theme: '',
@@ -1266,7 +1278,7 @@ export async function loadSettings() {
   for (const row of rows) {
     const key = row.key;
     const value = row.value;
-    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval') {
+    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval' || key === 'refreshConcurrency') {
       settings[key] = parseInt(value, 10);
     } else if (key === 'showUnreadOnly') {
       settings[key] = value === 'true';
@@ -1314,16 +1326,40 @@ function generateResearchTopicID() {
  * Create a research topic (a named group of feeds to scrape together).
  *
  * @param {string} name - Display name of the topic
- * @returns {Promise<{topicID: string, name: string, createdAt: string, feeds: Array}>}
+ * @param {string} [summary] - Free-text description of what the topic tracks
+ * @returns {Promise<{topicID: string, name: string, summary: string, createdAt: string, feeds: Array}>}
  */
-export async function createResearchTopic(name) {
+export async function createResearchTopic(name, summary = '') {
   const topicID = generateResearchTopicID();
   const createdAt = new Date().toISOString();
   await callWorker('exec', {
-    sql: 'INSERT INTO research_topics (topic_id, name, created_at) VALUES (?, ?, ?)',
-    params: [topicID, name, createdAt],
+    sql: 'INSERT INTO research_topics (topic_id, name, summary, created_at) VALUES (?, ?, ?, ?)',
+    params: [topicID, name, summary, createdAt],
   });
-  return { topicID, name, createdAt, feeds: [] };
+  return { topicID, name, summary, createdAt, feeds: [] };
+}
+
+/**
+ * Update a research topic's editable fields (name, summary). Fields that
+ * are omitted are left unchanged.
+ *
+ * @param {string} topicID
+ * @param {{name?: string, summary?: string}} changes
+ * @returns {Promise<void>}
+ */
+export async function updateResearchTopic(topicID, changes) {
+  if (changes.name !== undefined) {
+    await callWorker('exec', {
+      sql: 'UPDATE research_topics SET name = ? WHERE topic_id = ?',
+      params: [changes.name, topicID],
+    });
+  }
+  if (changes.summary !== undefined) {
+    await callWorker('exec', {
+      sql: 'UPDATE research_topics SET summary = ? WHERE topic_id = ?',
+      params: [changes.summary, topicID],
+    });
+  }
 }
 
 /**
@@ -1377,7 +1413,7 @@ export async function removeFeedFromResearchTopic(topicID, feedID) {
  * nested feed entries.
  *
  * @param {Array<object>} rows - Rows from the topic/feed/articles query
- * @returns {Array<{topicID: string, name: string, createdAt: string, feeds: Array<object>}>}
+ * @returns {Array<{topicID: string, name: string, summary: string, createdAt: string, feeds: Array<object>}>}
  */
 function rowsToResearchTopics(rows) {
   const topicsByID = new Map();
@@ -1387,6 +1423,7 @@ function rowsToResearchTopics(rows) {
       topicsByID.set(row.topic_id, {
         topicID: row.topic_id,
         name: row.name,
+        summary: row.summary || '',
         createdAt: row.created_at,
         feeds: [],
       });
@@ -1420,7 +1457,7 @@ function rowsToResearchTopics(rows) {
 export async function listResearchTopics() {
   const rows = (await callWorker('query', {
     sql: `SELECT
-        t.topic_id, t.name, t.created_at,
+        t.topic_id, t.name, t.summary, t.created_at,
         tf.feed_id, f.url AS feed_url, f.name AS feed_name,
         f.last_fetch_successful, f.last_fetch_end_time,
         (SELECT COUNT(*) FROM articles a WHERE a.feed_id = tf.feed_id) AS article_count,

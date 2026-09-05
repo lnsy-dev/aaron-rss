@@ -92,6 +92,7 @@ describe('research api server', () => {
       return {
         topicID: 't1',
         name: 'Topic',
+        summary: 'What it tracks',
         articles: [
           { feedID: 'f1', articleID: 'a1', title: 'Ready', markdownReady: true },
           { feedID: 'f2', articleID: 'a2', title: 'Pending', markdownReady: false },
@@ -104,6 +105,7 @@ describe('research api server', () => {
     const body = await response.json();
     expect(body.topicID).toBe('t1');
     expect(body.name).toBe('Topic');
+    expect(body.summary).toBe('What it tracks');
     expect(body.articles[0].markdownUrl).toBe('/api/feeds/f1/articles/a1/markdown');
     expect(body.articles[1].markdownUrl).toBe('/api/feeds/f2/articles/a2/markdown');
   });

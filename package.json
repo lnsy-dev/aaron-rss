@@ -1,6 +1,6 @@
 {
   "name": "aaron-rss",
-  "version": "0.16.0",
+  "version": "0.20.0",
   "description": "A simple RSS reader as an Electron App",
   "main": "electron/main.js",
   "type": "module",
@@ -39,6 +39,7 @@
     "defuddle": "^0.19.2",
     "dompurify": "^3.4.13",
     "marked": "^18.0.9",
+    "node-emoji": "^2.2.0",
     "rss-parser": "^3.13.0",
     "yt-dlp-wrap-plus": "^2.5.0"
   },

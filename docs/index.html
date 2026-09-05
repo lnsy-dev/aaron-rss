@@ -34,6 +34,13 @@
         </ul>
       </article>
 
+      <p class="install-meta">On macOS, remove the Gatekeeper quarantine flag after installing:</p>
+      <article class="install-steps">
+        <ul>
+          <li><code>xattr -d com.apple.quarantine /Applications/"Aaron RSS.app"</code></li>
+        </ul>
+      </article>
+
       <p class="install-meta">Prefer building from source? Clone the repo, run <code>npm install</code>, <code>npm run build</code>, then <code>npm run electron</code>.</p>
 
     </section>

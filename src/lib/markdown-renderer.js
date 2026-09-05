@@ -4,10 +4,13 @@
  * Renders Markdown to sanitized HTML for in-app article reading.
  * Uses `marked` for parsing and `dompurify` for HTML sanitization,
  * matching the safe-by-default approach used by Obsidian Web Clipper.
+ * `:shortcode:` emoji aliases (e.g. `:smile:`) are expanded to unicode
+ * emoji before parsing.
  */
 
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { emojify } from 'node-emoji';
 
 /**
  * Configure marked for safe, readable article output.
@@ -31,7 +34,7 @@ marked.setOptions({
 export function renderMarkdown(markdown) {
   if (!markdown) return '';
 
-  const rawHtml = marked.parse(markdown);
+  const rawHtml = marked.parse(emojify(markdown));
   return DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
     ALLOWED_URI_REGEXP:

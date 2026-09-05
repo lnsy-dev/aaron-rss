@@ -204,6 +204,24 @@ describe('database client', () => {
     expect(settings.theme).toBe('');
   });
 
+  it('loadSettings defaults refreshConcurrency to 4 and parses stored values', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ key: 'refreshConcurrency', value: '8' }],
+    });
+
+    const db = await importDatabaseModule();
+    const settings = await db.loadSettings();
+
+    expect(settings.refreshConcurrency).toBe(8);
+
+    // No stored row falls back to the default.
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const fresh = await db.loadSettings();
+    expect(fresh.refreshConcurrency).toBe(4);
+  });
+
   it('saveSettings upserts every setting including theme with bound parameters', async () => {
     const db = await importDatabaseModule();
     await db.saveSettings({ maxArticlesPerFeed: 25, theme: ':root { --x: 1; }' });
@@ -312,6 +330,10 @@ describe('research topics', () => {
       createStatements.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS research_topic_feeds'))
     ).toBe(true);
 
+    // Research topics carry a human-readable summary alongside the name.
+    const topicsTable = createStatements.find((sql) => sql.includes('research_topics'));
+    expect(topicsTable).toContain('summary TEXT');
+
     // Membership is keyed by (topic_id, feed_id) so re-adding cannot duplicate.
     const membership = createStatements.find((sql) => sql.includes('research_topic_feeds'));
     expect(membership).toContain('PRIMARY KEY (topic_id, feed_id)');
@@ -324,20 +346,54 @@ describe('research topics', () => {
 
   it('createResearchTopic inserts a row with bound parameters and returns the topic', async () => {
     const db = await importDatabaseModule();
-    const topic = await db.createResearchTopic('Web Agents');
+    const topic = await db.createResearchTopic('Web Agents', 'Papers about web agents');
 
     const message = FakeWorker.instance.messages[0];
     expect(message.action).toBe('exec');
     expect(message.params.sql).toBe(
-      'INSERT INTO research_topics (topic_id, name, created_at) VALUES (?, ?, ?)'
+      'INSERT INTO research_topics (topic_id, name, summary, created_at) VALUES (?, ?, ?, ?)'
     );
-    // Bound parameters: topic id, name, ISO timestamp
+    // Bound parameters: topic id, name, summary, ISO timestamp
     expect(message.params.params[1]).toBe('Web Agents');
-    expect(message.params.params[2]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(message.params.params[2]).toBe('Papers about web agents');
+    expect(message.params.params[3]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
     expect(topic.name).toBe('Web Agents');
+    expect(topic.summary).toBe('Papers about web agents');
     expect(topic.topicID).toBe(message.params.params[0]);
     expect(topic.feeds).toEqual([]);
+  });
+
+  it('createResearchTopic defaults the summary to an empty string', async () => {
+    const db = await importDatabaseModule();
+    const topic = await db.createResearchTopic('Web Agents');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.params[2]).toBe('');
+    expect(topic.summary).toBe('');
+  });
+
+  it('updateResearchTopic updates only the fields that are provided', async () => {
+    const db = await importDatabaseModule();
+    await db.updateResearchTopic('topic-1', { summary: 'Updated summary' });
+    await db.updateResearchTopic('topic-1', { name: 'New Name', summary: '' });
+
+    const [first, second, third] = FakeWorker.instance.messages;
+    expect(first.action).toBe('exec');
+    expect(first.params.sql).toBe('UPDATE research_topics SET summary = ? WHERE topic_id = ?');
+    expect(first.params.params).toEqual(['Updated summary', 'topic-1']);
+
+    expect(second.params.sql).toBe('UPDATE research_topics SET name = ? WHERE topic_id = ?');
+    expect(second.params.params).toEqual(['New Name', 'topic-1']);
+
+    expect(third.params.sql).toBe('UPDATE research_topics SET summary = ? WHERE topic_id = ?');
+    expect(third.params.params).toEqual(['', 'topic-1']);
+  });
+
+  it('updateResearchTopic with no changes sends nothing', async () => {
+    const db = await importDatabaseModule();
+    await db.updateResearchTopic('topic-1', {});
+    expect(FakeWorker.instance?.messages ?? []).toHaveLength(0);
   });
 
   it('generates unique topic ids for consecutive topics', async () => {
@@ -398,6 +454,7 @@ describe('research topics', () => {
       {
         topic_id: 'topic-1',
         name: 'Web Agents',
+        summary: 'Papers about web agents',
         created_at: '2026-09-03T00:00:00.000Z',
         feed_id: 'feed-1',
         feed_url: 'https://example.com/feed.xml',
@@ -410,6 +467,7 @@ describe('research topics', () => {
       {
         topic_id: 'topic-2',
         name: 'Empty Topic',
+        summary: null,
         created_at: '2026-09-03T02:00:00.000Z',
         feed_id: null,
         feed_url: null,
@@ -433,7 +491,12 @@ describe('research topics', () => {
     expect(message.params.sql).toContain('unread_count');
 
     expect(topics).toHaveLength(2);
-    expect(topics[0]).toMatchObject({ topicID: 'topic-1', name: 'Web Agents' });
+    expect(topics[0]).toMatchObject({
+      topicID: 'topic-1',
+      name: 'Web Agents',
+      summary: 'Papers about web agents',
+    });
+    expect(topics[1].summary).toBe('');
     expect(topics[0].feeds).toHaveLength(1);
     expect(topics[0].feeds[0]).toEqual({
       feedID: 'feed-1',

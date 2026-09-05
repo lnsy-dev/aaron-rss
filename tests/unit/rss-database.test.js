@@ -62,7 +62,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -84,6 +84,9 @@ describe('rss database helpers', () => {
     expect(tables[14]).toContain('INSERT OR IGNORE INTO downloaded_videos');
     expect(tables[14]).toContain('FROM articles');
     expect(tables[14]).toContain('download_path IS NOT NULL');
+    expect(tables[15]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[16]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[17]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -113,6 +116,13 @@ describe('rss database helpers', () => {
           result: [{ name: 'video_id' }, { name: 'file_path' }, { name: 'seen' }],
         };
       }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(research_topics)') {
+        return {
+          id: m.id,
+          ok: true,
+          result: [{ name: 'topic_id' }, { name: 'name' }, { name: 'summary' }],
+        };
+      }
       return { id: m.id, ok: true, result: null };
     };
 
@@ -123,8 +133,8 @@ describe('rss database helpers', () => {
     expect(actions).toEqual([
       'exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec',
       // Research Topics, article markdown, and clear-memory tables close
-      // out the schema init.
-      'exec', 'exec', 'exec', 'exec',
+      // out the schema init (the summary column exists, so no ALTER).
+      'exec', 'query', 'exec', 'exec', 'exec',
     ]);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>

@@ -21,6 +21,7 @@ import {
   markDownloadedVideoSeen,
   createResearchTopic,
   deleteResearchTopic,
+  updateResearchTopic,
   listResearchTopics,
   listResearchTopicArticles,
   addFeedToResearchTopic,
@@ -89,6 +90,7 @@ const DEFAULT_SETTINGS = {
   sourcesFolder: 'sources',
   refreshInterval: 5,
   maxArticlesPerFeed: 50,
+  refreshConcurrency: 4,
   showUnreadOnly: false,
   viewMode: 'timeline',
   theme: '',
@@ -96,6 +98,9 @@ const DEFAULT_SETTINGS = {
 
 /** Minimum/maximum refresh interval allowed in the settings UI (minutes). */
 const REFRESH_INTERVAL_BOUNDS = { min: 0, max: 1440 };
+
+/** Minimum/maximum concurrent feed fetches allowed in the settings UI. */
+const REFRESH_CONCURRENCY_BOUNDS = { min: 1, max: 16 };
 
 /** Per-refresh timeout so a hung feed/network call cannot lock the UI forever. */
 const REFRESH_TIMEOUT_MS = 120000;
@@ -554,14 +559,17 @@ class RSSFeedComponent extends DataroomElement {
    */
   async openResearchTopicView(topicID) {
     let name = 'Research Topic';
+    let summary = '';
     try {
       const topics = await listResearchTopics();
-      name = topics.find((topic) => topic.topicID === topicID)?.name || name;
+      const topic = topics.find((entry) => entry.topicID === topicID);
+      name = topic?.name || name;
+      summary = topic?.summary || '';
     } catch (error) {
       console.error('Failed to resolve research topic name:', error);
     }
 
-    this._topicView = { topicID, name };
+    this._topicView = { topicID, name, summary };
     this.closeModal();
     this.viewMode = 'topic';
     this._syncViewToggle();
@@ -621,7 +629,12 @@ class RSSFeedComponent extends DataroomElement {
     const header = document.createElement('div');
     header.className = 'rss-topic-view-header';
     const readyCount = rows.filter((row) => row.markdownReady).length;
-    header.textContent = `${view.name} — ${rows.length} article${rows.length === 1 ? '' : 's'} (${readyCount} scraped)`;
+    const statsText = `${view.name} — ${rows.length} article${rows.length === 1 ? '' : 's'} (${readyCount} scraped)`;
+    if (view.summary) {
+      header.textContent = `${statsText} — ${view.summary}`;
+    } else {
+      header.textContent = statsText;
+    }
     container.appendChild(header);
 
     if (rows.length === 0) {
@@ -722,6 +735,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Add RSS Feed', action: () => this.openAddFeedModal() },
       { name: 'Manage Feeds', action: () => this.openManageFeedsModal() },
       { name: 'Research Topics', action: () => this.openResearchTopicsModal() },
+      { name: 'New Research Topic', action: () => this.openResearchTopicsModal({ focusCreate: true }) },
       { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
       { name: 'Videos', action: () => this._handleVideosViewButton() },
@@ -1834,6 +1848,7 @@ class RSSFeedComponent extends DataroomElement {
 
     const input = document.createElement('input');
     input.type = 'url';
+    input.className = 'rss-add-feed-url';
     input.placeholder = 'https://example.com or feed URL';
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submitButton.click();
@@ -1906,6 +1921,11 @@ class RSSFeedComponent extends DataroomElement {
 
     modal.body.appendChild(buttonContainer);
     input.focus();
+    // When this modal opens from the command panel, the panel closes right
+    // after running the command and restores its own previous focus,
+    // stealing it from this input. A deferred second focus lands after
+    // that and keeps the caret in the URL field either way.
+    requestAnimationFrame(() => input.focus());
   }
 
   /**
@@ -2053,11 +2073,17 @@ class RSSFeedComponent extends DataroomElement {
    * lets the user create and delete topics, add and remove feeds, and
    * check the scrape status (article counts, last refresh) of each.
    *
+   * @param {{focusCreate?: boolean}} [options] - focusCreate puts the
+   *   cursor in the "new topic name" input, for the command-panel
+   *   "New Research Topic" flow.
    * @returns {Promise<void>}
    */
-  async openResearchTopicsModal() {
+  async openResearchTopicsModal({ focusCreate = false } = {}) {
     const modal = this.createModal('Research Topics', { fullPage: true });
     await this._refreshResearchTopicsBody(modal.body);
+    if (focusCreate) {
+      modal.body.querySelector('.rss-research-create-name')?.focus();
+    }
   }
 
   /**
@@ -2138,10 +2164,18 @@ class RSSFeedComponent extends DataroomElement {
     nameInput.className = 'rss-research-create-name';
     nameInput.placeholder = 'New research topic name…';
     nameInput.setAttribute('aria-label', 'New research topic name');
+    createForm.appendChild(nameInput);
+
+    const summaryInput = document.createElement('textarea');
+    summaryInput.className = 'rss-research-create-summary';
+    summaryInput.placeholder = 'Summary (what this topic tracks)…';
+    summaryInput.setAttribute('aria-label', 'New research topic summary');
+    summaryInput.rows = 2;
+    createForm.appendChild(summaryInput);
+
     nameInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') createButton.click();
     });
-    createForm.appendChild(nameInput);
 
     const createButton = document.createElement('button');
     createButton.className = 'rss-button-primary rss-research-create-button';
@@ -2150,7 +2184,7 @@ class RSSFeedComponent extends DataroomElement {
       const name = nameInput.value.trim();
       if (!name) return;
       try {
-        await createResearchTopic(name);
+        await createResearchTopic(name, summaryInput.value.trim());
         await this._refreshResearchTopicsBody(body);
       } catch (error) {
         this.showToast(`Failed to create topic: ${error.message}`, 'error');
@@ -2265,6 +2299,8 @@ class RSSFeedComponent extends DataroomElement {
     header.appendChild(headerActions);
     section.appendChild(header);
 
+    section.appendChild(this._renderResearchTopicSummary(topic, body));
+
     const feedList = document.createElement('ul');
     feedList.className = 'rss-research-feed-list';
 
@@ -2292,6 +2328,68 @@ class RSSFeedComponent extends DataroomElement {
     section.appendChild(this._renderResearchTopicAddControls(topic, allFeeds, body));
 
     return section;
+  }
+
+  /**
+   * Render a topic's summary block: the summary text (or an empty-state
+   * hint) with an Edit toggle that swaps in a textarea and Save/Cancel
+   * buttons for inline editing.
+   *
+   * @param {object} topic - Topic with a summary field
+   * @param {HTMLElement} body - The view body, re-rendered after changes
+   * @returns {HTMLElement} The summary container element
+   */
+  _renderResearchTopicSummary(topic, body) {
+    const container = document.createElement('div');
+    container.className = 'rss-research-topic-summary';
+
+    const text = document.createElement('p');
+    text.className = 'rss-research-topic-summary-text';
+    text.textContent = topic.summary || 'No summary yet.';
+    container.appendChild(text);
+
+    const editButton = document.createElement('button');
+    editButton.className = 'rss-research-topic-summary-edit';
+    editButton.textContent = 'Edit';
+    editButton.title = 'Edit this topic\'s summary';
+    container.appendChild(editButton);
+
+    editButton.addEventListener('click', () => {
+      container.innerHTML = '';
+
+      const input = document.createElement('textarea');
+      input.className = 'rss-research-topic-summary-input';
+      input.rows = 2;
+      input.value = topic.summary || '';
+      input.setAttribute('aria-label', `Summary for ${topic.name}`);
+      container.appendChild(input);
+
+      const actions = document.createElement('div');
+      actions.className = 'rss-research-topic-summary-actions';
+
+      const saveButton = document.createElement('button');
+      saveButton.className = 'rss-button-primary';
+      saveButton.textContent = 'Save';
+      saveButton.addEventListener('click', async () => {
+        try {
+          await updateResearchTopic(topic.topicID, { summary: input.value.trim() });
+          await this._refreshResearchTopicsBody(body);
+        } catch (error) {
+          this.showToast(`Failed to save summary: ${error.message}`, 'error');
+        }
+      });
+      actions.appendChild(saveButton);
+
+      const cancelButton = document.createElement('button');
+      cancelButton.textContent = 'Cancel';
+      cancelButton.addEventListener('click', () => this._refreshResearchTopicsBody(body));
+      actions.appendChild(cancelButton);
+
+      container.appendChild(actions);
+      input.focus();
+    });
+
+    return container;
   }
 
   /**
@@ -2494,6 +2592,26 @@ class RSSFeedComponent extends DataroomElement {
     refreshHelp.textContent = 'Set to 0 to disable automatic refresh. Maximum is 1440 minutes (1 day).';
     form.appendChild(refreshHelp);
 
+    const concurrencyLabel = document.createElement('label');
+    concurrencyLabel.textContent = 'Concurrent feed fetches';
+    form.appendChild(concurrencyLabel);
+
+    const concurrencyInput = document.createElement('input');
+    concurrencyInput.type = 'number';
+    concurrencyInput.className = 'rss-refresh-concurrency-input';
+    concurrencyInput.min = String(REFRESH_CONCURRENCY_BOUNDS.min);
+    concurrencyInput.max = String(REFRESH_CONCURRENCY_BOUNDS.max);
+    concurrencyInput.step = '1';
+    concurrencyInput.value = String(
+      this.settings.refreshConcurrency ?? DEFAULT_SETTINGS.refreshConcurrency
+    );
+    form.appendChild(concurrencyInput);
+
+    const concurrencyHelp = document.createElement('p');
+    concurrencyHelp.className = 'rss-modal-help';
+    concurrencyHelp.textContent = `How many feeds to fetch at once, from ${REFRESH_CONCURRENCY_BOUNDS.min} to ${REFRESH_CONCURRENCY_BOUNDS.max}. Higher is faster; lower is gentler on slow networks.`;
+    form.appendChild(concurrencyHelp);
+
     const folderLabel = document.createElement('label');
     folderLabel.textContent = 'Sources folder name';
     form.appendChild(folderLabel);
@@ -2594,6 +2712,11 @@ class RSSFeedComponent extends DataroomElement {
       this.settings.refreshInterval = Number.isFinite(rawRefreshInterval)
         ? Math.max(REFRESH_INTERVAL_BOUNDS.min, Math.min(REFRESH_INTERVAL_BOUNDS.max, rawRefreshInterval))
         : DEFAULT_SETTINGS.refreshInterval;
+
+      const rawConcurrency = parseInt(concurrencyInput.value, 10);
+      this.settings.refreshConcurrency = Number.isFinite(rawConcurrency)
+        ? Math.max(REFRESH_CONCURRENCY_BOUNDS.min, Math.min(REFRESH_CONCURRENCY_BOUNDS.max, rawConcurrency))
+        : DEFAULT_SETTINGS.refreshConcurrency;
 
       try {
         await saveSettings(this.settings);
@@ -3044,7 +3167,8 @@ class RSSFeedComponent extends DataroomElement {
           (updatedFeed) => {
             this._mergeUpdatedFeed(updatedFeed);
             this._advanceRefreshProgress(updatedFeed.name || updatedFeed.url);
-          }
+          },
+          this.settings.refreshConcurrency ?? DEFAULT_SETTINGS.refreshConcurrency
         ),
         REFRESH_TIMEOUT_MS
       );
@@ -4580,17 +4704,30 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
-      this.showToast(`Importing ${subscriptions.length} subscriptions…`);
+      const toast = showProgressToast(
+        'opml-import',
+        `Importing ${subscriptions.length} subscriptions…`
+      );
       let added = 0;
 
-      for (const subscription of subscriptions) {
-        const feed = await addFeed(subscription.url, subscription.name);
-        if (feed) {
-          added++;
+      try {
+        for (let i = 0; i < subscriptions.length; i++) {
+          const subscription = subscriptions[i];
+          toast.update(
+            `Importing ${i + 1} of ${subscriptions.length}: ${subscription.name || subscription.url}`,
+            Math.round(((i + 1) / subscriptions.length) * 100)
+          );
+          const feed = await addFeed(subscription.url, subscription.name);
+          if (feed) {
+            added++;
+          }
         }
+      } catch (importError) {
+        toast.fail(`Import failed: ${importError.message}`);
+        return;
       }
 
-      this.showToast(`Imported ${added}/${subscriptions.length} subscriptions from ${name}`);
+      toast.complete(`Imported ${added}/${subscriptions.length} subscriptions from ${name}`);
       await this.refreshFeeds();
       await this.handleRefreshAll();
     } catch (error) {

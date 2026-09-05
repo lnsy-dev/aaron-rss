@@ -516,40 +516,70 @@ export async function downloadArticleYouTubeVideo(feed, article) {
 }
 
 /**
+ * How many feeds `refreshAllFeeds` fetches at once.
+ *
+ * Feed refreshes are network- and worker-bound, not CPU-bound, so a small
+ * pool hides per-feed latency without hammering any single host.
+ */
+export const REFRESH_CONCURRENCY = 4;
+
+/**
  * Refresh every feed.
+ *
+ * Feeds are fetched through a small pool (see REFRESH_CONCURRENCY) so
+ * several feeds are in flight at once; `results` preserves the feed list
+ * order regardless of completion order.
  *
  * @param {number} maxArticles
  * @param {Function} [onProgress] - Called before each feed is fetched with
  *   `{ feed, index, total }` so the UI can show a progress bar.
  * @param {Function} [onFeedUpdated] - Called after each feed is fetched with
  *   the updated feed object so the UI can be updated incrementally.
+ * @param {number} [concurrency=REFRESH_CONCURRENCY] - How many feeds to
+ *   fetch at once; lower values are gentler on slow networks.
  * @returns {Promise<Array<object>>}
  */
-export async function refreshAllFeeds(maxArticles = 50, onProgress = null, onFeedUpdated = null) {
+export async function refreshAllFeeds(
+  maxArticles = 50,
+  onProgress = null,
+  onFeedUpdated = null,
+  concurrency = REFRESH_CONCURRENCY
+) {
   const feeds = await dbLoadAllFeeds();
-  const results = [];
+  const results = new Array(feeds.length);
+  let nextIndex = 0;
 
-  for (let i = 0; i < feeds.length; i++) {
-    const feed = feeds[i];
+  async function refreshNext() {
+    while (nextIndex < feeds.length) {
+      const i = nextIndex;
+      nextIndex += 1;
+      const feed = feeds[i];
 
-    if (typeof onProgress === 'function') {
-      onProgress({ feed, index: i, total: feeds.length });
-    }
-
-    try {
-      const updated = await refreshFeed(feed.feedID, maxArticles);
-      results.push({
-        feedID: feed.feedID,
-        success: updated?.lastFetchWasSuccessful || false,
-      });
-
-      if (typeof onFeedUpdated === 'function' && updated) {
-        onFeedUpdated(updated);
+      if (typeof onProgress === 'function') {
+        onProgress({ feed, index: i, total: feeds.length });
       }
-    } catch (error) {
-      results.push({ feedID: feed.feedID, success: false, error: error.message });
+
+      try {
+        const updated = await refreshFeed(feed.feedID, maxArticles);
+        results[i] = {
+          feedID: feed.feedID,
+          success: updated?.lastFetchWasSuccessful || false,
+        };
+
+        if (typeof onFeedUpdated === 'function' && updated) {
+          onFeedUpdated(updated);
+        }
+      } catch (error) {
+        results[i] = { feedID: feed.feedID, success: false, error: error.message };
+      }
     }
   }
+
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(concurrency, feeds.length)) },
+    refreshNext
+  );
+  await Promise.all(workers);
 
   // Checkpoint the WAL and update query planner stats after a batch of
   // feed writes so the database file does not grow indefinitely.

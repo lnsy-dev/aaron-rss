@@ -1099,9 +1099,11 @@ body command-panel dialog {
   white-space: pre-wrap;
 }
 
+/* Media attaches full-width in a single column: a shared-row grid shrank
+   each photo to about half the view (or less for 3-4 image posts). */
 .rss-social-media {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  grid-template-columns: 1fr;
   gap: 0.5rem;
   margin: 1rem 0;
 }

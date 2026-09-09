@@ -22,6 +22,13 @@
   min-width: 12rem;
 }
 
+/* Empty-name feedback: the create handler flags the input instead of
+   failing silently (aria-invalid is set alongside this class). */
+.rss-research-create .rss-research-create-name--invalid {
+  outline: 2px solid var(--error-color);
+  outline-offset: 1px;
+}
+
 /* Topic sections */
 .rss-research-topic-list {
   display: flex;

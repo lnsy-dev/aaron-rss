@@ -163,15 +163,17 @@ describe('social-post', () => {
                   embed: {
                     $type: 'app.bsky.embed.recordWithMedia#view',
                     record: {
-                      author: { handle: 'bob.bsky.social', displayName: 'Bob' },
-                      value: { text: 'Quoted post text' },
-                      embeds: [
-                        {
-                          images: [
-                            { thumb: 'https://cdn.example/quoted-thumb.jpg', fullsize: 'https://cdn.example/quoted.jpg', alt: 'Quoted image' },
-                          ],
-                        },
-                      ],
+                      record: {
+                        author: { handle: 'bob.bsky.social', displayName: 'Bob' },
+                        value: { text: 'Quoted post text' },
+                        embeds: [
+                          {
+                            images: [
+                              { thumb: 'https://cdn.example/quoted-thumb.jpg', fullsize: 'https://cdn.example/quoted.jpg', alt: 'Quoted image' },
+                            ],
+                          },
+                        ],
+                      },
                     },
                     media: {
                       images: [
@@ -186,6 +188,12 @@ describe('social-post', () => {
                       author: { handle: 'carol.bsky.social', displayName: 'Carol' },
                       indexedAt: '2026-08-20T13:00:00.000Z',
                       record: { text: 'Nice post' },
+                      embed: {
+                        $type: 'app.bsky.embed.images#view',
+                        images: [
+                          { thumb: 'https://cdn.example/reply-thumb.jpg', fullsize: 'https://cdn.example/reply.jpg', alt: 'Reply photo' },
+                        ],
+                      },
                     },
                     replies: [],
                   },
@@ -213,6 +221,160 @@ describe('social-post', () => {
       expect(post.comments).toHaveLength(1);
       expect(post.comments[0].author).toBe('Carol');
       expect(post.comments[0].text).toBe('Nice post');
+      // Replies carry their own attached media so the viewer can show it.
+      expect(post.comments[0].media).toHaveLength(1);
+      expect(post.comments[0].media[0].fullsize).toBe('https://cdn.example/reply.jpg');
+      expect(post.comments[0].media[0].alt).toBe('Reply photo');
+    });
+
+    it('returns an empty media list for replies without attachments', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('resolveHandle?handle=alice.bsky.social')) {
+          return { ok: true, status: 200, text: JSON.stringify({ did: 'did:plc:alice' }) };
+        }
+        if (url.includes('getPostThread')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              thread: {
+                post: {
+                  uri: 'at://did:plc:alice/app.bsky.feed.post/3abc',
+                  author: { handle: 'alice.bsky.social' },
+                  record: { text: 'Hello!' },
+                },
+                replies: [
+                  {
+                    post: {
+                      author: { handle: 'bob.bsky.social' },
+                      record: { text: 'Plain reply' },
+                    },
+                    replies: [],
+                  },
+                ],
+              },
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://bsky.app/profile/alice.bsky.social/post/3abc');
+
+      expect(post.comments).toHaveLength(1);
+      expect(post.comments[0].media).toEqual([]);
+    });
+
+    it('shows every post in a quote chain, including quotes with media', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('resolveHandle?handle=alice.bsky.social')) {
+          return { ok: true, status: 200, text: JSON.stringify({ did: 'did:plc:alice' }) };
+        }
+        if (url.includes('getPostThread')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              thread: {
+                post: {
+                  uri: 'at://did:plc:alice/app.bsky.feed.post/3chain-a',
+                  author: { handle: 'alice.bsky.social' },
+                  record: { text: 'A quotes B' },
+                  embed: {
+                    $type: 'app.bsky.embed.record#view',
+                    record: {
+                      uri: 'at://did:plc:bob/app.bsky.feed.post/3chain-b',
+                      author: { handle: 'bob.bsky.social', displayName: 'Bob' },
+                      value: { text: 'B quotes C' },
+                      embeds: [
+                        {
+                          $type: 'app.bsky.embed.recordWithMedia#view',
+                          record: {
+                            record: {
+                              uri: 'at://did:plc:carol/app.bsky.feed.post/3chain-c',
+                              author: { handle: 'carol.bsky.social', displayName: 'Carol' },
+                              value: { text: 'C has a photo' },
+                              embeds: [],
+                            },
+                          },
+                          media: {
+                            images: [
+                              { thumb: 'https://cdn.example/b-photo.jpg', fullsize: 'https://cdn.example/b-photo.jpg', alt: 'B photo' },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+                replies: [],
+              },
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://bsky.app/profile/alice.bsky.social/post/3chain-a');
+
+      expect(post.embeds).toHaveLength(2);
+      expect(post.embeds[0].author).toBe('Bob');
+      expect(post.embeds[0].text).toBe('B quotes C');
+      expect(post.embeds[0].media).toHaveLength(1);
+      expect(post.embeds[0].media[0].alt).toBe('B photo');
+      expect(post.embeds[1].author).toBe('Carol');
+      expect(post.embeds[1].text).toBe('C has a photo');
+    });
+
+    it('does not loop forever on quote cycles', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('resolveHandle?handle=alice.bsky.social')) {
+          return { ok: true, status: 200, text: JSON.stringify({ did: 'did:plc:alice' }) };
+        }
+        if (url.includes('getPostThread')) {
+          const uriA = 'at://did:plc:alice/app.bsky.feed.post/3cyc-a';
+          const uriB = 'at://did:plc:bob/app.bsky.feed.post/3cyc-b';
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              thread: {
+                post: {
+                  uri: uriA,
+                  author: { handle: 'alice.bsky.social' },
+                  record: { text: 'A quotes B' },
+                  embed: {
+                    $type: 'app.bsky.embed.record#view',
+                    record: {
+                      uri: uriB,
+                      author: { handle: 'bob.bsky.social' },
+                      value: { text: 'B quotes A back' },
+                      embeds: [
+                        {
+                          $type: 'app.bsky.embed.record#view',
+                          record: {
+                            uri: uriA,
+                            author: { handle: 'alice.bsky.social' },
+                            value: { text: 'A quotes B' },
+                            embeds: [],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                },
+                replies: [],
+              },
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://bsky.app/profile/alice.bsky.social/post/3cyc-a');
+
+      expect(post.embeds).toHaveLength(2);
+      expect(post.embeds.map((embed) => embed.text)).toEqual(['B quotes A back', 'A quotes B']);
     });
   });
 
@@ -283,15 +445,17 @@ describe('social-post', () => {
                   embed: {
                     $type: 'app.bsky.embed.recordWithMedia#view',
                     record: {
-                      author: { handle: 'bob.bsky.social', displayName: 'Bob' },
-                      value: { text: 'Quoted post text' },
-                      embeds: [
-                        {
-                          images: [
-                            { thumb: 'https://cdn.example/quoted-thumb.jpg', fullsize: 'https://cdn.example/quoted.jpg', alt: 'Quoted image' },
-                          ],
-                        },
-                      ],
+                      record: {
+                        author: { handle: 'bob.bsky.social', displayName: 'Bob' },
+                        value: { text: 'Quoted post text' },
+                        embeds: [
+                          {
+                            images: [
+                              { thumb: 'https://cdn.example/quoted-thumb.jpg', fullsize: 'https://cdn.example/quoted.jpg', alt: 'Quoted image' },
+                            ],
+                          },
+                        ],
+                      },
                     },
                     media: {
                       images: [

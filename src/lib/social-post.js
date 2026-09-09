@@ -319,32 +319,73 @@ function extractBlueskyMainMedia(postView) {
 }
 
 /**
- * Extract quote-post embeds from a Bluesky post view.
+ * Collect the quoted-post view records carried by a Bluesky embed view.
  *
- * @param {object} postView
- * @returns {Array<{author: string, text: string, media: Array<object>}>}
+ * Two embed shapes carry a quoted post and they nest it differently:
+ * - `app.bsky.embed.record#view` puts the viewRecord at `embed.record`.
+ * - `app.bsky.embed.recordWithMedia#view` wraps it one level deeper, at
+ *   `embed.record.record` (the outer object only pairs the quote with the
+ *   attached media). Missing that second level is what hid quoted posts
+ *   from "photo + quoted post" combinations.
+ *
+ * Embeds arrays are walked recursively so quote chains (a quoted post that
+ * itself quotes another post) all come back; `seen` guards against quote
+ * cycles. Records without a `value` (viewNotFound, viewBlocked, feed
+ * generator or list quotes) have nothing renderable and are skipped.
+ *
+ * @param {object|Array<object>} node Embed view, embeds array, or nothing
+ * @param {Array<object>} [out] Collector for recursive calls
+ * @param {Set<string>} [seen] URIs already collected
+ * @returns {Array<object>} viewRecord objects (`value`, `author`, `embeds`)
  */
-function extractBlueskyEmbeds(postView) {
-  const embeds = [];
-  const recordEmbed = postView?.embed?.record;
+function collectBlueskyViewRecords(node, out = [], seen = new Set()) {
+  if (!node) return out;
 
-  if (recordEmbed && recordEmbed.value) {
-    const author = recordEmbed.author?.displayName || recordEmbed.author?.handle || '';
-    const handle = recordEmbed.author?.handle || '';
-    const text = recordEmbed.value.text || '';
-    const media = extractBlueskyMedia(recordEmbed.embeds || []);
-    embeds.push({ author, handle, text, media });
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectBlueskyViewRecords(child, out, seen);
+    }
+    return out;
   }
 
-  return embeds;
+  const record = node.record?.value ? node.record : node.record?.record;
+  if (!record?.value) return out;
+  if (record.uri && seen.has(record.uri)) return out;
+  if (record.uri) seen.add(record.uri);
+
+  out.push(record);
+  // The quoted post may itself embed further posts (quote chains).
+  collectBlueskyViewRecords(record.embeds, out, seen);
+  return out;
+}
+
+/**
+ * Extract quote-post embeds from a Bluesky post view.
+ *
+ * Returns one entry per quoted post, including posts quoted inside quoted
+ * posts (quote chains), in discovery order.
+ *
+ * @param {object} postView
+ * @returns {Array<{author: string, handle: string, text: string, media: Array<object>}>}
+ */
+function extractBlueskyEmbeds(postView) {
+  return collectBlueskyViewRecords(postView?.embed).map((record) => ({
+    author: record.author?.displayName || record.author?.handle || '',
+    handle: record.author?.handle || '',
+    text: record.value?.text || '',
+    media: extractBlueskyMedia(record.embeds || []),
+  }));
 }
 
 /**
  * Recursively flatten Bluesky thread replies into a simple comment list.
  *
+ * Each comment carries the reply's own attached media (images, link cards)
+ * so the viewer can render reply photos.
+ *
  * @param {Array<object>} replies
  * @param {number} [depth]
- * @returns {Array<{author: string, handle: string, text: string, date: string}>}
+ * @returns {Array<{author: string, handle: string, text: string, date: string, media: Array<object>}>}
  */
 function flattenBlueskyReplies(replies, depth = 0) {
   const comments = [];
@@ -360,6 +401,7 @@ function flattenBlueskyReplies(replies, depth = 0) {
       text: extractBlueskyPostText(post),
       date: post.indexedAt || post.record?.createdAt || '',
       depth,
+      media: extractBlueskyMainMedia(post),
     });
 
     if (reply.replies?.length) {

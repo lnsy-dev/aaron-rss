@@ -4368,6 +4368,11 @@ class RSSFeedComponent extends DataroomElement {
         }
         commentBlock.appendChild(commentText);
 
+        // Replies can carry their own photos or link cards.
+        if (comment.media && comment.media.length > 0) {
+          this.renderSocialMedia(commentBlock, comment.media);
+        }
+
         commentsSection.appendChild(commentBlock);
       }
 

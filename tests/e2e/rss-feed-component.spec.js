@@ -1804,6 +1804,208 @@ test.describe('Aaron RSS', () => {
     await expect(openButton).toBeVisible();
   });
 
+  test('a photo with an embedded Bluesky post shows both the photo and the quoted post', async ({ page }) => {
+    await page.evaluate(() => {
+      const handleResponse = JSON.stringify({ did: 'did:plc:alice' });
+      const threadResponse = JSON.stringify({
+        thread: {
+          post: {
+            uri: 'at://did:plc:alice/app.bsky.feed.post/3rwm',
+            author: { handle: 'alice', displayName: 'Alice' },
+            indexedAt: '2026-08-20T12:00:00.000Z',
+            record: { text: 'Look at this' },
+            embed: {
+              $type: 'app.bsky.embed.recordWithMedia#view',
+              record: {
+                record: {
+                  uri: 'at://did:plc:bob/app.bsky.feed.post/3quoted',
+                  author: { handle: 'bob', displayName: 'Bob' },
+                  value: { text: 'The quoted post text' },
+                  embeds: [
+                    {
+                      $type: 'app.bsky.embed.images#view',
+                      images: [
+                        { thumb: 'https://cdn.example/quoted-thumb.jpg', fullsize: 'https://cdn.example/quoted.jpg', alt: 'Quoted photo' },
+                      ],
+                    },
+                  ],
+                },
+              },
+              media: {
+                $type: 'app.bsky.embed.images#view',
+                images: [
+                  { thumb: 'https://cdn.example/main-thumb.jpg', fullsize: 'https://cdn.example/main.jpg', alt: 'Main photo' },
+                  { thumb: 'https://cdn.example/main2-thumb.jpg', fullsize: 'https://cdn.example/main2.jpg', alt: 'Second photo' },
+                ],
+              },
+            },
+          },
+          replies: [],
+        },
+      });
+
+      const originalFetch = window.fetch;
+      window.fetch = function (url, options) {
+        if (typeof url !== 'string' || !url.startsWith('https://public.api.bsky.app')) {
+          return originalFetch(url, options);
+        }
+        if (url.includes('resolveHandle?handle=alice')) {
+          return Promise.resolve(new Response(handleResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        if (url.includes('getPostThread')) {
+          return Promise.resolve(new Response(threadResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        return originalFetch(url, options);
+      };
+    });
+
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-bsky-rwm',
+          url: 'https://bsky.app/profile/alice/rss',
+          name: 'Alice',
+          homePageURL: 'https://bsky.app/profile/alice',
+          articles: [
+            {
+              articleID: 'bsky-rwm-1',
+              title: 'Photo with quote',
+              url: 'https://bsky.app/profile/alice/post/3rwm',
+              contentText: 'Look at this',
+              summary: 'Look at this',
+              datePublished: new Date('2026-08-20T12:00:00Z'),
+              read: false,
+              starred: false,
+            },
+          ],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    await page.locator('.rss-article-title strong').click();
+
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    // The attached photos render...
+    const mainMedia = viewer.locator('.rss-social-post > .rss-social-media');
+    await expect(mainMedia.locator('img[src="https://cdn.example/main.jpg"]')).toHaveCount(1, { timeout: 15000 });
+    await expect(mainMedia.locator('img[src="https://cdn.example/main2.jpg"]')).toHaveCount(1);
+    // ...stacked full-width in a single column, not side-by-side at half
+    // width each.
+    const trackCount = await mainMedia.evaluate(
+      (el) => getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length
+    );
+    expect(trackCount).toBe(1);
+    // ...and so does the embedded ("second") post with its own photo.
+    const embed = viewer.locator('.rss-social-embed');
+    await expect(embed).toHaveCount(1);
+    await expect(embed).toContainText('Bob');
+    await expect(embed).toContainText('The quoted post text');
+    await expect(embed.locator('img[src="https://cdn.example/quoted.jpg"]')).toHaveCount(1);
+  });
+
+  test('Bluesky replies with attached photos show them in the comments', async ({ page }) => {
+    await page.evaluate(() => {
+      const handleResponse = JSON.stringify({ did: 'did:plc:alice' });
+      const threadResponse = JSON.stringify({
+        thread: {
+          post: {
+            uri: 'at://did:plc:alice/app.bsky.feed.post/3replyimg',
+            author: { handle: 'alice', displayName: 'Alice' },
+            indexedAt: '2026-08-20T12:00:00.000Z',
+            record: { text: 'Original post text' },
+          },
+          replies: [
+            {
+              post: {
+                author: { handle: 'bob', displayName: 'Bob' },
+                indexedAt: '2026-08-20T13:00:00.000Z',
+                record: { text: 'Here is my cat' },
+                embed: {
+                  $type: 'app.bsky.embed.images#view',
+                  images: [
+                    { thumb: 'https://cdn.example/cat-thumb.jpg', fullsize: 'https://cdn.example/cat.jpg', alt: 'A cat' },
+                  ],
+                },
+              },
+              replies: [],
+            },
+          ],
+        },
+      });
+
+      const originalFetch = window.fetch;
+      window.fetch = function (url, options) {
+        if (typeof url !== 'string' || !url.startsWith('https://public.api.bsky.app')) {
+          return originalFetch(url, options);
+        }
+        if (url.includes('resolveHandle?handle=alice')) {
+          return Promise.resolve(new Response(handleResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        if (url.includes('getPostThread')) {
+          return Promise.resolve(new Response(threadResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        return originalFetch(url, options);
+      };
+    });
+
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-bsky-reply',
+          url: 'https://bsky.app/profile/alice/rss',
+          name: 'Alice',
+          homePageURL: 'https://bsky.app/profile/alice',
+          articles: [
+            {
+              articleID: 'bsky-reply-1',
+              title: 'Post with photo reply',
+              url: 'https://bsky.app/profile/alice/post/3replyimg',
+              contentText: 'Original post text',
+              summary: 'Original post text',
+              datePublished: new Date('2026-08-20T12:00:00Z'),
+              read: false,
+              starred: false,
+            },
+          ],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    await page.locator('.rss-article-title strong').click();
+
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    const comment = viewer.locator('.rss-social-comment', { hasText: 'Here is my cat' });
+    await expect(comment).toBeVisible();
+    await expect(comment.locator('.rss-social-media img[src="https://cdn.example/cat.jpg"]')).toHaveCount(1, { timeout: 15000 });
+    await expect(comment.locator('.rss-social-media img')).toHaveAttribute('alt', 'A cat');
+  });
+
   test('external link cards in a social post open in a new context', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toHaveJSProperty('initialized', true);

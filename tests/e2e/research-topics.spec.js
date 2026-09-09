@@ -87,6 +87,36 @@ test.describe('Research Topics', () => {
     );
   });
 
+  test('gives feedback instead of failing silently when the name is empty', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await component.evaluate((el) => el.openResearchTopicsModal());
+
+    const body = page.locator('.rss-modal-dialog--full .rss-modal-body');
+    await expect(body).toBeVisible();
+
+    // Clicking Create Topic with an empty (and whitespace-only) name used
+    // to do nothing at all — no topic, no error, no toast.
+    await body.locator('.rss-research-create-button').click();
+
+    const nameInput = body.locator('.rss-research-create-name');
+    await expect(nameInput).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('.app-toast-error')).toContainText(
+      'Enter a name for the research topic first.'
+    );
+
+    // Whitespace-only behaves the same way.
+    await nameInput.fill('   ');
+    await body.locator('.rss-research-create-button').click();
+    await expect(nameInput).toHaveAttribute('aria-invalid', 'true');
+
+    // Typing clears the invalid flag, and the toast disappears on its own.
+    await nameInput.fill('Real Name');
+    await expect(nameInput).not.toHaveAttribute('aria-invalid', 'true');
+
+    // The view never rendered a topic for either failed attempt.
+    await expect(body.locator('.rss-research-topic')).toHaveCount(0);
+  });
+
   test('edits a topic summary inline', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await component.evaluate((el) => el.openResearchTopicsModal());

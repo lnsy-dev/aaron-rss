@@ -2173,22 +2173,59 @@ class RSSFeedComponent extends DataroomElement {
     summaryInput.rows = 2;
     createForm.appendChild(summaryInput);
 
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') createButton.click();
-    });
+    // Set while a create is in flight so a double-click cannot insert the
+    // same topic twice before the re-render swaps the form out.
+    let creating = false;
 
-    const createButton = document.createElement('button');
-    createButton.className = 'rss-button-primary rss-research-create-button';
-    createButton.textContent = 'Create Topic';
-    createButton.addEventListener('click', async () => {
+    /**
+     * Create the topic from the current form values.
+     *
+     * Shared by the Create Topic button and the name input's Enter key.
+     * Gives visible feedback for an empty name instead of silently doing
+     * nothing, and ignores re-entrant submits while one is in flight.
+     *
+     * @returns {Promise<void>}
+     */
+    const submitCreate = async () => {
+      if (creating) return;
       const name = nameInput.value.trim();
-      if (!name) return;
+      if (!name) {
+        // An empty name previously fell through silently, which read as
+        // "the button does nothing". Flag the input and tell the user why.
+        nameInput.setAttribute('aria-invalid', 'true');
+        nameInput.classList.add('rss-research-create-name--invalid');
+        nameInput.focus();
+        this.showToast('Enter a name for the research topic first.', 'error');
+        return;
+      }
+      nameInput.removeAttribute('aria-invalid');
+      nameInput.classList.remove('rss-research-create-name--invalid');
+      creating = true;
+      createButton.disabled = true;
       try {
         await createResearchTopic(name, summaryInput.value.trim());
         await this._refreshResearchTopicsBody(body);
       } catch (error) {
         this.showToast(`Failed to create topic: ${error.message}`, 'error');
+      } finally {
+        creating = false;
+        createButton.disabled = false;
       }
+    };
+
+    const createButton = document.createElement('button');
+    createButton.className = 'rss-button-primary rss-research-create-button';
+    createButton.textContent = 'Create Topic';
+    createButton.addEventListener('click', submitCreate);
+
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitCreate();
+    });
+
+    // Typing clears the empty-name flag again.
+    nameInput.addEventListener('input', () => {
+      nameInput.removeAttribute('aria-invalid');
+      nameInput.classList.remove('rss-research-create-name--invalid');
     });
     createForm.appendChild(createButton);
 

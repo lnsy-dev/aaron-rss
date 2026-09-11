@@ -62,7 +62,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -71,22 +71,26 @@ describe('rss database helpers', () => {
     expect(tables[2]).toContain('ALTER TABLE feeds ADD COLUMN open_original_by_default');
     expect(tables[3]).toContain('ALTER TABLE feeds ADD COLUMN auto_download_youtube');
     expect(tables[4]).toContain('CREATE TABLE IF NOT EXISTS articles');
+    expect(tables[4]).toContain('enclosure_url');
     expect(tables[6]).toContain('ALTER TABLE articles ADD COLUMN download_path');
     expect(tables[7]).toContain('ALTER TABLE articles ADD COLUMN content_hash');
-    expect(tables[8]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
-    expect(tables[9]).toContain('CREATE TABLE IF NOT EXISTS settings');
-    expect(tables[10]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
-    expect(tables[11]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
-    expect(tables[11]).toContain('seen INTEGER NOT NULL DEFAULT 0');
-    expect(tables[11]).toContain('UNIQUE (feed_id, article_id)');
-    expect(tables[12]).toContain('PRAGMA table_info(downloaded_videos)');
-    expect(tables[13]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
-    expect(tables[14]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[14]).toContain('FROM articles');
-    expect(tables[14]).toContain('download_path IS NOT NULL');
-    expect(tables[15]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[16]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[17]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    expect(tables[8]).toContain('ALTER TABLE articles ADD COLUMN enclosure_url');
+    expect(tables[9]).toContain('ALTER TABLE articles ADD COLUMN enclosure_type');
+    expect(tables[10]).toContain('ALTER TABLE articles ADD COLUMN enclosure_length');
+    expect(tables[11]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
+    expect(tables[12]).toContain('CREATE TABLE IF NOT EXISTS settings');
+    expect(tables[13]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
+    expect(tables[14]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[14]).toContain('seen INTEGER NOT NULL DEFAULT 0');
+    expect(tables[14]).toContain('UNIQUE (feed_id, article_id)');
+    expect(tables[15]).toContain('PRAGMA table_info(downloaded_videos)');
+    expect(tables[16]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
+    expect(tables[17]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[17]).toContain('FROM articles');
+    expect(tables[17]).toContain('download_path IS NOT NULL');
+    expect(tables[18]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[19]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[20]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -106,7 +110,14 @@ describe('rss database helpers', () => {
         return {
           id: m.id,
           ok: true,
-          result: [{ name: 'article_id' }, { name: 'download_path' }, { name: 'content_hash' }],
+          result: [
+            { name: 'article_id' },
+            { name: 'download_path' },
+            { name: 'content_hash' },
+            { name: 'enclosure_url' },
+            { name: 'enclosure_type' },
+            { name: 'enclosure_length' },
+          ],
         };
       }
       if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(downloaded_videos)') {
@@ -190,6 +201,33 @@ describe('rss database helpers', () => {
     expect(insertArticle.params.params[1]).toBe('feed123');
   });
 
+  it('saveFeed persists podcast enclosure metadata', async () => {
+    const db = await importDatabaseModule();
+    const feed = {
+      feedID: 'feed123',
+      url: 'https://example.com/feed',
+      articles: [
+        {
+          articleID: 'ep1',
+          uniqueID: 'u1',
+          title: 'Episode 1',
+          enclosureURL: 'https://cdn.example.com/ep1.mp3',
+          enclosureType: 'audio/mpeg',
+          enclosureLength: 12345678,
+          dateArrived: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    };
+
+    await db.saveFeed(feed);
+
+    const insertArticle = FakeWorker.instance.messages[2];
+    expect(insertArticle.params.sql).toContain('enclosure_url, enclosure_type, enclosure_length');
+    expect(insertArticle.params.params).toContain('https://cdn.example.com/ep1.mp3');
+    expect(insertArticle.params.params).toContain('audio/mpeg');
+    expect(insertArticle.params.params).toContain(12345678);
+  });
+
   it('loadAllFeeds queries feeds with articles', async () => {
     FakeWorker.onMessage = (m) => ({
       id: m.id,
@@ -223,6 +261,9 @@ describe('rss database helpers', () => {
         read: 0,
         starred: 0,
         download_path: '/downloads/video.mp4',
+        enclosure_url: 'https://cdn.example.com/ep1.mp3',
+        enclosure_type: 'audio/mpeg',
+        enclosure_length: 12345678,
         date_arrived: '2026-01-01T00:00:00.000Z',
       }],
     });
@@ -243,6 +284,9 @@ describe('rss database helpers', () => {
     expect(feeds[0].articles[0].articleID).toBe('art1');
     expect(feeds[0].articles[0].url).toBe('https://example.com/post');
     expect(feeds[0].articles[0].downloadPath).toBe('/downloads/video.mp4');
+    expect(feeds[0].articles[0].enclosureURL).toBe('https://cdn.example.com/ep1.mp3');
+    expect(feeds[0].articles[0].enclosureType).toBe('audio/mpeg');
+    expect(feeds[0].articles[0].enclosureLength).toBe(12345678);
   });
 
   it('deleteFeed removes articles, feed, and page snapshot', async () => {
@@ -445,6 +489,45 @@ describe('rss database helpers', () => {
     const db = await importDatabaseModule();
 
     const record = await db.getDownloadedVideoForArticle('feed123', 'art1');
+
+    expect(record).toBeNull();
+  });
+
+  it('getDownloadedVideoForURL queries by youtube URL, newest first', async () => {
+    const db = await importDatabaseModule();
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [
+        {
+          video_id: 'vid2',
+          feed_id: 'manual-downloads',
+          article_id: 'manual-1',
+          youtube_url: 'https://www.youtube.com/watch?v=abc',
+          file_path: '/downloads/Aaron-RSS-YouTube/abc.mp4',
+          title: 'My Video',
+          downloaded_at: '2026-01-02T00:00:00.000Z',
+          file_size_bytes: null,
+        },
+      ],
+    });
+
+    const record = await db.getDownloadedVideoForURL('https://www.youtube.com/watch?v=abc');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain(
+      'SELECT * FROM downloaded_videos WHERE youtube_url = ? ORDER BY downloaded_at DESC LIMIT 1'
+    );
+    expect(message.params.params).toEqual(['https://www.youtube.com/watch?v=abc']);
+    expect(record.videoID).toBe('vid2');
+    expect(record.youtubeURL).toBe('https://www.youtube.com/watch?v=abc');
+  });
+
+  it('getDownloadedVideoForURL returns null when the URL was never downloaded', async () => {
+    const db = await importDatabaseModule();
+
+    const record = await db.getDownloadedVideoForURL('https://www.youtube.com/watch?v=abc');
 
     expect(record).toBeNull();
   });

@@ -1045,7 +1045,7 @@ function runYtDlpWithProgress(ytDlpWrap, args, onProgress) {
  * @param {Function|null} [onProgress] - Optional progress callback; receives
  *   { stage, percent?, totalSize?, currentSpeed?, eta? } updates where
  *   stage is 'starting' | 'downloading' | 'processing'
- * @returns {Promise<{filePath?: string, error?: string}>}
+ * @returns {Promise<{filePath?: string, videoID?: string, title?: string|null, error?: string}>}
  */
 export async function downloadYouTubeVideo(url, onProgress = null) {
   if (isYouTubeStream(url)) {
@@ -1096,7 +1096,10 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
       return { error: 'Download completed but file was not found' };
     }
 
-    return { filePath };
+    // The metadata lookup already ran for the video ID, so its title rides
+    // along for free; callers recording the download in the video library
+    // use it as the display name.
+    return { filePath, videoID, title: info?.title || null };
   } catch (error) {
     return { error: error.message || String(error) };
   }

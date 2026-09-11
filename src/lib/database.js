@@ -270,6 +270,9 @@ export async function initRSSSchema() {
       read INTEGER DEFAULT 0,
       starred INTEGER DEFAULT 0,
       download_path TEXT,
+      enclosure_url TEXT,
+      enclosure_type TEXT,
+      enclosure_length INTEGER,
       date_arrived TEXT NOT NULL
     )`,
   });
@@ -290,6 +293,25 @@ export async function initRSSSchema() {
   if (!articleColumns.some((col) => col.name === 'content_hash')) {
     await callWorker('exec', {
       sql: 'ALTER TABLE articles ADD COLUMN content_hash TEXT',
+    });
+  }
+
+  // Migration: podcast support. Each article stores its audio enclosure
+  // metadata (URL, MIME type, byte length) so podcast episodes can offer
+  // a Download button even after the feed's raw XML is gone.
+  if (!articleColumns.some((col) => col.name === 'enclosure_url')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN enclosure_url TEXT',
+    });
+  }
+  if (!articleColumns.some((col) => col.name === 'enclosure_type')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN enclosure_type TEXT',
+    });
+  }
+  if (!articleColumns.some((col) => col.name === 'enclosure_length')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN enclosure_length INTEGER',
     });
   }
 
@@ -468,6 +490,9 @@ function articleToRow(article, feedID) {
     article.read ? 1 : 0,
     article.starred ? 1 : 0,
     article.downloadPath || null,
+    article.enclosureURL || null,
+    article.enclosureType || null,
+    Number.isFinite(article.enclosureLength) ? article.enclosureLength : null,
     article.dateArrived ? article.dateArrived.toISOString() : new Date().toISOString(),
     article.contentHash || null,
   ];
@@ -521,6 +546,9 @@ function rowsToFeeds(rows) {
         read: Boolean(row.read),
         starred: Boolean(row.starred),
         downloadPath: row.download_path || undefined,
+        enclosureURL: row.enclosure_url || undefined,
+        enclosureType: row.enclosure_type || undefined,
+        enclosureLength: row.enclosure_length ?? undefined,
         dateArrived: new Date(row.date_arrived),
         contentHash: row.content_hash || undefined,
       });
@@ -563,8 +591,8 @@ export async function saveFeed(feed) {
   for (const article of feed.articles) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: articleToRow(article, feed.feedID),
     });
   }
@@ -626,8 +654,8 @@ export async function saveArticles(feedID, articles) {
   for (const article of writable) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, date_arrived, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(article_id) DO UPDATE SET
           feed_id = excluded.feed_id,
           unique_id = excluded.unique_id,
@@ -646,6 +674,9 @@ export async function saveArticles(feedID, articles) {
           read = excluded.read,
           starred = excluded.starred,
           download_path = excluded.download_path,
+          enclosure_url = excluded.enclosure_url,
+          enclosure_type = excluded.enclosure_type,
+          enclosure_length = excluded.enclosure_length,
           date_arrived = excluded.date_arrived,
           content_hash = excluded.content_hash`,
       params: articleToRow(article, feedID),
@@ -762,6 +793,7 @@ export function loadFeedsForDisplay() {
         CASE WHEN ${SOCIAL_URL_SQL} THEN a.content_html END AS content_html,
         CASE WHEN ${SOCIAL_URL_SQL} THEN a.content_text END AS content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
@@ -790,6 +822,7 @@ export function loadAllFeeds() {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
       FROM feeds f
@@ -812,6 +845,7 @@ export function loadFeed(feedID) {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
@@ -844,6 +878,7 @@ export function loadFeedForRefresh(feedID) {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, a.title,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
@@ -1166,6 +1201,7 @@ export function loadDownloadedArticles() {
         f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
         a.article_id, a.unique_id, COALESCE(a.title, v.title) AS title, a.content_html, a.content_text,
         COALESCE(a.url, v.youtube_url) AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
         a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived,
         v.feed_id AS video_feed_id, v.article_id AS video_article_id
@@ -1212,10 +1248,30 @@ export function loadDownloadedArticles() {
         read: Boolean(row.read),
         starred: Boolean(row.starred),
         downloadPath: row.download_path || undefined,
+        enclosureURL: row.enclosure_url || undefined,
+        enclosureType: row.enclosure_type || undefined,
+        enclosureLength: row.enclosure_length ?? undefined,
         dateArrived: new Date(row.date_arrived),
       },
     };
   }));
+}
+
+/**
+ * Fetch the newest downloaded_videos record for a YouTube URL.
+ *
+ * Used to dedupe manual downloads started from the command menu: the
+ * same video URL can arrive through many feeds and shareable link
+ * shapes, so the queue's youtube_url column is the only stable key.
+ *
+ * @param {string} youtubeURL
+ * @returns {Promise<object|null>} Record or null when never downloaded
+ */
+export function getDownloadedVideoForURL(youtubeURL) {
+  return callWorker('query', {
+    sql: `SELECT * FROM downloaded_videos WHERE youtube_url = ? ORDER BY downloaded_at DESC LIMIT 1`,
+    params: [youtubeURL],
+  }).then((rows) => (rows && rows.length > 0 ? downloadedVideoFromRow(rows[0]) : null));
 }
 
 /**
@@ -1552,6 +1608,7 @@ const ARTICLE_WITH_MARKDOWN_SELECT = `
   SELECT
     a.article_id, a.feed_id, a.unique_id, a.title,
     a.url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
     a.date_published, a.date_arrived, a.read, a.starred,
     f.name AS feed_name, f.url AS feed_url,
     m.scraped_at AS markdown_scraped_at

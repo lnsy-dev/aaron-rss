@@ -41,7 +41,10 @@ import {
   toggleArticleStarred,
   markAllArticlesAsRead,
   downloadArticleYouTubeVideo,
+  downloadYouTubeVideoFromURL,
   deleteArticleYouTubeVideo,
+  downloadArticlePodcast,
+  deleteArticlePodcast,
   loadDownloadedArticles,
   ensureFeedSubscribed,
   clearResearchTopicArticles,
@@ -75,8 +78,10 @@ import {
   getQuickKeyGroups,
   isQuickKeysEvent,
 } from './lib/quick-keys.js';
-import { isYouTubeURL, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
+import { isYouTubeURL, isYouTubeStream, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
+import { isPodcastEpisode } from './lib/podcast.js';
+import { isPodcastDownloadAvailable } from './lib/podcast-bridge.js';
 import { registerResearchApiBridge } from './lib/research-api-bridge.js';
 import {
   getUsableImageURL,
@@ -739,6 +744,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
       { name: 'Videos', action: () => this._handleVideosViewButton() },
+      { name: 'Download Youtube Video', action: () => this.openDownloadYouTubeModal() },
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
       { name: 'Import OPML', action: () => this.handleImportOPML() },
@@ -924,6 +930,12 @@ class RSSFeedComponent extends DataroomElement {
         break;
       case 'delete-youtube':
         this._deleteYouTubeVideoFromList(article, feed, actionEl);
+        break;
+      case 'download-podcast':
+        this._downloadPodcastEpisode(article, feed, actionEl);
+        break;
+      case 'delete-podcast':
+        this._deletePodcastFromList(article, feed, actionEl);
         break;
       default:
         // Clicks on non-action parts of the article do nothing.
@@ -1618,6 +1630,14 @@ class RSSFeedComponent extends DataroomElement {
       titleDiv.appendChild(youtubeBadge);
     }
 
+    if (isPodcastEpisode(article)) {
+      const podcastBadge = document.createElement('span');
+      podcastBadge.className = 'rss-podcast-badge';
+      podcastBadge.textContent = '🎙 Podcast';
+      podcastBadge.title = `Podcast episode (${article.enclosureType || 'audio'})`;
+      titleDiv.appendChild(podcastBadge);
+    }
+
     articleDiv.appendChild(titleDiv);
 
     const metaDiv = document.createElement('div');
@@ -1677,6 +1697,16 @@ class RSSFeedComponent extends DataroomElement {
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'rss-article-actions';
 
+    // Podcast episodes, YouTube videos, and other articles each put their
+    // primary action first; "Mark Read" is always rendered last.
+    if (isPodcastEpisode(article)) {
+      const podcastButton = document.createElement('button');
+      podcastButton.className = 'rss-action-button rss-podcast-download-button';
+      podcastButton.textContent = article.downloadPath ? 'Downloaded ✓' : 'Download Podcast';
+      podcastButton.setAttribute('data-action', 'download-podcast');
+      actionsDiv.appendChild(podcastButton);
+    }
+
     // YouTube videos put "Download Video" first; all other articles put
     // "Read" first. "Mark Read" is always rendered last.
     if (article.url && isYouTubeURL(article.url)) {
@@ -1713,10 +1743,21 @@ class RSSFeedComponent extends DataroomElement {
     saveButton.setAttribute('data-action', 'save-file');
     actionsDiv.appendChild(saveButton);
 
-    // A downloaded video is watch-later state: while it exists the last
+    // A downloaded video is watch-later state: while it exists its last
     // action is "Delete Video" (removes the file and marks the article
     // read); once deleted the usual Mark Read/Unread toggle returns.
-    if (article.downloadPath) {
+    // Downloaded podcasts keep the normal read toggle — downloading an
+    // episode is not a "later" bucket — and get a "Delete Audio" action
+    // to remove the file again.
+    if (article.downloadPath && isPodcastEpisode(article)) {
+      const deleteAudioButton = document.createElement('button');
+      deleteAudioButton.className = 'rss-action-button rss-button-danger';
+      deleteAudioButton.textContent = 'Delete Audio';
+      deleteAudioButton.setAttribute('data-action', 'delete-podcast');
+      actionsDiv.appendChild(deleteAudioButton);
+    }
+
+    if (!isPodcastEpisode(article) && article.downloadPath) {
       const deleteButton = document.createElement('button');
       deleteButton.className = 'rss-action-button rss-button-danger';
       deleteButton.textContent = 'Delete Video';
@@ -1926,6 +1967,110 @@ class RSSFeedComponent extends DataroomElement {
     // stealing it from this input. A deferred second focus lands after
     // that and keeps the caret in the URL field either way.
     requestAnimationFrame(() => input.focus());
+  }
+
+  /**
+   * Open the "Download Youtube Video" modal.
+   *
+   * Backs the command-menu entry of the same name: the user pastes a
+   * YouTube watch/shorts/youtu.be URL and the video is fetched with
+   * yt-dlp without subscribing to its channel. The finished download is
+   * recorded in the video library, so it shows up in the Videos view.
+   *
+   * @returns {void}
+   */
+  openDownloadYouTubeModal() {
+    const modal = this.createModal('Download Youtube Video');
+
+    const label = document.createElement('label');
+    label.textContent = 'YouTube URL';
+    modal.body.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'url';
+    input.className = 'rss-add-feed-url';
+    input.placeholder = 'https://www.youtube.com/watch?v=…';
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitButton.click();
+    });
+    modal.body.appendChild(input);
+
+    const help = document.createElement('p');
+    help.className = 'rss-modal-help';
+    help.textContent = 'Paste a YouTube video link. It is downloaded with yt-dlp and shows up in the Videos view; the channel is not subscribed.';
+    modal.body.appendChild(help);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'rss-modal-buttons';
+
+    const submitButton = document.createElement('button');
+    submitButton.className = 'rss-button-primary';
+    submitButton.textContent = 'Download Video';
+    submitButton.addEventListener('click', () => {
+      const url = input.value.trim();
+      if (!url) return;
+
+      if (!isYouTubeURL(url)) {
+        this.showToast('That does not look like a YouTube video URL.', 'error');
+        return;
+      }
+
+      if (isYouTubeStream(url)) {
+        this.showToast('Live streams are not downloaded.', 'error');
+        return;
+      }
+
+      this.closeModal();
+      this._downloadYouTubeVideoFromURL(url);
+    });
+    buttonContainer.appendChild(submitButton);
+
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = 'Cancel';
+    cancelButton.addEventListener('click', () => this.closeModal());
+    buttonContainer.appendChild(cancelButton);
+
+    modal.body.appendChild(buttonContainer);
+    input.focus();
+    // Same deferred refocus as the Add Feed modal: the command panel
+    // restores its own previous focus after closing and would otherwise
+    // steal the caret from this input.
+    requestAnimationFrame(() => input.focus());
+  }
+
+  /**
+   * Download a YouTube video by URL from the command menu.
+   *
+   * Shows the shared progress toast (updates arrive over Electron IPC,
+   * keyed by URL), records the download into the video library via
+   * feed-manager, and refreshes the Videos view data.
+   *
+   * @param {string} url - YouTube video URL
+   * @returns {Promise<void>}
+   */
+  async _downloadYouTubeVideoFromURL(url) {
+    const toast = showVideoDownloadToast(url, 'Preparing download…');
+
+    try {
+      const result = await downloadYouTubeVideoFromURL(url);
+      if (result.error) {
+        toast.fail(`Download failed: ${result.error}`);
+        return;
+      }
+
+      if (result.alreadyDownloaded) {
+        toast.complete('Already in Videos ✓');
+      } else {
+        toast.complete('Video saved ✓');
+      }
+
+      // The new download lives in the Videos view; refresh the ready
+      // badge (and the list itself when the Videos view is open).
+      await this.refreshFeeds();
+    } catch (error) {
+      console.error('Failed to download YouTube video:', error);
+      toast.fail(`Download failed: ${error.message}`);
+    }
   }
 
   /**
@@ -3503,6 +3648,14 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    // Podcast episodes skip generic page extraction (the episode URL is
+    // often just a player page); the viewer hosts the audio player and
+    // the episode's own show notes instead.
+    if (isPodcastEpisode(article)) {
+      await this.openPodcastViewer(article, feed);
+      return;
+    }
+
     if (feed && feed.openOriginalByDefault) {
       await this.openOriginalViewer(article, feed);
       return;
@@ -4031,6 +4184,251 @@ class RSSFeedComponent extends DataroomElement {
         button.textContent = 'Download Video';
       }
     }
+  }
+
+  /**
+   * Download a podcast episode's audio on explicit user request.
+   *
+   * Runs through feed-manager so the saved path is persisted; updates
+   * the triggering button to reflect in-progress/completed state and
+   * drives a progress toast from the download's own progress callback
+   * (Electron IPC events, or streaming writes in a plain browser).
+   *
+   * @param {object} article
+   * @param {object} feed
+   * @param {HTMLElement} [buttonElement] - The clicked button, if any
+   * @returns {Promise<void>}
+   */
+  async _downloadPodcastEpisode(article, feed, buttonElement) {
+    if (!isPodcastDownloadAvailable()) {
+      this.showToast('Podcast downloads are not supported in this browser', 'error');
+      return;
+    }
+
+    const button = buttonElement || null;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Downloading…';
+    }
+
+    // Bottom-right toast with a live progress bar, driven directly by
+    // the download's progress callback.
+    const toast = showProgressToast(article.enclosureURL, 'Preparing download…');
+
+    try {
+      const result = await downloadArticlePodcast(feed, article, (progress) => {
+        if (progress?.stage === 'downloading') {
+          const percent = typeof progress.percent === 'number' ? progress.percent : null;
+          const size = progress.totalSize ? ` of ${progress.totalSize}` : '';
+          toast.update(
+            percent === null ? `Downloading…${size}` : `Downloading… ${Math.round(percent)}%`,
+            percent
+          );
+        } else if (progress?.stage === 'processing') {
+          toast.update('Finishing…', 100);
+        }
+      });
+
+      if (result.error === 'cancelled') {
+        // User backed out of the save dialog; not a failure.
+        toast.remove();
+        if (button) {
+          button.disabled = false;
+          button.textContent = 'Download Podcast';
+        }
+        return;
+      }
+
+      if (result.error) {
+        toast.fail(`Download failed: ${result.error}`);
+        if (button) {
+          button.disabled = false;
+          button.textContent = 'Download Podcast';
+        }
+        return;
+      }
+
+      toast.complete('Podcast saved ✓');
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Downloaded ✓';
+      }
+
+      // Unlike videos, episodes stay in the feed after download; just
+      // re-render so the button and Delete Audio action appear.
+      this.renderFeeds();
+      // If the article viewer is currently open on this episode, swap
+      // the placeholder for the downloaded audio player.
+      this._embedDownloadedPodcastInOpenViewer(article, feed);
+    } catch (error) {
+      console.error('Failed to download podcast episode:', error);
+      toast.fail(`Download failed: ${error.message}`);
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Download Podcast';
+      }
+    }
+  }
+
+  /**
+   * Delete a downloaded podcast's audio file and clear its state.
+   *
+   * Removes the file (Electron only) and the article's download pointer,
+   * then re-renders so the episode returns to its plain "Download
+   * Podcast" state. Read state is untouched.
+   *
+   * @param {object} article - Article with a downloadPath
+   * @param {object} feed - The article's feed
+   * @param {HTMLElement} [buttonElement] - The clicked button, if any
+   * @returns {Promise<void>}
+   */
+  async _deletePodcastFromList(article, feed, buttonElement) {
+    const button = buttonElement || null;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Deleting…';
+    }
+
+    const feedID = feed?.feedID || article?.feedID || null;
+
+    try {
+      if (article.downloadPath) {
+        await deleteArticlePodcast(feedID, article.articleID, article.downloadPath);
+        article.downloadPath = null;
+      }
+      this.renderFeeds();
+    } catch (error) {
+      console.error('Failed to delete downloaded podcast:', error);
+      this.showToast(`Could not delete audio: ${error.message}`, 'error');
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Delete Audio';
+      }
+    }
+  }
+
+  /**
+   * Open a podcast episode in an in-app viewer.
+   *
+   * Instead of extracting the episode's (often player-only) web page,
+   * the viewer hosts an audio player — inline from the downloaded copy
+   * when available — followed by the episode's own show notes.
+   *
+   * @param {object} article
+   * @param {object} feed
+   * @returns {Promise<void>}
+   */
+  async openPodcastViewer(article, feed) {
+    const { overlay, body } = this.createArticleViewer(article, feed);
+
+    // Markdown export does not make sense for an episode page that was
+    // never extracted.
+    const exportButton = overlay.querySelector('[data-action="export-markdown"]');
+    if (exportButton) {
+      exportButton.remove();
+    }
+
+    body.innerHTML = '';
+
+    const playerSection = document.createElement('div');
+    playerSection.className = 'rss-podcast-player';
+    this._renderPodcastPlayerInto(playerSection, article, feed);
+    body.appendChild(playerSection);
+
+    const notesHTML = article.contentHTML || article.contentText || article.summary;
+    if (notesHTML) {
+      const notesDiv = document.createElement('div');
+      notesDiv.className = 'rss-markdown-content rss-podcast-notes';
+      const rawHTML = article.contentHTML ||
+        this.escapeHTML(article.contentText || article.summary).replace(/\n/g, '<br>');
+      notesDiv.innerHTML = this.sanitizeHTML(rawHTML);
+      body.appendChild(notesDiv);
+    }
+
+    // Opening an episode reads it, matching the article viewer.
+    if (feed?.feedID) {
+      await this.markAsRead(feed.feedID, article.articleID);
+    }
+  }
+
+  /**
+   * Render the podcast player section into a container.
+   *
+   * A downloaded episode plays inline from disk over media:// (Electron
+   * only; the browser fallback cannot address the picked file). Anything
+   * else shows a Download Podcast action.
+   *
+   * @param {HTMLElement} container
+   * @param {object} article
+   * @param {object|null} feed - The episode's feed (null for dangling entries)
+   * @returns {void}
+   */
+  _renderPodcastPlayerInto(container, article, feed) {
+    if (article.downloadPath && isElectronAvailable()) {
+      const audio = document.createElement('audio');
+      audio.className = 'rss-podcast-audio';
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.src = buildVideoMediaUrl(article.downloadPath);
+      container.appendChild(audio);
+
+      const savedLabel = document.createElement('div');
+      savedLabel.className = 'rss-podcast-saved-note';
+      savedLabel.textContent = 'Playing the downloaded copy';
+      container.appendChild(savedLabel);
+      return;
+    }
+
+    if (article.downloadPath) {
+      // Browser fallback: the file was saved through the user's own
+      // picker, so we have a name but no servable URL.
+      const savedLabel = document.createElement('div');
+      savedLabel.className = 'rss-podcast-saved-note';
+      savedLabel.textContent = `Downloaded ✓ saved as ${article.downloadPath}`;
+      container.appendChild(savedLabel);
+      return;
+    }
+
+    const downloadButton = document.createElement('button');
+    downloadButton.className = 'rss-action-button rss-podcast-download-button';
+    downloadButton.textContent = 'Download Podcast';
+    if (feed?.feedID) {
+      downloadButton.addEventListener('click', () => {
+        this._downloadPodcastEpisode(article, feed, downloadButton);
+      });
+    } else {
+      downloadButton.disabled = true;
+      downloadButton.title = 'The feed for this episode no longer exists';
+    }
+    container.appendChild(downloadButton);
+
+    if (!isPodcastDownloadAvailable()) {
+      const hint = document.createElement('div');
+      hint.className = 'rss-podcast-saved-note';
+      hint.textContent = 'Downloading is not supported in this browser';
+      container.appendChild(hint);
+    }
+  }
+
+  /**
+   * Swap the open podcast viewer's download placeholder for the inline
+   * player after a download finishes.
+   *
+   * @param {object} article - The episode that was just downloaded
+   * @param {object|null} feed - The episode's feed
+   * @returns {void}
+   */
+  _embedDownloadedPodcastInOpenViewer(article, feed) {
+    const viewer = this.activeModal;
+    if (!viewer || !viewer.contains || !viewer.querySelector) {
+      return;
+    }
+    const player = viewer.querySelector('.rss-podcast-player');
+    if (!player) {
+      return;
+    }
+    player.innerHTML = '';
+    this._renderPodcastPlayerInto(player, article, feed);
   }
 
   /**

@@ -109,6 +109,52 @@ describe('isPathAllowed', () => {
     expect(isPathAllowed('/Users/me/Downloads/other.mp4', root)).toBe(false);
     expect(isPathAllowed('/etc/passwd', root)).toBe(false);
   });
+
+  it('accepts any root when several roots are given', () => {
+    const roots = ['/Users/me/Downloads/Aaron-RSS-YouTube', '/Users/me/Downloads/Aaron-RSS-Podcasts'];
+
+    expect(isPathAllowed('/Users/me/Downloads/Aaron-RSS-YouTube/video.mp4', roots)).toBe(true);
+    expect(isPathAllowed('/Users/me/Downloads/Aaron-RSS-Podcasts/episode.mp3', roots)).toBe(true);
+    expect(isPathAllowed('/Users/me/Downloads/other.mp4', roots)).toBe(false);
+    expect(isPathAllowed('/Users/me/Downloads/Aaron-RSS-Podcasts2/episode.mp3', roots)).toBe(false);
+  });
+});
+
+describe('createMediaRequestHandler with multiple roots', () => {
+  let videoRoot;
+  let podcastRoot;
+  let handler;
+
+  beforeAll(() => {
+    videoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aaron-media-video-'));
+    podcastRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aaron-media-podcast-'));
+    fs.writeFileSync(path.join(videoRoot, 'video.mp4'), 'video-bytes');
+    fs.writeFileSync(path.join(podcastRoot, 'episode.mp3'), 'podcast-bytes');
+    handler = createMediaRequestHandler([videoRoot, podcastRoot]);
+  });
+
+  afterAll(() => {
+    fs.rmSync(videoRoot, { recursive: true, force: true });
+    fs.rmSync(podcastRoot, { recursive: true, force: true });
+  });
+
+  it('serves files from both roots', async () => {
+    const videoResponse = await handler(new Request(buildMediaUrl(path.join(videoRoot, 'video.mp4'))));
+    expect(videoResponse.status).toBe(200);
+    expect(await videoResponse.text()).toBe('video-bytes');
+
+    const podcastResponse = await handler(new Request(buildMediaUrl(path.join(podcastRoot, 'episode.mp3'))));
+    expect(podcastResponse.status).toBe(200);
+    expect(podcastResponse.headers.get('Content-Type')).toBe('audio/mpeg');
+    expect(await podcastResponse.text()).toBe('podcast-bytes');
+  });
+
+  it('still rejects files outside every root', async () => {
+    const response = await handler(
+      new Request(buildMediaUrl(path.join(podcastRoot, '..', 'secret.mp3')))
+    );
+    expect(response.status).toBe(403);
+  });
 });
 
 describe('createMediaRequestHandler', () => {

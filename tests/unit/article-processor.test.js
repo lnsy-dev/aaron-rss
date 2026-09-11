@@ -241,4 +241,30 @@ describe('article processor', () => {
       expect(articles.map((a) => a.uniqueID)).toEqual(['new']);
     });
   });
+
+  describe('podcast enclosure passthrough', () => {
+    const enclosureItem = {
+      uniqueID: 'ep1',
+      url: 'https://example.com/episodes/1',
+      title: 'Episode 1',
+      enclosureURL: 'https://cdn.example.com/ep1.mp3',
+      enclosureType: 'audio/mpeg',
+      enclosureLength: 12345678,
+    };
+
+    it('carries enclosure fields onto new articles', () => {
+      const articles = processNewArticles([enclosureItem], { url: 'https://example.com/feed', articles: [] });
+
+      expect(articles[0].enclosureURL).toBe('https://cdn.example.com/ep1.mp3');
+      expect(articles[0].enclosureType).toBe('audio/mpeg');
+      expect(articles[0].enclosureLength).toBe(12345678);
+    });
+
+    it('includes the enclosure URL in the content hash', () => {
+      const withEnclosure = hashArticleContent(enclosureItem);
+      const withoutEnclosure = hashArticleContent({ ...enclosureItem, enclosureURL: undefined });
+
+      expect(withEnclosure).not.toBe(withoutEnclosure);
+    });
+  });
 });

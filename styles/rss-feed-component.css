@@ -1345,6 +1345,46 @@ body command-panel dialog {
   cursor: help;
 }
 
+/* Podcast episode indicator */
+.rss-podcast-badge {
+  margin-left: 0.5rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.75rem;
+  color: var(--neutral-2);
+  background: var(--secondary-color);
+  border: 1px solid var(--quaternary-color);
+  border-radius: 4px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+/* Podcast viewer: player section above the show notes */
+.rss-podcast-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 640px;
+  margin: 1rem auto;
+  padding: 1rem;
+  background: var(--secondary-color);
+  border: 1px solid var(--quaternary-color);
+  border-radius: 8px;
+}
+
+.rss-podcast-audio {
+  width: 100%;
+}
+
+.rss-podcast-saved-note {
+  font-size: 0.8rem;
+  color: var(--quaternary-color);
+  text-align: center;
+}
+
+.rss-podcast-notes {
+  padding: 0 1rem 1rem;
+}
+
 /* YouTube viewer */
 .rss-youtube-viewer {
   max-width: 900px;

@@ -36,6 +36,37 @@ const pendingRequests = new Map();
 const WORKER_REQUEST_TIMEOUT_MS = 120000;
 
 /**
+ * How long to wait for a freshly created worker's FIRST response before
+ * declaring it wedged. Worker boot (wasm load + OPFS pool acquisition)
+ * normally takes well under a second; when it hangs — e.g. the OPFS pool
+ * is held by another app instance — every request would otherwise sit
+ * for the full 120s and the app appears dead with no recovery.
+ */
+const WORKER_INIT_WATCHDOG_MS = 15000;
+
+/**
+ * Whether the current worker has answered anything at all. Until its
+ * first response arrives, the init watchdog above is armed.
+ *
+ * @type {boolean}
+ */
+let workerProvenAlive = false;
+
+/**
+ * Reject every in-flight request with the given error.
+ *
+ * @param {string} message
+ * @returns {void}
+ */
+function rejectAllPending(message) {
+  pendingRequests.forEach(({ reject, timeout }) => {
+    clearTimeout(timeout);
+    reject(new Error(message));
+  });
+  pendingRequests.clear();
+}
+
+/**
  * Get (or create) the sqlite worker and wire up its message handler.
  *
  * @returns {Worker} The sqlite worker instance
@@ -45,9 +76,11 @@ function getWorker() {
     return worker;
   }
 
+  workerProvenAlive = false;
   worker = new Worker(new URL('../sqlite-worker.js', import.meta.url), { type: 'module' });
 
   worker.onmessage = (event) => {
+    workerProvenAlive = true;
     const { id, ok, result, error } = event.data;
     const pending = pendingRequests.get(id);
     if (!pending) {
@@ -70,6 +103,26 @@ function getWorker() {
     });
     pendingRequests.clear();
   };
+
+  // Init watchdog: until the worker proves it can answer, bound how long
+  // requests can hang. On fire, kill the wedged worker and reject the
+  // pending requests with an actionable message; the next request starts
+  // a fresh worker, which usually recovers from a transient OPFS lock.
+  worker._initWatchdog = setTimeout(() => {
+    if (workerProvenAlive) {
+      return;
+    }
+    const wedged = worker;
+    worker = null;
+    try {
+      wedged.terminate();
+    } catch {
+      // Already gone; nothing to do.
+    }
+    rejectAllPending(
+      'Database worker failed to start. If another copy of the app is running, close it and retry.'
+    );
+  }, WORKER_INIT_WATCHDOG_MS);
 
   return worker;
 }

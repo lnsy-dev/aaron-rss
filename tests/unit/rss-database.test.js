@@ -15,6 +15,7 @@ class FakeWorker {
     this.url = url;
     this.options = options;
     this.messages = [];
+    this.terminateCalls = 0;
     FakeWorker.instance = this;
   }
 
@@ -25,6 +26,10 @@ class FakeWorker {
     if (response) {
       queueMicrotask(() => this.onmessage?.({ data: response }));
     }
+  }
+
+  terminate() {
+    this.terminateCalls += 1;
   }
 }
 
@@ -1153,5 +1158,73 @@ describe('rss database helpers', () => {
       // cost; a future batch-exec worker action could reduce it.
       expect(FakeWorker.instance.messages).toHaveLength(1 + 1 + feed.articles.length);
     });
+  });
+});
+
+describe('sqlite worker init watchdog', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    FakeWorker.instance = null;
+    FakeWorker.onMessage = null;
+    vi.stubGlobal('Worker', FakeWorker);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('terminates a wedged worker and rejects pending requests after 15s', async () => {
+    vi.useFakeTimers();
+    // The worker never answers anything (init hung, e.g. on an OPFS lock
+    // held by another app instance).
+    FakeWorker.onMessage = () => null;
+
+    const db = await importDatabaseModule();
+    const pending = expect(db.getStatus()).rejects.toThrow('Database worker failed to start');
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await pending;
+
+    expect(FakeWorker.instance.terminateCalls).toBe(1);
+  });
+
+  it('gives the next request a fresh worker after the watchdog fires', async () => {
+    vi.useFakeTimers();
+    FakeWorker.onMessage = () => null;
+
+    const db = await importDatabaseModule();
+    const firstRequest = expect(db.getStatus()).rejects.toThrow('Database worker failed to start');
+    await vi.advanceTimersByTimeAsync(15000);
+    await firstRequest;
+
+    // The retry gets a brand-new worker; make this one answer normally.
+    const wedged = FakeWorker.instance;
+    FakeWorker.onMessage = null;
+    const retried = await db.getStatus();
+
+    expect(FakeWorker.instance).not.toBe(wedged);
+    expect(retried).toBeNull();
+  });
+
+  it('does not terminate a worker that has already answered once', async () => {
+    vi.useFakeTimers();
+    const db = await importDatabaseModule();
+
+    // First request answers normally: the worker is proven alive.
+    await db.getStatus();
+    expect(FakeWorker.instance.terminateCalls).toBe(0);
+
+    // A later request that never gets answered waits out the full
+    // per-request timeout instead of killing a healthy worker at 15s.
+    FakeWorker.onMessage = () => null;
+    const pending = expect(db.getStatus()).rejects.toThrow('timed out after 120000ms');
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(FakeWorker.instance.terminateCalls).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(105000);
+    await pending;
+    expect(FakeWorker.instance.terminateCalls).toBe(0);
   });
 });

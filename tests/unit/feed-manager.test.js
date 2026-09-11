@@ -1277,3 +1277,59 @@ describe('feed manager', () => {
     });
   });
 });
+
+describe('downloadYouTubeVideoFromURL resilience', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    downloadYouTubeVideo.mockResolvedValue({
+      filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+      videoID: 'abc12345678',
+      title: 'My Cool Video',
+    });
+  });
+
+  it('starts the download when the dedupe lookup hangs instead of waiting forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getDownloadedVideoForURL, recordDownloadedVideo } = await import(
+        '../../src/lib/database.js'
+      );
+      const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+      // Wedged database worker: the lookup neither resolves nor rejects.
+      getDownloadedVideoForURL.mockReturnValue(new Promise(() => {}));
+
+      const pending = expect(
+        downloadYouTubeVideoFromURL('https://www.youtube.com/watch?v=abc12345678')
+      ).resolves.toEqual(
+        expect.objectContaining({ filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4' })
+      );
+
+      // The dedupe race gives up after 2s and the download proceeds.
+      await vi.advanceTimersByTimeAsync(2000);
+      await pending;
+
+      expect(downloadYouTubeVideo).toHaveBeenCalledWith('https://www.youtube.com/watch?v=abc12345678');
+      expect(recordDownloadedVideo).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports the saved file when the library write fails after a successful download', async () => {
+    const { recordDownloadedVideo, getDownloadedVideoForURL } = await import(
+      '../../src/lib/database.js'
+    );
+    const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+    getDownloadedVideoForURL.mockResolvedValue(null);
+    recordDownloadedVideo.mockRejectedValue(new Error('Database worker failed to start'));
+
+    const result = await downloadYouTubeVideoFromURL('https://www.youtube.com/watch?v=abc12345678');
+
+    expect(result.error).toBeUndefined();
+    expect(result.filePath).toBe('/downloads/Aaron-RSS-YouTube/abc12345678.mp4');
+    expect(result.warning).toContain('abc12345678.mp4');
+    expect(result.warning).toContain('could not be added to the Videos list');
+  });
+});

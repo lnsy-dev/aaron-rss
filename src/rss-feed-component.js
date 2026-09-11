@@ -2058,6 +2058,13 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
+      // The yt-dlp file landed but the library write failed — say where
+      // the file is instead of reporting a lost download.
+      if (result.warning) {
+        toast.fail(`Video ${result.warning}`);
+        return;
+      }
+
       if (result.alreadyDownloaded) {
         toast.complete('Already in Videos ✓');
       } else {

@@ -529,6 +529,15 @@ export async function downloadArticleYouTubeVideo(feed, article) {
 const MANUAL_VIDEO_FEED_ID = 'manual-downloads';
 
 /**
+ * How long the dedupe lookup may delay the start of a download.
+ *
+ * The database normally answers in milliseconds; when it cannot (wedged
+ * worker, OPFS lock), the download proceeds anyway rather than making
+ * the user stare at "Preparing download…".
+ */
+const DEDUPE_LOOKUP_TIMEOUT_MS = 2000;
+
+/**
  * Generate a stable-per-download article ID for manually downloaded videos.
  *
  * The Videos view keys entries by feed+article, so a manual download
@@ -544,6 +553,19 @@ function generateManualVideoArticleID() {
 }
 
 /**
+ * Reject with a timeout after the given delay.
+ *
+ * Used to bound lookups that must not stall the user-facing flow when
+ * the database worker is slow or wedged.
+ *
+ * @param {number} ms
+ * @returns {Promise<never>}
+ */
+function timeout(ms) {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error('lookup timed out')), ms));
+}
+
+/**
  * Download a YouTube video by raw URL on explicit user request.
  *
  * Backs the "Download Youtube Video" command in the command menu: the
@@ -553,8 +575,14 @@ function generateManualVideoArticleID() {
  * video shows up in the Videos view even though no feed or article row
  * exists for it.
  *
+ * The yt-dlp download itself does not touch the database, so it is
+ * never delayed by (or lost to) a slow or wedged database worker: the
+ * dedupe lookup is bounded to a short race and a failed library write
+ * after a successful download surfaces as a `warning` alongside the
+ * saved file path rather than a plain error.
+ *
  * @param {string} url - YouTube watch/shorts/youtu.be URL
- * @returns {Promise<{filePath?: string, title?: string|null, alreadyDownloaded?: boolean, error?: string}>}
+ * @returns {Promise<{filePath?: string, title?: string|null, alreadyDownloaded?: boolean, warning?: string, error?: string}>}
  */
 export async function downloadYouTubeVideoFromURL(url) {
   if (!url || !isYouTubeURL(url) || isYouTubeStream(url)) {
@@ -562,14 +590,19 @@ export async function downloadYouTubeVideoFromURL(url) {
   }
 
   // Same URL twice (re-run of the command, same video linked from many
-  // places) must not duplicate entries in the Videos view.
+  // places) must not duplicate entries in the Videos view. The lookup is
+  // bounded: when the database cannot answer quickly, downloading again
+  // beats making the user wait on a wedged worker.
   try {
-    const existing = await dbGetDownloadedVideoForURL(url);
+    const existing = await Promise.race([
+      dbGetDownloadedVideoForURL(url),
+      timeout(DEDUPE_LOOKUP_TIMEOUT_MS),
+    ]);
     if (existing?.filePath) {
       return { filePath: existing.filePath, title: existing.title, alreadyDownloaded: true };
     }
   } catch (error) {
-    console.error('Failed to look up existing download for URL:', error);
+    console.error('Skipped downloaded-video dedupe lookup:', error);
   }
 
   try {
@@ -579,13 +612,24 @@ export async function downloadYouTubeVideoFromURL(url) {
       return result;
     }
 
-    await dbRecordDownloadedVideo({
-      feedID: MANUAL_VIDEO_FEED_ID,
-      articleID: generateManualVideoArticleID(),
-      youtubeURL: url,
-      filePath: result.filePath,
-      title: result.title || null,
-    });
+    try {
+      await dbRecordDownloadedVideo({
+        feedID: MANUAL_VIDEO_FEED_ID,
+        articleID: generateManualVideoArticleID(),
+        youtubeURL: url,
+        filePath: result.filePath,
+        title: result.title || null,
+      });
+    } catch (error) {
+      // The expensive part (the download) succeeded; losing the library
+      // bookkeeping must not read as a lost download.
+      console.error(`Failed to record downloaded video ${url}:`, error);
+      return {
+        filePath: result.filePath,
+        title: result.title || null,
+        warning: `saved to ${result.filePath}, but it could not be added to the Videos list (${error.message})`,
+      };
+    }
     return result;
   } catch (error) {
     console.error(`Unexpected error downloading YouTube video ${url}:`, error);

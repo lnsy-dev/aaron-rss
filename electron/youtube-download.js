@@ -92,6 +92,14 @@ const PROVISION_DIR_NAME = 'provisioned-binaries';
 /** Hard limit for binary/archive downloads and GitHub API calls. */
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Hard limit for the routine 24h update check.
+ *
+ * The installed binary keeps working while the check runs, so a stalled
+ * GitHub connection must never hold a user-requested download hostage.
+ */
+const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;
+
 /** Cached result of the JS runtime probe (null until first lookup). */
 let jsRuntimeArgsCache = null;
 
@@ -226,11 +234,18 @@ function isUpdateCheckDue(state) {
 /**
  * Return the latest yt-dlp release version from GitHub.
  *
+ * Bounded by UPDATE_CHECK_TIMEOUT_MS: getGithubReleases offers no
+ * timeout of its own, and the caller proceeds with the installed
+ * binary when this resolves to null.
+ *
  * @returns {Promise<string|null>}
  */
 async function fetchLatestVersion() {
   try {
-    const releases = await YTDlpWrap.getGithubReleases(1, 1);
+    const releases = await Promise.race([
+      YTDlpWrap.getGithubReleases(1, 1),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('update check timed out')), UPDATE_CHECK_TIMEOUT_MS)),
+    ]);
     const latest = releases?.[0]?.tag_name;
     return latest || null;
   } catch (error) {

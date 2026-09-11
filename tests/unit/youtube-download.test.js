@@ -643,3 +643,60 @@ describe('youtube download backend', () => {
     });
   });
 });
+
+describe('yt-dlp update check bound', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockGetPath.mockImplementation((name) => `/mock/${name}`);
+    mockWriteFile.mockResolvedValue(undefined);
+    mockMkdir.mockResolvedValue(undefined);
+    mockChmod.mockResolvedValue(undefined);
+    mockCopyFile.mockResolvedValue(undefined);
+    mockRm.mockResolvedValue(undefined);
+    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
+    mockFetch.mockRejectedValue(new Error('network unavailable'));
+    vi.stubGlobal('fetch', mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('downloads anyway when the GitHub update check stalls', async () => {
+    vi.useFakeTimers();
+    // Binary installed, update check due, but GitHub never answers.
+    mockAccess.mockImplementation(async (candidate) => {
+      if (String(candidate) === '/mock/userData/yt-dlp') {
+        return undefined;
+      }
+      throw new Error('not found');
+    });
+    mockReadFile.mockResolvedValue(JSON.stringify({ lastCheck: '2020-01-01T00:00:00.000Z' }));
+    mockGetVersion.mockResolvedValue('2026.08.19');
+    mockGetGithubReleases.mockReturnValue(new Promise(() => {}));
+    mockExecPromise.mockImplementation(async (args) => {
+      if (args.includes('--dump-json')) {
+        return JSON.stringify({ id: 'abc123', title: 'My Cool Video' });
+      }
+      return '';
+    });
+    mockReaddir.mockResolvedValue(['abc123.mp4']);
+
+    const { downloadYouTubeVideo } = await importYoutubeDownload();
+    const pending = expect(
+      downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678')
+    ).resolves.toEqual(
+      expect.objectContaining({ filePath: expect.any(String), title: 'My Cool Video' })
+    );
+
+    // Past the 30s bound the check gives up and the download proceeds
+    // with the installed binary.
+    await vi.advanceTimersByTimeAsync(30000);
+    await pending;
+
+    const downloadArgs = mockExec.mock.calls.find((call) => !call[0].includes('--dump-json'))[0];
+    expect(downloadArgs).toContain('https://www.youtube.com/watch?v=abc12345678');
+  });
+});

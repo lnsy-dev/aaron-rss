@@ -286,8 +286,31 @@ describe('database client', () => {
       const db = await importDatabaseModule();
       const pending = db.listNotes();
 
-      vi.advanceTimersByTime(120001);
+      // A worker that has never answered is treated as wedged at the
+      // 15s init watchdog — long before the 120s per-request timeout.
+      vi.advanceTimersByTime(15000);
 
+      await expect(pending).rejects.toThrow('Database worker failed to start');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('applies the full per-request timeout only once the worker has answered', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const db = await importDatabaseModule();
+      await db.listNotes(); // worker proven alive
+
+      FakeWorker.onMessage = () => null; // subsequent request never answers
+      const pending = db.listNotes();
+
+      vi.advanceTimersByTime(15000);
+      // Not rejected by the init watchdog — the worker already worked.
+      expect(FakeWorker.instance.terminateCalls || 0).toBe(0);
+
+      vi.advanceTimersByTime(105001);
       await expect(pending).rejects.toThrow('timed out');
     } finally {
       vi.useRealTimers();

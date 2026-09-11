@@ -552,6 +552,22 @@ test.describe('Aaron RSS', () => {
     await expect(modal).toBeVisible();
   });
 
+  test('opening Add RSS Feed from the command panel via keyboard focuses the URL input', async ({ page }) => {
+    await page.keyboard.press('Control+Shift+p');
+    const dialog = page.locator('command-panel dialog');
+    await expect(dialog).toBeVisible();
+
+    // Filter to the command and run it with Enter, the keyboard-driven
+    // path onto the same modal.
+    await page.keyboard.type('add rss');
+    await page.keyboard.press('Enter');
+
+    const modal = page.locator('.rss-modal-dialog');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('h2')).toHaveText('Add RSS Feed');
+    await expect(modal.locator('.rss-add-feed-url')).toBeFocused();
+  });
+
   test('clicking Settings opens the full-page settings modal', async ({ page }) => {
     await page.locator('.rss-hamburger').click();
     await page.locator('command-panel .command-item', { hasText: 'Settings' }).click();

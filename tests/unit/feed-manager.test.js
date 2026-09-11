@@ -25,6 +25,7 @@ vi.mock('../../src/lib/database.js', () => ({
   savePageSnapshot: vi.fn(),
   loadPageSnapshot: vi.fn(),
   recordDownloadedVideo: vi.fn(),
+  getDownloadedVideoForURL: vi.fn(),
   deleteDownloadedVideosForArticle: vi.fn(),
   deleteDownloadedVideosForFeed: vi.fn(),
   listFeedIDsInResearchTopics: vi.fn(),
@@ -70,6 +71,12 @@ vi.mock('../../src/lib/youtube-bridge.js', () => ({
   deleteDownloadedVideo: vi.fn(),
 }));
 
+vi.mock('../../src/lib/podcast-bridge.js', () => ({
+  downloadPodcastFile: vi.fn(),
+  deleteDownloadedPodcast: vi.fn(),
+  isPodcastDownloadAvailable: vi.fn(() => true),
+}));
+
 import {
   loadAllFeeds,
   loadFeed,
@@ -102,6 +109,7 @@ import {
 } from '../../src/lib/article-processor.js';
 import { refreshFeedInWorker } from '../../src/lib/feed-refresh-bridge.js';
 import { downloadYouTubeVideo, deleteDownloadedVideo } from '../../src/lib/youtube-bridge.js';
+import { downloadPodcastFile, deleteDownloadedPodcast } from '../../src/lib/podcast-bridge.js';
 
 async function importFeedManager() {
   return await import('../../src/lib/feed-manager.js');
@@ -539,6 +547,119 @@ describe('feed manager', () => {
       expect(updateArticleStatus).not.toHaveBeenCalled();
     });
 
+    describe('downloadYouTubeVideoFromURL (command menu downloads)', () => {
+      it('downloads the video and records a queue row without a feed or article', async () => {
+        const { recordDownloadedVideo, getDownloadedVideoForURL } = await import(
+          '../../src/lib/database.js'
+        );
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        getDownloadedVideoForURL.mockResolvedValue(null);
+        downloadYouTubeVideo.mockResolvedValue({
+          filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+          videoID: 'abc12345678',
+          title: 'My Cool Video',
+        });
+
+        const result = await downloadYouTubeVideoFromURL('https://www.youtube.com/watch?v=abc12345678');
+
+        expect(result.filePath).toBe('/downloads/Aaron-RSS-YouTube/abc12345678.mp4');
+        expect(result.alreadyDownloaded).toBeUndefined();
+        expect(getDownloadedVideoForURL).toHaveBeenCalledWith('https://www.youtube.com/watch?v=abc12345678');
+
+        // The sentinel feed ID keeps every "WHERE feed_id = ?" query on
+        // the queue working while the Videos view renders the entry
+        // feedless (no feeds row exists with that ID).
+        expect(recordDownloadedVideo).toHaveBeenCalledWith(
+          expect.objectContaining({
+            feedID: 'manual-downloads',
+            youtubeURL: 'https://www.youtube.com/watch?v=abc12345678',
+            filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+            title: 'My Cool Video',
+          })
+        );
+        expect(recordDownloadedVideo.mock.calls[0][0].articleID).toMatch(/^manual-/);
+      });
+
+      it('falls back to the video URL as the title when metadata has none', async () => {
+        const { recordDownloadedVideo, getDownloadedVideoForURL } = await import(
+          '../../src/lib/database.js'
+        );
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        getDownloadedVideoForURL.mockResolvedValue(null);
+        downloadYouTubeVideo.mockResolvedValue({
+          filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+          videoID: 'abc12345678',
+          title: null,
+        });
+
+        await downloadYouTubeVideoFromURL('https://youtu.be/abc12345678');
+
+        expect(recordDownloadedVideo).toHaveBeenCalledWith(
+          expect.objectContaining({ title: null })
+        );
+      });
+
+      it('skips the download when the URL is already in the video library', async () => {
+        const { recordDownloadedVideo, getDownloadedVideoForURL } = await import(
+          '../../src/lib/database.js'
+        );
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        getDownloadedVideoForURL.mockResolvedValue({
+          youtubeURL: 'https://www.youtube.com/watch?v=abc12345678',
+          filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+          title: 'My Cool Video',
+        });
+
+        const result = await downloadYouTubeVideoFromURL('https://www.youtube.com/watch?v=abc12345678');
+
+        expect(result).toEqual({
+          filePath: '/downloads/Aaron-RSS-YouTube/abc12345678.mp4',
+          title: 'My Cool Video',
+          alreadyDownloaded: true,
+        });
+        expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+        expect(recordDownloadedVideo).not.toHaveBeenCalled();
+      });
+
+      it('rejects non-YouTube URLs without invoking the downloader', async () => {
+        const { getDownloadedVideoForURL } = await import('../../src/lib/database.js');
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        const result = await downloadYouTubeVideoFromURL('https://example.com/video');
+
+        expect(result.error).toContain('Not a downloadable YouTube video');
+        expect(getDownloadedVideoForURL).not.toHaveBeenCalled();
+        expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+      });
+
+      it('rejects live stream URLs', async () => {
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        const result = await downloadYouTubeVideoFromURL('https://www.youtube.com/live/abc12345678');
+
+        expect(result.error).toContain('Not a downloadable YouTube video');
+        expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+      });
+
+      it('surfaces downloader errors without recording a queue row', async () => {
+        const { recordDownloadedVideo, getDownloadedVideoForURL } = await import(
+          '../../src/lib/database.js'
+        );
+        const { downloadYouTubeVideoFromURL } = await importFeedManager();
+
+        getDownloadedVideoForURL.mockResolvedValue(null);
+        downloadYouTubeVideo.mockResolvedValue({ error: 'boom' });
+
+        const result = await downloadYouTubeVideoFromURL('https://www.youtube.com/watch?v=abc12345678');
+
+        expect(result.error).toBe('boom');
+        expect(recordDownloadedVideo).not.toHaveBeenCalled();
+      });
+    });
+
     it('deleteFeed removes downloaded_videos records for the feed', async () => {
       const { deleteDownloadedVideosForFeed } = await import('../../src/lib/database.js');
       const { deleteFeed } = await importFeedManager();
@@ -595,6 +716,120 @@ describe('feed manager', () => {
 
       expect(deleteDownloadedVideo).not.toHaveBeenCalled();
       expect(purgeOldReadArticles).toHaveBeenCalledWith('feed-yt');
+    });
+  });
+
+  describe('downloadArticlePodcast (manual podcast downloads)', () => {
+    it('downloads the episode audio and persists the download path', async () => {
+      const { updateArticleStatus } = await import('../../src/lib/database.js');
+      const { downloadArticlePodcast } = await importFeedManager();
+
+      downloadPodcastFile.mockResolvedValueOnce({ filePath: '/downloads/Aaron-RSS-Podcasts/Episode 1.mp3' });
+
+      const feed = { feedID: 'feed-podcast' };
+      const article = {
+        articleID: 'ep1',
+        title: 'Episode 1',
+        enclosureURL: 'https://cdn.example.com/ep1.mp3',
+        enclosureType: 'audio/mpeg',
+      };
+      const onProgress = vi.fn();
+
+      const result = await downloadArticlePodcast(feed, article, onProgress);
+
+      expect(result.filePath).toBe('/downloads/Aaron-RSS-Podcasts/Episode 1.mp3');
+      expect(downloadPodcastFile).toHaveBeenCalledWith(
+        'https://cdn.example.com/ep1.mp3',
+        'Episode 1.mp3',
+        onProgress
+      );
+      expect(updateArticleStatus).toHaveBeenCalledWith(
+        'feed-podcast',
+        'ep1',
+        { downloadPath: '/downloads/Aaron-RSS-Podcasts/Episode 1.mp3' }
+      );
+      expect(article.downloadPath).toBe('/downloads/Aaron-RSS-Podcasts/Episode 1.mp3');
+    });
+
+    it('rejects articles without an audio enclosure', async () => {
+      const { downloadArticlePodcast } = await importFeedManager();
+
+      const result = await downloadArticlePodcast(
+        { feedID: 'feed-podcast' },
+        { articleID: 'ep1', url: 'https://example.com/post' }
+      );
+
+      expect(result.error).toContain('Not a downloadable podcast episode');
+      expect(downloadPodcastFile).not.toHaveBeenCalled();
+    });
+
+    it('skips re-downloading when the episode already has a saved file', async () => {
+      const { updateArticleStatus } = await import('../../src/lib/database.js');
+      const { downloadArticlePodcast } = await importFeedManager();
+
+      const article = {
+        articleID: 'ep1',
+        enclosureURL: 'https://cdn.example.com/ep1.mp3',
+        downloadPath: '/downloads/Aaron-RSS-Podcasts/existing.mp3',
+      };
+
+      const result = await downloadArticlePodcast({ feedID: 'feed-podcast' }, article);
+
+      expect(result.filePath).toBe('/downloads/Aaron-RSS-Podcasts/existing.mp3');
+      expect(downloadPodcastFile).not.toHaveBeenCalled();
+      expect(updateArticleStatus).not.toHaveBeenCalled();
+    });
+
+    it('surfaces downloader errors without persisting a path', async () => {
+      const { updateArticleStatus } = await import('../../src/lib/database.js');
+      const { downloadArticlePodcast } = await importFeedManager();
+
+      downloadPodcastFile.mockResolvedValueOnce({ error: 'boom' });
+
+      const article = {
+        articleID: 'ep1',
+        enclosureURL: 'https://cdn.example.com/ep1.mp3',
+      };
+
+      const result = await downloadArticlePodcast({ feedID: 'feed-podcast' }, article);
+
+      expect(result.error).toBe('boom');
+      expect(updateArticleStatus).not.toHaveBeenCalled();
+      expect(article.downloadPath).toBeUndefined();
+    });
+
+    it('does not record a downloaded_videos queue row (podcasts stay in the feed)', async () => {
+      const { recordDownloadedVideo } = await import('../../src/lib/database.js');
+      const { downloadArticlePodcast } = await importFeedManager();
+
+      downloadPodcastFile.mockResolvedValueOnce({ filePath: '/downloads/Aaron-RSS-Podcasts/Episode 1.mp3' });
+
+      await downloadArticlePodcast(
+        { feedID: 'feed-podcast' },
+        { articleID: 'ep1', enclosureURL: 'https://cdn.example.com/ep1.mp3' }
+      );
+
+      expect(recordDownloadedVideo).not.toHaveBeenCalled();
+    });
+
+    it('deleteArticlePodcast removes the file and clears the article pointer', async () => {
+      const { updateArticleStatus } = await import('../../src/lib/database.js');
+      const { deleteArticlePodcast } = await importFeedManager();
+
+      await deleteArticlePodcast('feed-podcast', 'ep1', '/downloads/Aaron-RSS-Podcasts/Episode 1.mp3');
+
+      expect(deleteDownloadedPodcast).toHaveBeenCalledWith('/downloads/Aaron-RSS-Podcasts/Episode 1.mp3');
+      expect(updateArticleStatus).toHaveBeenCalledWith('feed-podcast', 'ep1', { downloadPath: null });
+    });
+
+    it('deleteArticlePodcast still removes the file when the feed row is gone', async () => {
+      const { updateArticleStatus } = await import('../../src/lib/database.js');
+      const { deleteArticlePodcast } = await importFeedManager();
+
+      await deleteArticlePodcast(null, 'ep-dangling', '/downloads/Aaron-RSS-Podcasts/dangling.mp3');
+
+      expect(deleteDownloadedPodcast).toHaveBeenCalledWith('/downloads/Aaron-RSS-Podcasts/dangling.mp3');
+      expect(updateArticleStatus).not.toHaveBeenCalled();
     });
   });
 

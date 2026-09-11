@@ -227,3 +227,83 @@ describe('rss-parser', () => {
     expect(feed).toBeNull();
   });
 });
+
+describe('rss-parser podcast enclosures', () => {
+  it('extracts an audio enclosure from an RSS item', async () => {
+    const rss = `<?xml version="1.0"?>
+      <rss version="2.0">
+        <channel>
+          <title>Podcast</title>
+          <link>https://example.com</link>
+          <item>
+            <title>Episode 1</title>
+            <link>https://example.com/ep1</link>
+            <enclosure url="https://cdn.example.com/ep1.mp3" length="12345678" type="audio/mpeg"/>
+          </item>
+        </channel>
+      </rss>`;
+
+    const feed = await parseFeedText(rss, 'https://example.com/feed.xml');
+
+    const [item] = feed.items;
+    expect(item.enclosureURL).toBe('https://cdn.example.com/ep1.mp3');
+    expect(item.enclosureType).toBe('audio/mpeg');
+    expect(item.enclosureLength).toBe(12345678);
+  });
+
+  it('leaves plain articles without enclosure fields', async () => {
+    const rss = `<?xml version="1.0"?>
+      <rss version="2.0">
+        <channel>
+          <title>Blog</title>
+          <link>https://example.com</link>
+          <item>
+            <title>Post</title>
+            <link>https://example.com/post</link>
+            <description>Text only</description>
+          </item>
+        </channel>
+      </rss>`;
+
+    const feed = await parseFeedText(rss, 'https://example.com/feed.xml');
+
+    expect(feed.items[0].enclosureURL).toBeUndefined();
+  });
+
+  it('extracts an Atom link rel="enclosure" audio item', async () => {
+    const atom = `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Atomcast</title>
+        <entry>
+          <title>Ep 3</title>
+          <link rel="enclosure" href="https://cdn.example.com/ep3.m4a" type="audio/x-m4a" length="42"/>
+        </entry>
+      </feed>`;
+
+    const feed = await parseFeedText(atom, 'https://example.com/atom.xml');
+
+    expect(feed.items[0].enclosureURL).toBe('https://cdn.example.com/ep3.m4a');
+    expect(feed.items[0].enclosureType).toBe('audio/x-m4a');
+  });
+
+  it('extracts an audio attachment from a JSON Feed item', async () => {
+    const json = JSON.stringify({
+      version: 'https://jsonfeed.org/version/1.1',
+      title: 'JSONcast',
+      items: [
+        {
+          id: 'ep1',
+          title: 'JSON Episode 1',
+          attachments: [
+            { url: 'https://cdn.example.com/ep1.mp3', mime_type: 'audio/mpeg', size_in_bytes: '1000' },
+          ],
+        },
+      ],
+    });
+
+    const feed = await parseFeedText(json, 'https://example.com/feed.json');
+
+    expect(feed.items[0].enclosureURL).toBe('https://cdn.example.com/ep1.mp3');
+    expect(feed.items[0].enclosureLength).toBe(1000);
+  });
+});

@@ -413,6 +413,23 @@ describe('youtube download backend', () => {
       expect(mockExec).not.toHaveBeenCalled();
     });
 
+    it('returns the video title alongside the saved file path', async () => {
+      mockExecPromise.mockImplementation(async (args) => {
+        if (args.includes('--dump-json')) {
+          return JSON.stringify({ id: 'abc123', title: 'My Cool Video' });
+        }
+        return '';
+      });
+      mockReaddir.mockResolvedValue(['abc123.mp4']);
+
+      const { downloadYouTubeVideo } = await importYoutubeDownload();
+      const result = await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
+
+      expect(result.filePath).toBeDefined();
+      expect(result.videoID).toBe('abc123');
+      expect(result.title).toBe('My Cool Video');
+    });
+
     it('auto-downloads deno when no JS runtime is available on the machine', async () => {
       process.env.PATH = '';
       mockAccess.mockRejectedValue(new Error('not found'));

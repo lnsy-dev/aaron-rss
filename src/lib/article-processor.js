@@ -26,6 +26,7 @@ export function hashArticleContent(item) {
     item.externalURL,
     item.imageURL,
     item.bannerImageURL,
+    item.enclosureURL,
     item.authors ? JSON.stringify(item.authors) : '',
     item.tags ? JSON.stringify(item.tags) : '',
   ]
@@ -179,6 +180,9 @@ function convertToArticle(item, feedURL) {
     dateModified: item.dateModified,
     authors: item.authors,
     tags: item.tags,
+    enclosureURL: item.enclosureURL,
+    enclosureType: item.enclosureType,
+    enclosureLength: item.enclosureLength,
     read: false,
     starred: false,
     dateArrived: new Date(),
@@ -221,6 +225,9 @@ function updateArticleFromParsedItem(article, item, newHash) {
     dateModified: contentChanged ? new Date() : article.dateModified,
     authors: item.authors,
     tags: item.tags,
+    enclosureURL: item.enclosureURL,
+    enclosureType: item.enclosureType,
+    enclosureLength: item.enclosureLength,
     contentHash: newHash,
   };
 }

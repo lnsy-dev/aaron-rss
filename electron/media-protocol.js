@@ -25,7 +25,10 @@ const MEDIA_MIME_TYPES = {
   '.mov': 'video/quicktime',
   '.m4a': 'audio/mp4',
   '.mp3': 'audio/mpeg',
+  '.aac': 'audio/aac',
+  '.flac': 'audio/flac',
   '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
   '.opus': 'audio/opus',
   '.wav': 'audio/wav',
 };
@@ -110,30 +113,38 @@ export function parseRangeHeader(header, size) {
 /**
  * Decide whether a resolved path is allowed to be served.
  *
- * The path must live inside (or be) the allowed root and must not
- * attempt traversal via symlink-like `..` segments after resolution.
+ * The path must live inside (or be) one of the allowed roots and must
+ * not attempt traversal via symlink-like `..` segments after
+ * resolution. Roots may be given as a single directory string or an
+ * array of directories (e.g. the YouTube and podcast download folders).
  *
  * @param {string} resolvedPath - path.resolve()d absolute file path
- * @param {string} allowedRoot - Absolute root directory
+ * @param {string|string[]} allowedRoot - Absolute root directory or directories
  * @returns {boolean} Whether the path may be served
  */
 export function isPathAllowed(resolvedPath, allowedRoot) {
-  const root = path.resolve(allowedRoot) + path.sep;
+  const roots = Array.isArray(allowedRoot) ? allowedRoot : [allowedRoot];
   const resolved = path.resolve(resolvedPath);
-  return resolved === path.resolve(allowedRoot) || resolved.startsWith(root);
+
+  return roots.some((root) => {
+    const resolvedRoot = path.resolve(root);
+    return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path.sep);
+  });
 }
 
 /**
  * Create the media:// protocol request handler.
  *
- * Supports HTTP range requests (needed for <video> seeking) and 404s
- * anything outside the allowed root.
+ * Supports HTTP range requests (needed for <video>/<audio> seeking) and
+ * 404s anything outside the allowed roots.
  *
- * @param {string} allowedRoot - Directory whose files may be served
+ * @param {string|string[]} allowedRoot - Directory or directories whose
+ *   files may be served
  * @returns {(request: Request) => Promise<Response>} Protocol handler
  */
 export function createMediaRequestHandler(allowedRoot) {
-  const root = path.resolve(allowedRoot);
+  const root = path.resolve(Array.isArray(allowedRoot) ? allowedRoot[0] : allowedRoot);
+  const extraRoots = Array.isArray(allowedRoot) ? allowedRoot.slice(1) : [];
 
   return async function handleMediaRequest(request) {
     const url = new URL(request.url);
@@ -143,7 +154,7 @@ export function createMediaRequestHandler(allowedRoot) {
     }
 
     const resolved = path.resolve(filePath);
-    if (!isPathAllowed(resolved, root)) {
+    if (!isPathAllowed(resolved, [root, ...extraRoots])) {
       return new Response('Forbidden', { status: 403 });
     }
 

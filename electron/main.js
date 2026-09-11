@@ -35,6 +35,11 @@ import {
   getDownloadDirectory,
 } from './youtube-download.js';
 import { createMediaRequestHandler } from './media-protocol.js';
+import {
+  downloadPodcastEpisode,
+  deleteDownloadedPodcast,
+  getPodcastDownloadDirectory,
+} from './podcast-download.js';
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 
 /**
@@ -478,6 +483,18 @@ ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));ipcMa
 });
 ipcMain.handle('delete-downloaded-video', async (_, filePath) => deleteDownloadedVideo(filePath));
 
+ipcMain.handle('download-podcast-episode', async (event, url, suggestedName) => {
+  // Stream download progress to the requesting window so the renderer
+  // can render a live progress toast while the enclosure downloads.
+  const sender = event.sender;
+  return downloadPodcastEpisode(url, suggestedName, (progress) => {
+    if (!sender.isDestroyed()) {
+      sender.send('podcast-download-progress', { url, ...progress });
+    }
+  });
+});
+ipcMain.handle('delete-downloaded-podcast', async (_, filePath) => deleteDownloadedPodcast(filePath));
+
 // ============================================================================
 // Research Topics watch API
 // ============================================================================
@@ -577,9 +594,13 @@ function startResearchApiServer() {
 
 app.whenReady().then(async () => {
   protocol.handle('app', handleAppRequest);
-  // Downloaded videos live under Downloads/Aaron-RSS-YouTube; only
-  // files inside that directory are exposed over media://.
-  protocol.handle('media', createMediaRequestHandler(getDownloadDirectory()));
+  // Downloaded videos live under Downloads/Aaron-RSS-YouTube and
+  // podcasts under Downloads/Aaron-RSS-Podcasts; only files inside
+  // those directories are exposed over media://.
+  protocol.handle('media', createMediaRequestHandler([
+    getDownloadDirectory(),
+    getPodcastDownloadDirectory(),
+  ]));
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const url = new URL(details.url);

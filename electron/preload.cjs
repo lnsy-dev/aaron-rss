@@ -94,6 +94,38 @@ contextBridge.exposeInMainWorld('electron', {
   },
 
   /**
+   * Download a podcast audio enclosure to disk from the main process.
+   *
+   * @param {string} url - The audio enclosure URL
+   * @param {string} suggestedName - File name proposed for the download
+   * @returns {Promise<{filePath?: string, error?: string}>} Download result
+   */
+  downloadPodcastEpisode: (url, suggestedName) =>
+    ipcRenderer.invoke('download-podcast-episode', url, suggestedName),
+
+  /**
+   * Delete a downloaded podcast file from disk.
+   *
+   * @param {string} filePath - Path to the downloaded file
+   * @returns {Promise<boolean>} Whether the file was deleted or already absent
+   */
+  deleteDownloadedPodcast: (filePath) => ipcRenderer.invoke('delete-downloaded-podcast', filePath),
+
+  /**
+   * Subscribe to podcast download progress events forwarded from the
+   * main process while a download-podcast-episode call is in flight.
+   *
+   * @param {(progress: {url: string, stage: string, percent?: number|null, totalSize?: string}) => void} callback
+   *   Invoked once per progress update
+   * @returns {() => void} Function that removes the subscription
+   */
+  onPodcastDownloadProgress: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('podcast-download-progress', listener);
+    return () => ipcRenderer.removeListener('podcast-download-progress', listener);
+  },
+
+  /**
    * Register the handler that answers the main process's Research
    * Topics watch-API queries. The database lives in the renderer, so
    * the main process forwards every API request here; the handler runs

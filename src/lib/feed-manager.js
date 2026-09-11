@@ -24,6 +24,7 @@ import {
   savePageSnapshot as dbSavePageSnapshot,
   loadPageSnapshot as dbLoadPageSnapshot,
   recordDownloadedVideo as dbRecordDownloadedVideo,
+  getDownloadedVideoForURL as dbGetDownloadedVideoForURL,
   deleteDownloadedVideosForArticle as dbDeleteDownloadedVideosForArticle,
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
@@ -42,7 +43,9 @@ import { processNewArticles } from './article-processor.js';
 import { refreshFeedInWorker } from './feed-refresh-bridge.js';
 import { enrichBlueskyFeedItems } from './social-post.js';
 import { downloadYouTubeVideo, deleteDownloadedVideo } from './youtube-bridge.js';
+import { downloadPodcastFile, deleteDownloadedPodcast } from './podcast-bridge.js';
 import { isYouTubeURL, isYouTubeStream } from './youtube.js';
+import { isPodcastEpisode, suggestPodcastFileName } from './podcast.js';
 import { extractArticle } from './article-extractor.js';
 
 /**
@@ -512,6 +515,153 @@ export async function downloadArticleYouTubeVideo(feed, article) {
   } catch (error) {
     console.error(`Unexpected error downloading YouTube video ${article.url}:`, error);
     return { error: error.message || String(error) };
+  }
+}
+
+/**
+ * Feed ID recorded on downloaded_videos rows for videos saved from the
+ * command menu rather than from a subscribed feed's article. The queue
+ * row keeps a stable non-null feed_id so every existing "WHERE feed_id =
+ * ?" query (delete, seen tracking) keeps matching, while the Videos view
+ * still renders the entry feedless because no feeds row exists with this
+ * ID.
+ */
+const MANUAL_VIDEO_FEED_ID = 'manual-downloads';
+
+/**
+ * Generate a stable-per-download article ID for manually downloaded videos.
+ *
+ * The Videos view keys entries by feed+article, so a manual download
+ * needs an article ID even though no article row exists.
+ *
+ * @returns {string}
+ */
+function generateManualVideoArticleID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `manual-${crypto.randomUUID()}`;
+  }
+  return `manual-v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Download a YouTube video by raw URL on explicit user request.
+ *
+ * Backs the "Download Youtube Video" command in the command menu: the
+ * user pastes a watch/shorts/youtu.be link and the video is fetched with
+ * yt-dlp WITHOUT subscribing to its channel. The download is recorded in
+ * the downloaded_videos queue with the sentinel manual feed ID, so the
+ * video shows up in the Videos view even though no feed or article row
+ * exists for it.
+ *
+ * @param {string} url - YouTube watch/shorts/youtu.be URL
+ * @returns {Promise<{filePath?: string, title?: string|null, alreadyDownloaded?: boolean, error?: string}>}
+ */
+export async function downloadYouTubeVideoFromURL(url) {
+  if (!url || !isYouTubeURL(url) || isYouTubeStream(url)) {
+    return { error: 'Not a downloadable YouTube video URL' };
+  }
+
+  // Same URL twice (re-run of the command, same video linked from many
+  // places) must not duplicate entries in the Videos view.
+  try {
+    const existing = await dbGetDownloadedVideoForURL(url);
+    if (existing?.filePath) {
+      return { filePath: existing.filePath, title: existing.title, alreadyDownloaded: true };
+    }
+  } catch (error) {
+    console.error('Failed to look up existing download for URL:', error);
+  }
+
+  try {
+    const result = await downloadYouTubeVideo(url);
+    if (result.error) {
+      console.error(`Failed to download YouTube video ${url}:`, result.error);
+      return result;
+    }
+
+    await dbRecordDownloadedVideo({
+      feedID: MANUAL_VIDEO_FEED_ID,
+      articleID: generateManualVideoArticleID(),
+      youtubeURL: url,
+      filePath: result.filePath,
+      title: result.title || null,
+    });
+    return result;
+  } catch (error) {
+    console.error(`Unexpected error downloading YouTube video ${url}:`, error);
+    return { error: error.message || String(error) };
+  }
+}
+
+/**
+ * Manually download the audio for a podcast episode article.
+ *
+ * Downloads only run when the user explicitly clicks the episode's
+ * Download button; nothing is fetched automatically during refreshes.
+ * On success the article's download_path is persisted so the file can
+ * be deleted later and the UI can show its downloaded state. Podcasts
+ * are not recorded in the downloaded_videos queue — they stay in the
+ * feed list rather than moving to the Videos view.
+ *
+ * @param {object} feed Feed containing the article
+ * @param {object} article Article carrying an audio enclosureURL
+ * @param {Function} [onProgress] - Receives {stage, percent?, totalSize?}
+ * @returns {Promise<{filePath?: string, error?: string}>}
+ */
+export async function downloadArticlePodcast(feed, article, onProgress = null) {
+  if (!feed?.feedID || !article?.articleID) {
+    return { error: 'Missing feed or article' };
+  }
+  if (!isPodcastEpisode(article)) {
+    return { error: 'Not a downloadable podcast episode' };
+  }
+
+  if (article.downloadPath) {
+    return { filePath: article.downloadPath };
+  }
+
+  try {
+    const suggestedName = suggestPodcastFileName(article);
+    const result = await downloadPodcastFile(article.enclosureURL, suggestedName, onProgress);
+    if (result.error) {
+      console.error(`Failed to download podcast ${article.enclosureURL}:`, result.error);
+      return result;
+    }
+
+    article.downloadPath = result.filePath;
+    await dbUpdateArticleStatus(feed.feedID, article.articleID, { downloadPath: result.filePath });
+    return result;
+  } catch (error) {
+    console.error(`Unexpected error downloading podcast ${article.enclosureURL}:`, error);
+    return { error: error.message || String(error) };
+  }
+}
+
+/**
+ * Delete a downloaded podcast file and clear the article's download
+ * pointer so the UI stops showing "Downloaded ✓".
+ *
+ * @param {string|null} feedID - Null when the feed row is gone; the
+ *   file is still removed.
+ * @param {string} articleID
+ * @param {string} filePath - Absolute path of the file to remove
+ * @returns {Promise<void>}
+ */
+export async function deleteArticlePodcast(feedID, articleID, filePath) {
+  if (filePath) {
+    try {
+      await deleteDownloadedPodcast(filePath);
+    } catch (error) {
+      console.error('Failed to delete downloaded podcast file:', error);
+    }
+  }
+  // Only possible while the article row still exists.
+  if (feedID && articleID) {
+    try {
+      await dbUpdateArticleStatus(feedID, articleID, { downloadPath: null });
+    } catch (error) {
+      console.error('Failed to clear downloaded podcast record:', error);
+    }
   }
 }
 

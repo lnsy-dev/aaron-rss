@@ -326,6 +326,7 @@ test.describe('Aaron RSS', () => {
       'Refresh All Feeds',
       'Mark All Read',
       'Videos',
+      'Download Youtube Video',
       'Settings',
       'Export OPML',
       'Import OPML',
@@ -529,6 +530,41 @@ test.describe('Aaron RSS', () => {
     await expect(modal.locator('input[type="url"]')).toBeVisible();
     // The command panel closes itself after running the command and
     // restores its own focus — the URL input must end up focused anyway.
+    await expect(modal.locator('.rss-add-feed-url')).toBeFocused();
+  });
+
+  test('clicking Download Youtube Video opens its URL modal with the input focused', async ({ page }) => {
+    await page.locator('.rss-hamburger').click();
+    await page.locator('command-panel .command-item', { hasText: 'Download Youtube Video' }).click();
+
+    const modal = page.locator('.rss-modal-dialog');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('h2')).toHaveText('Download Youtube Video');
+    await expect(modal.locator('button', { hasText: 'Download Video' })).toBeVisible();
+    // The video is fetched without subscribing to anything, so there is
+    // deliberately no "discover feed" style side action in this modal.
+    await expect(modal.locator('input[type="url"]')).toBeFocused();
+
+    // A non-YouTube URL is rejected inline and the modal stays open.
+    await modal.locator('input[type="url"]').fill('https://example.com/not-a-video');
+    await modal.locator('button', { hasText: 'Download Video' }).click();
+    await expect(page.locator('.app-toast', { hasText: 'YouTube video URL' })).toBeVisible();
+    await expect(modal).toBeVisible();
+  });
+
+  test('opening Add RSS Feed from the command panel via keyboard focuses the URL input', async ({ page }) => {
+    await page.keyboard.press('Control+Shift+p');
+    const dialog = page.locator('command-panel dialog');
+    await expect(dialog).toBeVisible();
+
+    // Filter to the command and run it with Enter, the keyboard-driven
+    // path onto the same modal.
+    await page.keyboard.type('add rss');
+    await page.keyboard.press('Enter');
+
+    const modal = page.locator('.rss-modal-dialog');
+    await expect(modal).toBeVisible();
+    await expect(modal.locator('h2')).toHaveText('Add RSS Feed');
     await expect(modal.locator('.rss-add-feed-url')).toBeFocused();
   });
 

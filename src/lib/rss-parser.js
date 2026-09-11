@@ -7,11 +7,18 @@
 
 import Parser from 'rss-parser';
 import { decodeHTMLEntities, stripHTML } from './html-utils.js';
+import { extractAudioEnclosure } from './podcast.js';
 
 const parser = new Parser({
   customFields: {
     feed: ['language', 'copyright', 'managingEditor', 'webMaster'],
-    item: ['author', 'category', 'comments', 'enclosure', 'guid', 'source'],
+    item: [
+      'author', 'category', 'comments', 'enclosure', 'guid', 'source',
+      // Atom <link> elements (raw xml2js entries with $ attributes), so
+      // podcast enclosures (<link rel="enclosure" href type length>) and
+      // other rel links survive Atom parsing. Harmless for RSS items.
+      ['link', 'atomLinks', { keepArray: true }],
+    ],
   },
 });
 
@@ -106,6 +113,7 @@ function convertJSONItem(item, feedAuthors) {
   const itemURL = item.url && isURL(item.url) ? item.url : undefined;
   const uniqueID = typeof item.id === 'string' ? item.id : (itemURL || simpleHash(title + contentText));
   const itemAuthors = extractJSONAuthors(item.authors || item.author);
+  const audioEnclosure = extractAudioEnclosure(item);
 
   return {
     uniqueID,
@@ -120,6 +128,9 @@ function convertJSONItem(item, feedAuthors) {
     dateModified: item.date_modified ? new Date(item.date_modified) : undefined,
     authors: itemAuthors.length > 0 ? itemAuthors : feedAuthors,
     tags: Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string') : [],
+    enclosureURL: audioEnclosure?.url,
+    enclosureType: audioEnclosure?.type,
+    enclosureLength: audioEnclosure?.length,
   };
 }
 
@@ -189,6 +200,7 @@ function convertToParsedItem(item) {
   }
 
   const itemURL = extractItemURL(item);
+  const audioEnclosure = extractAudioEnclosure(item);
 
   return {
     uniqueID: generateUniqueID(item),
@@ -205,6 +217,9 @@ function convertToParsedItem(item) {
     dateModified: item.pubDate ? new Date(item.pubDate) : undefined,
     authors: extractItemAuthors(item),
     tags: extractTags(item),
+    enclosureURL: audioEnclosure?.url,
+    enclosureType: audioEnclosure?.type,
+    enclosureLength: audioEnclosure?.length,
   };
 }
 

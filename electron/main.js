@@ -41,6 +41,13 @@ import {
   getPodcastDownloadDirectory,
 } from './podcast-download.js';
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
+import { installProcessErrorGuards } from './error-guards.js';
+
+// Install the crash guards before anything else can reject: a transient
+// network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
+// sockets) must log, not kill the app with the "Uncaught Exception"
+// dialog. See error-guards.js for the reasoning.
+installProcessErrorGuards();
 
 /**
  * Content-Security-Policy for production builds served over app://.
@@ -373,7 +380,13 @@ async function createWindow() {
   });
 
   const startUrl = await resolveStartUrl();
-  win.loadURL(startUrl);
+  // loadURL rejection (e.g. dist/ missing or a dev server that died
+  // between the probe and the load) must not become an unhandled
+  // rejection; the window stays open showing a blank page the user can
+  // restart past.
+  win.loadURL(startUrl).catch((error) => {
+    console.error('[electron] Failed to load the app window URL:', error);
+  });
 
   mainWindow = win;
 
@@ -643,7 +656,10 @@ app.whenReady().then(async () => {
   startResearchApiServer();
 
   // Check for yt-dlp updates on startup and then every 24 hours so
-  // YouTube downloads keep working as the site changes.
+  // YouTube downloads keep working as the site changes. The check
+  // resolves to an {updated, error} result, but the .catch keeps a
+  // rejected check (e.g. a TLS read timeout mid-download) from ever
+  // becoming an unhandled rejection.
   checkForYTDlpUpdate().then((result) => {
     if (result.updated) {
       console.log(`[electron] yt-dlp updated to ${result.version}`);
@@ -652,6 +668,8 @@ app.whenReady().then(async () => {
     } else {
       console.log(`[electron] yt-dlp is up to date (${result.version})`);
     }
+  }).catch((error) => {
+    console.error('[electron] yt-dlp update check crashed:', error);
   });
   setInterval(() => {
     checkForYTDlpUpdate().catch((error) => {
@@ -662,9 +680,16 @@ app.whenReady().then(async () => {
   // macOS: re-create the window when the dock icon is clicked
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow().catch((error) => {
+        console.error('[electron] Failed to re-create window:', error);
+      });
     }
   });
+}).catch((error) => {
+  // Anything thrown out of the startup sequence above (protocol
+  // registration, window creation, …) rejects this chain; log it so a
+  // startup failure is diagnosable instead of a fatal crash dialog.
+  console.error('[electron] App startup failed:', error);
 });
 
 // Quit when all windows are closed, except on macOS

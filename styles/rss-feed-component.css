@@ -645,7 +645,8 @@ body command-panel dialog {
 
 .rss-modal-body input[type="url"],
 .rss-modal-body input[type="text"],
-.rss-modal-body input[type="number"] {
+.rss-modal-body input[type="number"],
+.rss-modal-body select {
   width: 100%;
   padding: 0.5rem;
   border: 1px solid var(--quaternary-color);
@@ -654,6 +655,15 @@ body command-panel dialog {
   background: var(--background-color);
   color: var(--foreground-color);
   box-sizing: border-box;
+}
+
+/* Settings: YouTube cookies file picker button sits under the select. */
+.rss-youtube-cookies-file-button {
+  margin-top: 0.5rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rss-modal-help {

@@ -23,7 +23,7 @@
  * nodeIntegration.
  */
 
-import { app, BrowserWindow, Menu, protocol, net, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, dialog, protocol, net, ipcMain, session, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,8 @@ import {
   deleteDownloadedVideo,
   checkForYTDlpUpdate,
   getDownloadDirectory,
+  readCookieConfig,
+  writeCookieConfig,
 } from './youtube-download.js';
 import { createMediaRequestHandler } from './media-protocol.js';
 import {
@@ -495,6 +497,27 @@ ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));ipcMa
   });
 });
 ipcMain.handle('delete-downloaded-video', async (_, filePath) => deleteDownloadedVideo(filePath));
+
+// YouTube cookie configuration: the Settings modal reads and writes it
+// so yt-dlp can authenticate when YouTube demands sign-in. Validation
+// lives in youtube-download.js; a rejection here propagates to the
+// renderer through the standard IPC error path.
+ipcMain.handle('youtube-get-cookie-config', async () => readCookieConfig());
+ipcMain.handle('youtube-set-cookie-config', async (_, config) => writeCookieConfig(config));
+
+// Native file picker for a cookies.txt file (main-process dialog — the
+// renderer has no File System Access to arbitrary paths).
+ipcMain.handle('choose-youtube-cookies-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose a cookies.txt file for YouTube downloads',
+    properties: ['openFile'],
+    filters: [{ name: 'cookies.txt', extensions: ['txt'] }],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
 
 ipcMain.handle('download-podcast-episode', async (event, url, suggestedName) => {
   // Stream download progress to the requesting window so the renderer

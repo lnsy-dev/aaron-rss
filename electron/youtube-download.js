@@ -39,6 +39,28 @@ const YTDLP_BINARY_NAME = 'yt-dlp';
 /** Name of the JSON file that tracks the last update check. */
 const UPDATE_STATE_FILE_NAME = 'yt-dlp-update-state.json';
 
+/** Name of the JSON file holding the user's YouTube cookie configuration. */
+const COOKIE_CONFIG_FILE_NAME = 'youtube-cookies.json';
+
+/**
+ * Browsers yt-dlp can read cookies from via --cookies-from-browser.
+ *
+ * Used both to validate the renderer-supplied configuration and to
+ * build the Settings UI dropdown. Chrome-family names make yt-dlp
+ * decrypt the browser's cookie store (macOS may ask for Keychain
+ * access once); Safari and Firefox need no extra permissions.
+ */
+const COOKIE_BROWSER_ALLOWLIST = new Set([
+  'brave', 'chrome', 'chromium', 'edge', 'firefox', 'opera', 'safari', 'vivaldi', 'whale',
+]);
+
+/**
+ * Player client used as an automatic fallback when YouTube demands a
+ * sign-in ("confirm you're not a bot"). The tv client often serves
+ * videos without cookies where the default clients are blocked.
+ */
+const BOT_CHECK_FALLBACK_EXTRACTOR_ARGS = ['--extractor-args', 'youtube:player_client=tv'];
+
 /** How often to check for yt-dlp updates (24 hours). */
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -215,6 +237,123 @@ async function readUpdateState() {
  */
 async function writeUpdateState(state) {
   await fs.writeFile(getUpdateStatePath(), JSON.stringify(state), 'utf-8');
+}
+
+/**
+ * Return the path of the YouTube cookie configuration file.
+ *
+ * @returns {string}
+ */
+function getCookieConfigPath() {
+  return path.join(app.getPath('userData'), COOKIE_CONFIG_FILE_NAME);
+}
+
+/**
+ * Validate a renderer-supplied cookie configuration.
+ *
+ * The config is either empty (no cookies), names a browser from the
+ * allowlist (--cookies-from-browser), or points at a cookies.txt file
+ * (--cookies). Anything else is rejected so arbitrary strings can
+ * never become yt-dlp command-line arguments.
+ *
+ * @param {unknown} config
+ * @returns {{cookiesFromBrowser?: string, cookiesFile?: string}} Normalized config
+ * @throws {Error} When the config has an invalid shape
+ */
+function normalizeCookieConfig(config) {
+  if (config === null || config === undefined) {
+    return {};
+  }
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('YouTube cookie configuration must be an object');
+  }
+
+  const { cookiesFromBrowser, cookiesFile } = config;
+  if (cookiesFromBrowser !== undefined && cookiesFile !== undefined) {
+    throw new Error('Choose either a browser or a cookies.txt file, not both');
+  }
+  if (cookiesFromBrowser !== undefined && cookiesFromBrowser !== null) {
+    if (typeof cookiesFromBrowser !== 'string' || !COOKIE_BROWSER_ALLOWLIST.has(cookiesFromBrowser)) {
+      throw new Error(`Unsupported browser for cookies: ${String(cookiesFromBrowser)}`);
+    }
+    return { cookiesFromBrowser };
+  }
+  if (cookiesFile !== undefined && cookiesFile !== null) {
+    if (typeof cookiesFile !== 'string' || !cookiesFile.trim()) {
+      throw new Error('cookiesFile must be a non-empty path');
+    }
+    return { cookiesFile: cookiesFile.trim() };
+  }
+  return {};
+}
+
+/**
+ * Read the persisted YouTube cookie configuration.
+ *
+ * Missing, corrupt, or invalid files mean "no cookies configured" —
+ * downloads still work where YouTube does not demand sign-in.
+ *
+ * @returns {Promise<{cookiesFromBrowser?: string, cookiesFile?: string}>}
+ */
+export async function readCookieConfig() {
+  try {
+    const text = await fs.readFile(getCookieConfigPath(), 'utf-8');
+    return normalizeCookieConfig(JSON.parse(text));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Persist the YouTube cookie configuration from the renderer.
+ *
+ * @param {object|null} config - {cookiesFromBrowser} or {cookiesFile}, or null to clear
+ * @returns {Promise<{cookiesFromBrowser?: string, cookiesFile?: string}>} The saved config
+ * @throws {Error} When the config has an invalid shape
+ */
+export async function writeCookieConfig(config) {
+  const normalized = normalizeCookieConfig(config);
+  await fs.writeFile(getCookieConfigPath(), JSON.stringify(normalized), 'utf-8');
+  return normalized;
+}
+
+/**
+ * Translate a cookie configuration into yt-dlp command-line arguments.
+ *
+ * @param {{cookiesFromBrowser?: string, cookiesFile?: string}} config
+ * @returns {string[]} Arguments to prepend to yt-dlp invocations ([] when unset)
+ */
+export function cookieArgsFromConfig(config) {
+  if (config?.cookiesFromBrowser) {
+    return ['--cookies-from-browser', config.cookiesFromBrowser];
+  }
+  if (config?.cookiesFile) {
+    return ['--cookies', config.cookiesFile];
+  }
+  return [];
+}
+
+/**
+ * Read the cookie configuration and return its yt-dlp arguments.
+ *
+ * @returns {Promise<string[]>}
+ */
+async function getCookieAuthArgs() {
+  return cookieArgsFromConfig(await readCookieConfig());
+}
+
+/**
+ * Detect YouTube's bot-check failure in a yt-dlp error.
+ *
+ * yt-dlp exits with "Sign in to confirm you're not a bot" when YouTube
+ * demands cookie authentication; the wrapper embeds stderr in the
+ * error message, so the marker is matched there.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isBotCheckError(error) {
+  return /sign in to confirm/i.test(error?.message ?? String(error ?? ''));
 }
 
 /**
@@ -930,18 +1069,22 @@ async function findFFmpeg() {
 /**
  * Fetch video metadata for a URL via --dump-json.
  *
- * Replaces YTDlpWrap.getVideoInfo so our --js-runtimes arguments are
- * always included; without them metadata extraction fails on YouTube.
+ * Replaces YTDlpWrap.getVideoInfo so our --js-runtimes arguments and the
+ * configured YouTube cookie arguments are always included; without them
+ * metadata extraction fails on YouTube (bot checks hit --dump-json just
+ * like downloads).
  *
  * @param {YTDlpWrap} ytDlpWrap
  * @param {string} url
+ * @param {string[]} [authArgs] - Cookie arguments from the user's config
  * @returns {Promise<object|null>} Parsed metadata or null on failure
  */
-async function fetchVideoInfo(ytDlpWrap, url) {
+async function fetchVideoInfo(ytDlpWrap, url, authArgs = []) {
   try {
     const runtimeArgs = await getJsRuntimeArgs();
     const stdout = await ytDlpWrap.execPromise([
       ...runtimeArgs,
+      ...authArgs,
       '--no-playlist',
       '--dump-json',
       url,
@@ -957,11 +1100,12 @@ async function fetchVideoInfo(ytDlpWrap, url) {
  *
  * @param {YTDlpWrap} ytDlpWrap
  * @param {string} url
+ * @param {string[]} [authArgs] - Cookie arguments from the user's config
  * @returns {Promise<boolean>}
  */
-async function isLiveVideo(ytDlpWrap, url) {
+async function isLiveVideo(ytDlpWrap, url, authArgs = []) {
   try {
-    const info = await fetchVideoInfo(ytDlpWrap, url);
+    const info = await fetchVideoInfo(ytDlpWrap, url, authArgs);
     return Boolean(info?.is_live || info?.live_status === 'is_live');
   } catch {
     // If we cannot determine the status, treat it as non-live and let
@@ -1050,11 +1194,28 @@ function runYtDlpWithProgress(ytDlpWrap, args, onProgress) {
 }
 
 /**
+ * Human-facing guidance for the YouTube bot check.
+ *
+ * Returned instead of raw yt-dlp stderr, which only confuses: the fix
+ * lives in the app's Settings, not in the error text.
+ *
+ * @type {string}
+ */
+const BOT_CHECK_ERROR_MESSAGE =
+  'YouTube is asking yt-dlp to sign in. Open Settings → YouTube Downloads and point the app at your browser cookies (or a cookies.txt file), then try again.';
+
+/**
  * Download a YouTube video to disk.
  *
  * Skips live streams and URLs that are not YouTube watch/short/embed
  * links. Returns the path to the saved file on success or an error
  * object on failure.
+ *
+ * YouTube sometimes demands sign-in for downloads ("Sign in to confirm
+ * you're not a bot"). When that happens and the user has not configured
+ * cookies, the download is retried once with the tv player client,
+ * which often serves videos without cookies; the same fallback applies
+ * to the metadata lookup that names the downloaded file.
  *
  * @param {string} url
  * @param {Function|null} [onProgress] - Optional progress callback; receives
@@ -1072,14 +1233,15 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
 
     await ensureDownloadDirectory();
     const ytDlpWrap = await ensureBinary();
+    const authArgs = await getCookieAuthArgs();
 
-    if (await isLiveVideo(ytDlpWrap, url)) {
+    if (await isLiveVideo(ytDlpWrap, url, authArgs)) {
       return { error: 'Live streams are not downloaded' };
     }
 
     const outputTemplate = path.join(getDownloadDirectory(), '%(id)s.%(ext)s');
     const [runtimeArgs, ffmpegPath] = await Promise.all([getJsRuntimeArgs(), findFFmpeg()]);
-    const args = [...runtimeArgs];
+    const args = [...runtimeArgs, ...authArgs];
     if (ffmpegPath) {
       // GUI apps have a minimal PATH, so hand yt-dlp ffmpeg explicitly.
       args.push('--ffmpeg-location', ffmpegPath);
@@ -1096,11 +1258,28 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
       ...(ffmpegPath ? ['--merge-output-format', 'mp4'] : []),
       '--newline',
     );
-    await runYtDlpWithProgress(ytDlpWrap, args, onProgress);
+
+    try {
+      await runYtDlpWithProgress(ytDlpWrap, args, onProgress);
+    } catch (error) {
+      if (!isBotCheckError(error)) {
+        throw error;
+      }
+      // One automatic second chance with the cookie-free tv player
+      // client; if YouTube still refuses, the error below tells the
+      // user how to configure cookies in Settings.
+      console.warn('[youtube-download] Bot check hit; retrying with tv player client');
+      reportDownloadProgress(onProgress, { stage: 'starting', percent: null });
+      await runYtDlpWithProgress(
+        ytDlpWrap,
+        [...args, ...BOT_CHECK_FALLBACK_EXTRACTOR_ARGS],
+        onProgress
+      );
+    }
 
     reportDownloadProgress(onProgress, { stage: 'processing', percent: 100 });
 
-    const info = await fetchVideoInfo(ytDlpWrap, url);
+    const info = await fetchVideoInfo(ytDlpWrap, url, authArgs);
     const videoID = info?.id;
     if (!videoID) {
       return { error: 'Could not determine downloaded video ID' };
@@ -1116,6 +1295,9 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
     // use it as the display name.
     return { filePath, videoID, title: info?.title || null };
   } catch (error) {
+    if (isBotCheckError(error)) {
+      return { error: BOT_CHECK_ERROR_MESSAGE };
+    }
     return { error: error.message || String(error) };
   }
 }

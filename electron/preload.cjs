@@ -94,6 +94,29 @@ contextBridge.exposeInMainWorld('electron', {
   },
 
   /**
+   * Read the YouTube cookie configuration used to authenticate yt-dlp
+   * when YouTube demands sign-in.
+   *
+   * @returns {Promise<{cookiesFromBrowser?: string, cookiesFile?: string}>}
+   */
+  getYoutubeCookieConfig: () => ipcRenderer.invoke('youtube-get-cookie-config'),
+
+  /**
+   * Persist the YouTube cookie configuration.
+   *
+   * @param {{cookiesFromBrowser?: string, cookiesFile?: string}|null} config
+   * @returns {Promise<{cookiesFromBrowser?: string, cookiesFile?: string}>} The saved config
+   */
+  setYoutubeCookieConfig: (config) => ipcRenderer.invoke('youtube-set-cookie-config', config),
+
+  /**
+   * Open a native file picker for a cookies.txt file.
+   *
+   * @returns {Promise<string|null>} The chosen path, or null when cancelled
+   */
+  chooseYoutubeCookiesFile: () => ipcRenderer.invoke('choose-youtube-cookies-file'),
+
+  /**
    * Download a podcast audio enclosure to disk from the main process.
    *
    * @param {string} url - The audio enclosure URL

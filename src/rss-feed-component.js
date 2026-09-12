@@ -110,6 +110,9 @@ const REFRESH_CONCURRENCY_BOUNDS = { min: 1, max: 16 };
 /** Per-refresh timeout so a hung feed/network call cannot lock the UI forever. */
 const REFRESH_TIMEOUT_MS = 120000;
 
+/** How long the floating video chrome stays visible without mouse movement. */
+const VIDEO_CHROME_HIDE_DELAY_MS = 10000;
+
 /** @type {string} */
 const THEME_STYLE_ID = 'user-theme-style';
 
@@ -3037,6 +3040,13 @@ class RSSFeedComponent extends DataroomElement {
       overlay._youtubePlayer = null;
     }
 
+    // Stop the video-chrome auto-hide timer and listener so neither can
+    // fire after the viewer is gone.
+    if (overlay._videoChromeCleanup) {
+      overlay._videoChromeCleanup();
+      overlay._videoChromeCleanup = null;
+    }
+
     // Release the original-page iframe and extracted body so the renderer
     // can reclaim the browsing context and large article objects.
     if (overlay._originalFrame) {
@@ -3966,6 +3976,12 @@ class RSSFeedComponent extends DataroomElement {
 
     body.appendChild(wrapper);
 
+    // Watching a downloaded copy puts the viewer into playback mode: the
+    // video fills the window and the viewer chrome floats above it.
+    if (hasDownload) {
+      this._enterVideoPlaybackMode(overlay);
+    }
+
     // Opening a downloaded video does not change the article's read state
     // beyond the mark-on-download above — only deleting the video (or
     // normal unread-toggle actions) does. Articles whose feed row is gone
@@ -4032,7 +4048,96 @@ class RSSFeedComponent extends DataroomElement {
     if (!wrapper || wrapper.querySelector('.rss-youtube-external-video')) {
       return;
     }
-    this._embeddedDownloadedVideo(article, feed, wrapper);
+    const embedded = this._embeddedDownloadedVideo(article, feed, wrapper);
+    if (embedded) {
+      this._enterVideoPlaybackMode(viewer);
+    }
+  }
+
+  /**
+   * Switch an article viewer into video playback mode.
+   *
+   * The embedded <video> fills the whole window while the viewer chrome
+   * (header, meta, actions) is gathered into one floating bar pinned to
+   * the top of the video, rendered white so it stays readable over the
+   * player. The chrome fades away after 10 seconds without mouse
+   * movement and reappears as soon as the mouse moves (see
+   * _setupVideoChromeAutoHide), so nothing covers the picture while the
+   * user just watches.
+   *
+   * @param {HTMLElement} overlay - The .rss-article-viewer-overlay element
+   * @returns {void}
+   */
+  _enterVideoPlaybackMode(overlay) {
+    const video = overlay.querySelector('.rss-youtube-external-video');
+    const dialog = overlay.querySelector('.rss-article-viewer-dialog');
+    if (!video || !dialog || overlay.classList.contains('rss-article-viewer-overlay--video')) {
+      return;
+    }
+    overlay.classList.add('rss-article-viewer-overlay--video');
+
+    // With a local copy, "Download Video" is meaningless and Delete
+    // Video — normally rendered below the player — moves into the
+    // floating action row so it stays reachable over the video.
+    const actions = overlay.querySelector('.rss-article-viewer-actions');
+    const downloadButton = actions?.querySelector('.rss-youtube-download-button');
+    if (downloadButton) {
+      downloadButton.remove();
+    }
+    const deleteButton = overlay.querySelector('.rss-youtube-external .rss-youtube-delete-button');
+    if (actions && deleteButton) {
+      actions.appendChild(deleteButton);
+    }
+
+    // Gather the chrome rows into one floating bar so CSS can pin the
+    // whole stack to the top of the overlay and fade it as a unit.
+    const chrome = document.createElement('div');
+    chrome.className = 'rss-video-chrome';
+    dialog.insertBefore(chrome, dialog.firstChild);
+    for (const row of [
+      overlay.querySelector('.rss-article-viewer-header'),
+      overlay.querySelector('.rss-article-viewer-meta'),
+      actions,
+    ]) {
+      if (row) {
+        chrome.appendChild(row);
+      }
+    }
+
+    this._setupVideoChromeAutoHide(overlay, chrome);
+  }
+
+  /**
+   * Fade the floating video chrome out after 10 seconds without mouse
+   * movement; any mousemove over the viewer brings it straight back.
+   *
+   * The cleanup handle is stored on the overlay so closeModal() can stop
+   * the timer and remove the listener when the viewer closes.
+   *
+   * @param {HTMLElement} overlay - The viewer overlay element
+   * @param {HTMLElement} chrome - The floating chrome container
+   * @returns {void}
+   */
+  _setupVideoChromeAutoHide(overlay, chrome) {
+    // Overridable so tests can exercise the fade without waiting 10s.
+    const delay = this._videoChromeHideDelayMs ?? VIDEO_CHROME_HIDE_DELAY_MS;
+    let hideTimer = null;
+    const hideChrome = () => chrome.classList.add('rss-video-chrome--hidden');
+    const wakeChrome = () => {
+      chrome.classList.remove('rss-video-chrome--hidden');
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+      }
+      hideTimer = setTimeout(hideChrome, delay);
+    };
+    overlay.addEventListener('mousemove', wakeChrome);
+    wakeChrome();
+    overlay._videoChromeCleanup = () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+      }
+      overlay.removeEventListener('mousemove', wakeChrome);
+    };
   }
 
   /**

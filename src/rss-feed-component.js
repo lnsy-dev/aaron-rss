@@ -5415,11 +5415,12 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Run the shared Escape-key behavior exactly once per physical press.
    *
-   * Closes the find bar, closes the active modal, or jumps back to the top
-   * of the feed list depending on current state. Electron delivers Escape
-   * both as a normal DOM keydown (when the main document has focus) and as
-   * an IPC message (needed when an iframe has focus), so presses that land
-   * within 250ms of each other are treated as one physical key press.
+   * Closes the find bar, closes the active modal, dismisses a floating
+   * context menu, or jumps back to the top of the feed list depending on
+   * current state. Electron delivers Escape both as a normal DOM keydown
+   * (when the main document has focus) and as an IPC message (needed when
+   * an iframe has focus), so presses that land within 250ms of each other
+   * are treated as one physical key press.
    *
    * @returns {void}
    */
@@ -5440,6 +5441,14 @@ class RSSFeedComponent extends DataroomElement {
       } else {
         this.closeModal();
       }
+      return;
+    }
+    // A floating context menu (feed kebab menu, image context menu) is
+    // transient UI like a dialog: Escape dismisses it without also moving
+    // the feed selection.
+    const openMenu = this.querySelector('.rss-kebab-menu');
+    if (openMenu) {
+      openMenu.remove();
       return;
     }
     // On the main feed page, jump to the top and select the first article.

@@ -53,7 +53,7 @@ const QUICK_KEY_GROUPS = [
       { combo: 'M', description: 'Mark the selected article as read' },
       {
         combo: 'Escape',
-        description: 'Close the article viewer or find bar; on the main list, jump to the top',
+        description: 'Close the article viewer, dialog, find bar, or context menu; on the main list, jump to the top',
       },
     ],
   },

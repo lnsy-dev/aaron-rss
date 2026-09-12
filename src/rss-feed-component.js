@@ -2804,6 +2804,99 @@ class RSSFeedComponent extends DataroomElement {
     concurrencyHelp.textContent = `How many feeds to fetch at once, from ${REFRESH_CONCURRENCY_BOUNDS.min} to ${REFRESH_CONCURRENCY_BOUNDS.max}. Higher is faster; lower is gentler on slow networks.`;
     form.appendChild(concurrencyHelp);
 
+    // YouTube downloads run yt-dlp in the Electron main process; when
+    // YouTube demands sign-in ("confirm you're not a bot"), cookies from
+    // the user's browser or a cookies.txt file authenticate it. Must stay
+    // in sync with COOKIE_BROWSER_ALLOWLIST in electron/youtube-download.js,
+    // which validates the value on the other side of the IPC bridge.
+    let pendingCookieConfig = {};
+    if (window.electron?.getYoutubeCookieConfig) {
+      const cookieLabel = document.createElement('label');
+      cookieLabel.textContent = 'YouTube downloads: sign-in cookies';
+      form.appendChild(cookieLabel);
+
+      const cookieSelect = document.createElement('select');
+      cookieSelect.className = 'rss-youtube-cookies-select';
+      const cookieOptions = [
+        ['none', 'None'],
+        ['safari', 'Safari'],
+        ['chrome', 'Chrome'],
+        ['chromium', 'Chromium'],
+        ['firefox', 'Firefox'],
+        ['edge', 'Edge'],
+        ['brave', 'Brave'],
+        ['opera', 'Opera'],
+        ['vivaldi', 'Vivaldi'],
+        ['whale', 'Whale'],
+        ['file', 'cookies.txt file…'],
+      ];
+      for (const [value, label] of cookieOptions) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        cookieSelect.appendChild(option);
+      }
+      form.appendChild(cookieSelect);
+
+      const cookieFileButton = document.createElement('button');
+      cookieFileButton.className = 'rss-youtube-cookies-file-button';
+      cookieFileButton.textContent = 'Choose cookies.txt…';
+      cookieFileButton.hidden = true;
+      cookieFileButton.addEventListener('click', async () => {
+        try {
+          const chosen = await window.electron.chooseYoutubeCookiesFile();
+          if (chosen) {
+            pendingCookieConfig = { cookiesFile: chosen };
+            cookieFileButton.textContent = `cookies.txt: ${chosen.split('/').pop()}`;
+          }
+        } catch (error) {
+          this.showToast(`Could not open the file picker: ${error.message}`, 'error');
+        }
+      });
+      form.appendChild(cookieFileButton);
+
+      const applyCookieConfigToControls = (config) => {
+        pendingCookieConfig = config || {};
+        if (config?.cookiesFromBrowser) {
+          cookieSelect.value = config.cookiesFromBrowser;
+          cookieFileButton.hidden = true;
+        } else if (config?.cookiesFile) {
+          cookieSelect.value = 'file';
+          cookieFileButton.hidden = false;
+          cookieFileButton.textContent = `cookies.txt: ${config.cookiesFile.split('/').pop()}`;
+        } else {
+          cookieSelect.value = 'none';
+          cookieFileButton.hidden = true;
+        }
+      };
+      window.electron
+        .getYoutubeCookieConfig()
+        .then(applyCookieConfigToControls)
+        .catch(() => applyCookieConfigToControls({}));
+
+      cookieSelect.addEventListener('change', () => {
+        if (cookieSelect.value === 'none') {
+          pendingCookieConfig = {};
+          cookieFileButton.hidden = true;
+        } else if (cookieSelect.value === 'file') {
+          // Keep any previously chosen path; the button picks a new one.
+          cookieFileButton.hidden = false;
+          if (!pendingCookieConfig.cookiesFile) {
+            cookieFileButton.textContent = 'Choose cookies.txt…';
+          }
+        } else {
+          pendingCookieConfig = { cookiesFromBrowser: cookieSelect.value };
+          cookieFileButton.hidden = true;
+        }
+      });
+
+      const cookieHelp = document.createElement('p');
+      cookieHelp.className = 'rss-modal-help';
+      cookieHelp.textContent =
+        'If a download fails with "Sign in to confirm you\'re not a bot", pick the browser you use on YouTube here. macOS may ask once for Keychain access when reading Chrome cookies.';
+      form.appendChild(cookieHelp);
+    }
+
     const folderLabel = document.createElement('label');
     folderLabel.textContent = 'Sources folder name';
     form.appendChild(folderLabel);
@@ -2914,6 +3007,13 @@ class RSSFeedComponent extends DataroomElement {
         await saveSettings(this.settings);
         this.applyTheme();
         this._startAutoRefresh();
+        if (window.electron?.setYoutubeCookieConfig) {
+          try {
+            await window.electron.setYoutubeCookieConfig(pendingCookieConfig);
+          } catch (cookieError) {
+            this.showToast(`YouTube cookie settings rejected: ${cookieError.message}`, 'error');
+          }
+        }
         this.showToast('Settings saved');
         this.closeModal();
         this.renderFeeds();

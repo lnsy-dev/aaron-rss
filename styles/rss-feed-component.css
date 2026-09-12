@@ -1505,6 +1505,96 @@ body command-panel dialog {
   padding: 0.6rem 1.5rem;
 }
 
+/* Video playback mode: a downloaded video fills the whole window and the
+   viewer chrome floats above it at the top in white. _enterVideoPlaybackMode()
+   gathers the chrome rows into .rss-video-chrome and _setupVideoChromeAutoHide
+   toggles rss-video-chrome--hidden after 10s without mouse movement. */
+.rss-article-viewer-overlay--video,
+.rss-article-viewer-overlay--video .rss-article-viewer-dialog {
+  background: #000;
+}
+
+.rss-article-viewer-overlay--video .rss-article-viewer-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rss-article-viewer-overlay--video .rss-youtube-external {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+}
+
+.rss-article-viewer-overlay--video .rss-youtube-external-video {
+  /* Fill the window; object-fit keeps the aspect ratio letterboxed. */
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+/* Only the player itself remains in the body; the wrapper's panel
+   buttons, badge, and summary belong to the non-playback view. */
+.rss-article-viewer-overlay--video .rss-youtube-external > :not(.rss-youtube-external-video) {
+  display: none;
+}
+
+.rss-video-chrome {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 650;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+  transition: opacity 0.5s ease;
+}
+
+.rss-video-chrome--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* White chrome so it reads over the video. */
+.rss-video-chrome .rss-article-viewer-header,
+.rss-video-chrome .rss-article-viewer-meta,
+.rss-video-chrome .rss-article-viewer-actions {
+  border-bottom: none;
+}
+
+.rss-video-chrome .rss-article-viewer-header h2,
+.rss-video-chrome .rss-article-viewer-back,
+.rss-video-chrome .rss-article-viewer-close,
+.rss-video-chrome .rss-article-viewer-meta,
+.rss-video-chrome .rss-action-button {
+  color: #fff;
+}
+
+.rss-video-chrome .rss-article-viewer-back:hover,
+.rss-video-chrome .rss-article-viewer-close:hover {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.rss-video-chrome .rss-action-button {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.rss-video-chrome .rss-action-button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Keep Delete Video recognizable as destructive in the floating row. */
+.rss-video-chrome .rss-youtube-delete-button {
+  background: var(--error-color);
+  border-color: var(--error-color);
+  color: #fff;
+}
+
 .rss-youtube-prompt {
   margin-top: 1rem;
   padding: 1rem;

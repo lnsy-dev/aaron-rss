@@ -110,6 +110,9 @@ const REFRESH_CONCURRENCY_BOUNDS = { min: 1, max: 16 };
 /** Per-refresh timeout so a hung feed/network call cannot lock the UI forever. */
 const REFRESH_TIMEOUT_MS = 120000;
 
+/** How long the floating video chrome stays visible without mouse movement. */
+const VIDEO_CHROME_HIDE_DELAY_MS = 10000;
+
 /** @type {string} */
 const THEME_STYLE_ID = 'user-theme-style';
 
@@ -3037,6 +3040,13 @@ class RSSFeedComponent extends DataroomElement {
       overlay._youtubePlayer = null;
     }
 
+    // Stop the video-chrome auto-hide timer and listener so neither can
+    // fire after the viewer is gone.
+    if (overlay._videoChromeCleanup) {
+      overlay._videoChromeCleanup();
+      overlay._videoChromeCleanup = null;
+    }
+
     // Release the original-page iframe and extracted body so the renderer
     // can reclaim the browsing context and large article objects.
     if (overlay._originalFrame) {
@@ -3133,6 +3143,15 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Schedule the next automatic refresh based on the configured interval.
    *
+   * The interval acts as a pause that starts when the previous refresh
+   * finished (_lastRefreshAt is set on completion), so a refresh that
+   * runs long never gets the next fetch started at its heels. Any pending
+   * timer is cleared first: refresh completion, the auto-refresh finally,
+   * and the visibility handler can all schedule, and without the clear
+   * the overwritten handles keep firing as duplicate ticks — which is
+   * what stacked up "Refresh already in progress" toasts on an idle,
+   * unfocused app.
+   *
    * If the interval is set to 0, auto-refresh is disabled. The delay is
    * computed from the last refresh time so a refresh that happens early
    * (manual or on visibility change) does not cause a burst of updates.
@@ -3151,6 +3170,8 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    this._stopAutoRefresh();
+
     const intervalMs = intervalMinutes * 60 * 1000;
     const elapsed = Date.now() - this._lastRefreshAt;
     const delay = Math.max(0, intervalMs - elapsed);
@@ -3162,13 +3183,27 @@ class RSSFeedComponent extends DataroomElement {
    * Perform an automatic refresh.
    *
    * Runs even when the page is hidden so feeds stay current in the
-   * background (Electron disables renderer throttling for this window).
+   * background (Electron keeps this window's timers running). A tick that
+   * lands while a refresh is still running is skipped silently: long
+   * feeds can take longer than the interval, and the running refresh's
+   * completion schedules the next pause — toasting and re-fetching there
+   * is what flooded idle sessions with "Refresh already in progress"
+   * toasts and repeated back-to-back fetches.
    *
    * @async
    * @returns {Promise<void>}
    */
   async _runAutoRefresh() {
     this._refreshTimer = null;
+
+    if (this.isRefreshing) {
+      // The running refresh reschedules on completion; this fallback keeps
+      // the loop alive if that refresh ends in its error path, which does
+      // not schedule.
+      this._lastRefreshAt = Date.now();
+      this._scheduleAutoRefresh();
+      return;
+    }
 
     try {
       await this.handleRefreshAll();
@@ -3201,7 +3236,11 @@ class RSSFeedComponent extends DataroomElement {
     const intervalMs = intervalMinutes * 60 * 1000;
     const isDue = intervalMinutes > 0 && Date.now() - this._lastRefreshAt >= intervalMs;
 
-    if (isDue) {
+    // A refresh may still be running when we return (a long fetch can
+    // outlive a quick hide); skip quietly rather than toasting "already
+    // in progress" — the running refresh's completion schedules the next
+    // pause.
+    if (isDue && !this.isRefreshing) {
       this.handleRefreshAll();
     } else {
       this.refreshFeeds();
@@ -3966,6 +4005,12 @@ class RSSFeedComponent extends DataroomElement {
 
     body.appendChild(wrapper);
 
+    // Watching a downloaded copy puts the viewer into playback mode: the
+    // video fills the window and the viewer chrome floats above it.
+    if (hasDownload) {
+      this._enterVideoPlaybackMode(overlay);
+    }
+
     // Opening a downloaded video does not change the article's read state
     // beyond the mark-on-download above — only deleting the video (or
     // normal unread-toggle actions) does. Articles whose feed row is gone
@@ -4032,7 +4077,96 @@ class RSSFeedComponent extends DataroomElement {
     if (!wrapper || wrapper.querySelector('.rss-youtube-external-video')) {
       return;
     }
-    this._embeddedDownloadedVideo(article, feed, wrapper);
+    const embedded = this._embeddedDownloadedVideo(article, feed, wrapper);
+    if (embedded) {
+      this._enterVideoPlaybackMode(viewer);
+    }
+  }
+
+  /**
+   * Switch an article viewer into video playback mode.
+   *
+   * The embedded <video> fills the whole window while the viewer chrome
+   * (header, meta, actions) is gathered into one floating bar pinned to
+   * the top of the video, rendered white so it stays readable over the
+   * player. The chrome fades away after 10 seconds without mouse
+   * movement and reappears as soon as the mouse moves (see
+   * _setupVideoChromeAutoHide), so nothing covers the picture while the
+   * user just watches.
+   *
+   * @param {HTMLElement} overlay - The .rss-article-viewer-overlay element
+   * @returns {void}
+   */
+  _enterVideoPlaybackMode(overlay) {
+    const video = overlay.querySelector('.rss-youtube-external-video');
+    const dialog = overlay.querySelector('.rss-article-viewer-dialog');
+    if (!video || !dialog || overlay.classList.contains('rss-article-viewer-overlay--video')) {
+      return;
+    }
+    overlay.classList.add('rss-article-viewer-overlay--video');
+
+    // With a local copy, "Download Video" is meaningless and Delete
+    // Video — normally rendered below the player — moves into the
+    // floating action row so it stays reachable over the video.
+    const actions = overlay.querySelector('.rss-article-viewer-actions');
+    const downloadButton = actions?.querySelector('.rss-youtube-download-button');
+    if (downloadButton) {
+      downloadButton.remove();
+    }
+    const deleteButton = overlay.querySelector('.rss-youtube-external .rss-youtube-delete-button');
+    if (actions && deleteButton) {
+      actions.appendChild(deleteButton);
+    }
+
+    // Gather the chrome rows into one floating bar so CSS can pin the
+    // whole stack to the top of the overlay and fade it as a unit.
+    const chrome = document.createElement('div');
+    chrome.className = 'rss-video-chrome';
+    dialog.insertBefore(chrome, dialog.firstChild);
+    for (const row of [
+      overlay.querySelector('.rss-article-viewer-header'),
+      overlay.querySelector('.rss-article-viewer-meta'),
+      actions,
+    ]) {
+      if (row) {
+        chrome.appendChild(row);
+      }
+    }
+
+    this._setupVideoChromeAutoHide(overlay, chrome);
+  }
+
+  /**
+   * Fade the floating video chrome out after 10 seconds without mouse
+   * movement; any mousemove over the viewer brings it straight back.
+   *
+   * The cleanup handle is stored on the overlay so closeModal() can stop
+   * the timer and remove the listener when the viewer closes.
+   *
+   * @param {HTMLElement} overlay - The viewer overlay element
+   * @param {HTMLElement} chrome - The floating chrome container
+   * @returns {void}
+   */
+  _setupVideoChromeAutoHide(overlay, chrome) {
+    // Overridable so tests can exercise the fade without waiting 10s.
+    const delay = this._videoChromeHideDelayMs ?? VIDEO_CHROME_HIDE_DELAY_MS;
+    let hideTimer = null;
+    const hideChrome = () => chrome.classList.add('rss-video-chrome--hidden');
+    const wakeChrome = () => {
+      chrome.classList.remove('rss-video-chrome--hidden');
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+      }
+      hideTimer = setTimeout(hideChrome, delay);
+    };
+    overlay.addEventListener('mousemove', wakeChrome);
+    wakeChrome();
+    overlay._videoChromeCleanup = () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+      }
+      overlay.removeEventListener('mousemove', wakeChrome);
+    };
   }
 
   /**
@@ -5415,11 +5549,12 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Run the shared Escape-key behavior exactly once per physical press.
    *
-   * Closes the find bar, closes the active modal, or jumps back to the top
-   * of the feed list depending on current state. Electron delivers Escape
-   * both as a normal DOM keydown (when the main document has focus) and as
-   * an IPC message (needed when an iframe has focus), so presses that land
-   * within 250ms of each other are treated as one physical key press.
+   * Closes the find bar, closes the active modal, dismisses a floating
+   * context menu, or jumps back to the top of the feed list depending on
+   * current state. Electron delivers Escape both as a normal DOM keydown
+   * (when the main document has focus) and as an IPC message (needed when
+   * an iframe has focus), so presses that land within 250ms of each other
+   * are treated as one physical key press.
    *
    * @returns {void}
    */
@@ -5440,6 +5575,14 @@ class RSSFeedComponent extends DataroomElement {
       } else {
         this.closeModal();
       }
+      return;
+    }
+    // A floating context menu (feed kebab menu, image context menu) is
+    // transient UI like a dialog: Escape dismisses it without also moving
+    // the feed selection.
+    const openMenu = this.querySelector('.rss-kebab-menu');
+    if (openMenu) {
+      openMenu.remove();
       return;
     }
     // On the main feed page, jump to the top and select the first article.

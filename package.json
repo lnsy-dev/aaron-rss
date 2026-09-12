@@ -1,6 +1,6 @@
 {
   "name": "aaron-rss",
-  "version": "0.23.1",
+  "version": "0.24.1",
   "description": "A simple RSS reader as an Electron App",
   "main": "electron/main.js",
   "type": "module",
@@ -76,6 +76,7 @@
     "files": [
       "dist/**",
       "electron/**",
+      "src/lib/podcast.js",
       "src/lib/youtube.js",
       "package.json"
     ],

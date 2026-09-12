@@ -1417,7 +1417,18 @@ test.describe('Aaron RSS', () => {
     });
 
     await downloadButton.click();
-    await expect(downloadButton).toHaveText('Downloaded ✓');
+    // The download drops the viewer into playback mode: the local copy is
+    // embedded full-window and the Download action is removed — the
+    // "Downloaded ✓" button state is gone with it.
+    const embeddedVideo = viewer.locator('video.rss-youtube-external-video');
+    await expect(embeddedVideo).toHaveCount(1);
+    await expect(embeddedVideo).toHaveJSProperty(
+      'src',
+      'media://local/' + encodeURIComponent('/downloads/Aaron-RSS-YouTube/e2e.mp4')
+    );
+    await expect(viewer.locator('.rss-youtube-download-button')).toHaveCount(0);
+    await expect(viewer).toHaveClass(/rss-article-viewer-overlay--video/);
+
     const downloadRequests = await page.evaluate(() => window.__downloadRequests);
     expect(downloadRequests).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
 
@@ -1426,17 +1437,12 @@ test.describe('Aaron RSS', () => {
       { feedID: 'e2e-yt-feed', articleID: 'e2e-yt-article' },
     ]);
 
-    // The downloaded copy is embedded as an inline <video> player.
-    const embeddedVideo = viewer.locator('video.rss-youtube-external-video');
-    await expect(embeddedVideo).toHaveCount(1);
-    await expect(embeddedVideo).toHaveJSProperty(
-      'src',
-      'media://local/' + encodeURIComponent('/downloads/Aaron-RSS-YouTube/e2e.mp4')
-    );
-
+    // The View on YouTube CTA is a playback-mode casualty — only the
+    // player shows over the video — but its handler must still open the
+    // video externally when invoked.
     const viewButton = viewer.locator('.rss-youtube-external-button');
-    await expect(viewButton).toHaveText('View on YouTube');
-    await viewButton.click();
+    await expect(viewButton).toBeHidden();
+    await viewButton.dispatchEvent('click');
 
     const openedUrls = await page.evaluate(() => window.__openedExternalUrls);
     expect(openedUrls).toEqual(['https://www.youtube.com/watch?v=dQw4w9WgXcQ']);
@@ -3154,7 +3160,11 @@ test.describe('Aaron RSS', () => {
       const downloadButton = viewer.locator('.rss-youtube-download-button');
       await expect(downloadButton).toHaveText('Download Video');
       await downloadButton.click();
-      await expect(downloadButton).toHaveText('Downloaded ✓');
+      // The download drops the viewer straight into playback mode: the
+      // local copy is embedded full-window and the Download action is
+      // removed — the "Downloaded ✓" button state is gone with it.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(downloadButton).toHaveCount(0);
 
       // Re-query the database (refreshFeeds reloads from SQLite) and assert
       // the downloaded article is gone from the unread main feed: it was
@@ -3246,7 +3256,11 @@ test.describe('Aaron RSS', () => {
 
       const downloadButton = viewer.locator('.rss-youtube-download-button');
       await downloadButton.click();
-      await expect(downloadButton).toHaveText('Downloaded ✓');
+      // The download drops the viewer straight into playback mode: the
+      // local copy is embedded full-window and the Download action is
+      // removed — the "Downloaded ✓" button state is gone with it.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(downloadButton).toHaveCount(0);
 
       // Close the viewer: the article was marked read on download, so it
       // no longer appears in the unread main feed.
@@ -3351,7 +3365,11 @@ test.describe('Aaron RSS', () => {
       await expect(viewer).toBeVisible();
       const downloadButton = viewer.locator('.rss-youtube-download-button');
       await downloadButton.click();
-      await expect(downloadButton).toHaveText('Downloaded ✓');
+      // The download drops the viewer straight into playback mode: the
+      // local copy is embedded full-window and the Download action is
+      // removed — the "Downloaded ✓" button state is gone with it.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(downloadButton).toHaveCount(0);
       await page.locator('.rss-article-viewer-close').click();
       await expect(viewer).toBeHidden();
 
@@ -3704,7 +3722,11 @@ test.describe('Aaron RSS', () => {
       await expect(viewer).toBeVisible();
       const downloadButton = viewer.locator('.rss-youtube-download-button');
       await downloadButton.click();
-      await expect(downloadButton).toHaveText('Downloaded ✓');
+      // The download drops the viewer straight into playback mode: the
+      // local copy is embedded full-window and the Download action is
+      // removed — the "Downloaded ✓" button state is gone with it.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(downloadButton).toHaveCount(0);
       await page.locator('.rss-article-viewer-close').click();
       await expect(viewer).toBeHidden();
 
@@ -3800,7 +3822,10 @@ test.describe('Aaron RSS', () => {
       const viewer = page.locator('.rss-article-viewer-overlay');
       await expect(viewer).toBeVisible();
       await viewer.locator('.rss-youtube-download-button').click();
-      await expect(viewer.locator('.rss-youtube-download-button')).toHaveText('Downloaded ✓');
+      // Playback mode replaces the Download button with the embedded
+      // full-window video as soon as the local copy lands.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(viewer.locator('.rss-youtube-download-button')).toHaveCount(0);
       await page.locator('.rss-article-viewer-close').click();
       await expect(viewer).toBeHidden();
 
@@ -3886,7 +3911,10 @@ test.describe('Aaron RSS', () => {
       const viewer = page.locator('.rss-article-viewer-overlay');
       await expect(viewer).toBeVisible();
       await viewer.locator('.rss-youtube-download-button').click();
-      await expect(viewer.locator('.rss-youtube-download-button')).toHaveText('Downloaded ✓');
+      // Playback mode replaces the Download button with the embedded
+      // full-window video as soon as the local copy lands.
+      await expect(viewer.locator('video.rss-youtube-external-video')).toHaveCount(1);
+      await expect(viewer.locator('.rss-youtube-download-button')).toHaveCount(0);
       await page.locator('.rss-article-viewer-close').click();
       await expect(viewer).toBeHidden();
 

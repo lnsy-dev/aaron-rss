@@ -3143,6 +3143,15 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Schedule the next automatic refresh based on the configured interval.
    *
+   * The interval acts as a pause that starts when the previous refresh
+   * finished (_lastRefreshAt is set on completion), so a refresh that
+   * runs long never gets the next fetch started at its heels. Any pending
+   * timer is cleared first: refresh completion, the auto-refresh finally,
+   * and the visibility handler can all schedule, and without the clear
+   * the overwritten handles keep firing as duplicate ticks — which is
+   * what stacked up "Refresh already in progress" toasts on an idle,
+   * unfocused app.
+   *
    * If the interval is set to 0, auto-refresh is disabled. The delay is
    * computed from the last refresh time so a refresh that happens early
    * (manual or on visibility change) does not cause a burst of updates.
@@ -3161,6 +3170,8 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    this._stopAutoRefresh();
+
     const intervalMs = intervalMinutes * 60 * 1000;
     const elapsed = Date.now() - this._lastRefreshAt;
     const delay = Math.max(0, intervalMs - elapsed);
@@ -3172,13 +3183,27 @@ class RSSFeedComponent extends DataroomElement {
    * Perform an automatic refresh.
    *
    * Runs even when the page is hidden so feeds stay current in the
-   * background (Electron disables renderer throttling for this window).
+   * background (Electron keeps this window's timers running). A tick that
+   * lands while a refresh is still running is skipped silently: long
+   * feeds can take longer than the interval, and the running refresh's
+   * completion schedules the next pause — toasting and re-fetching there
+   * is what flooded idle sessions with "Refresh already in progress"
+   * toasts and repeated back-to-back fetches.
    *
    * @async
    * @returns {Promise<void>}
    */
   async _runAutoRefresh() {
     this._refreshTimer = null;
+
+    if (this.isRefreshing) {
+      // The running refresh reschedules on completion; this fallback keeps
+      // the loop alive if that refresh ends in its error path, which does
+      // not schedule.
+      this._lastRefreshAt = Date.now();
+      this._scheduleAutoRefresh();
+      return;
+    }
 
     try {
       await this.handleRefreshAll();
@@ -3211,7 +3236,11 @@ class RSSFeedComponent extends DataroomElement {
     const intervalMs = intervalMinutes * 60 * 1000;
     const isDue = intervalMinutes > 0 && Date.now() - this._lastRefreshAt >= intervalMs;
 
-    if (isDue) {
+    // A refresh may still be running when we return (a long fetch can
+    // outlive a quick hide); skip quietly rather than toasting "already
+    // in progress" — the running refresh's completion schedules the next
+    // pause.
+    if (isDue && !this.isRefreshing) {
       this.handleRefreshAll();
     } else {
       this.refreshFeeds();

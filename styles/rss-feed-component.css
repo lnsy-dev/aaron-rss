@@ -1150,7 +1150,7 @@ body command-panel dialog {
 }
 
 .rss-social-link-card img {
-  width: 120px;
+  width: 100%;
   min-height: 100%;
   object-fit: cover;
   flex-shrink: 0;

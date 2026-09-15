@@ -772,12 +772,31 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
 /**
  * Purge read, unstarred articles older than the retention window.
  *
+ * Before deleting, each purged article is recorded in cleared_articles
+ * (the same memory the research-topic clear uses). Without it, a feed
+ * whose XML still lists the purged items re-adds them on the next
+ * refresh as brand-new, unread articles — read state appeared to be
+ * "forgotten" (e.g. a low-volume newsletter the user slowly works
+ * through). The refresh pipeline already feeds this memory into the
+ * merge via listClearedUniqueIDs, so recording here is enough.
+ *
  * @param {string} feedID
  * @param {number} [retentionDays=DEFAULT_READ_ARTICLE_RETENTION_DAYS]
  * @returns {Promise<void>}
  */
 export async function purgeOldReadArticles(feedID, retentionDays = DEFAULT_READ_ARTICLE_RETENTION_DAYS) {
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO cleared_articles (feed_id, article_id, unique_id, url, title, cleared_at)
+      SELECT feed_id, article_id, unique_id, url, title, ?
+      FROM articles
+      WHERE feed_id = ?
+        AND read = 1
+        AND starred = 0
+        AND date_arrived < ?`,
+    params: [new Date().toISOString(), feedID, cutoff],
+  });
 
   await callWorker('exec', {
     sql: `DELETE FROM articles

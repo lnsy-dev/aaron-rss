@@ -699,6 +699,30 @@ describe('rss database helpers', () => {
     expect(await db.getDownloadedVideoPlaybackPosition('feed123', 'missing')).toBeNull();
   });
 
+  it('purgeOldReadArticles remembers purged articles before deleting them', async () => {
+    const db = await importDatabaseModule();
+    await db.purgeOldReadArticles('feed123');
+
+    const [rememberMessage, deleteMessage] = FakeWorker.instance.messages;
+    // The purge first records the doomed articles in cleared_articles so
+    // the next refresh does not re-add them as unread.
+    expect(rememberMessage.action).toBe('exec');
+    expect(rememberMessage.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+    expect(rememberMessage.params.sql).toContain('SELECT feed_id, article_id, unique_id, url, title, ?');
+    expect(rememberMessage.params.sql).toContain('FROM articles');
+    expect(rememberMessage.params.sql).toContain('read = 1');
+    expect(rememberMessage.params.sql).toContain('starred = 0');
+    expect(rememberMessage.params.sql).toContain('date_arrived < ?');
+    expect(rememberMessage.params.params[1]).toBe('feed123');
+
+    expect(deleteMessage.action).toBe('exec');
+    expect(deleteMessage.params.sql).toContain('DELETE FROM articles');
+    expect(deleteMessage.params.sql).toContain('read = 1');
+    expect(deleteMessage.params.sql).toContain('starred = 0');
+    expect(deleteMessage.params.sql).toContain('date_arrived < ?');
+    expect(deleteMessage.params.params).toEqual(['feed123', expect.any(String)]);
+  });
+
   it('listPrunableDownloadedVideos selects old read unstarred articles with downloads', async () => {
     const db = await importDatabaseModule();
     FakeWorker.onMessage = (m) => ({
@@ -1140,14 +1164,21 @@ describe('rss database helpers', () => {
       const db = await importDatabaseModule();
       await db.purgeOldReadArticles('feed123', 30);
 
-      const message = FakeWorker.instance.messages[0];
-      expect(message.action).toBe('exec');
-      expect(message.params.sql).toContain('DELETE FROM articles');
-      expect(message.params.sql).toContain('read = 1');
-      expect(message.params.sql).toContain('starred = 0');
-      expect(message.params.sql).toContain('date_arrived < ?');
-      expect(message.params.params[0]).toBe('feed123');
-      expect(message.params.params[1]).toBe('2026-01-16T00:00:00.000Z');
+      const [rememberMessage, deleteMessage] = FakeWorker.instance.messages;
+      // First message: record the doomed articles in cleared_articles.
+      expect(rememberMessage.action).toBe('exec');
+      expect(rememberMessage.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+      expect(rememberMessage.params.params[0]).toBe('2026-02-15T00:00:00.000Z');
+      expect(rememberMessage.params.params[1]).toBe('feed123');
+      expect(rememberMessage.params.params[2]).toBe('2026-01-16T00:00:00.000Z');
+      // Second message: delete them.
+      expect(deleteMessage.action).toBe('exec');
+      expect(deleteMessage.params.sql).toContain('DELETE FROM articles');
+      expect(deleteMessage.params.sql).toContain('read = 1');
+      expect(deleteMessage.params.sql).toContain('starred = 0');
+      expect(deleteMessage.params.sql).toContain('date_arrived < ?');
+      expect(deleteMessage.params.params[0]).toBe('feed123');
+      expect(deleteMessage.params.params[1]).toBe('2026-01-16T00:00:00.000Z');
     } finally {
       vi.useRealTimers();
     }

@@ -422,6 +422,15 @@ export async function initRSSSchema() {
     });
   }
 
+  // Migration: add the last playback position (in seconds) so closing and
+  // re-opening a video resumes where the user left off. NULL means the
+  // video was never started (or was watched to the end and reset).
+  if (!videoColumns.some((col) => col.name === 'playback_position_seconds')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds REAL',
+    });
+  }
+
   // One-time backfill migration: queue rows for videos downloaded before
   // the downloaded_videos table existed. The UNIQUE constraints make this
   // idempotent — paths/records already in the table are skipped, so it can
@@ -1126,6 +1135,7 @@ function downloadedVideoFromRow(row) {
     title: row.title,
     downloadedAt: row.downloaded_at,
     fileSizeBytes: row.file_size_bytes,
+    playbackPositionSeconds: row.playback_position_seconds,
   };
 }
 
@@ -1162,6 +1172,8 @@ export async function recordDownloadedVideo(video) {
   const downloadedAt = video.downloadedAt || new Date();
   // seen is written explicitly: a (re)download marks the video ready
   // (unwatched) again, so it counts toward the Videos button badge.
+  // The playback position is not in the column list, so INSERT OR
+  // REPLACE resets it to NULL — a fresh file starts from the beginning.
   await callWorker('exec', {
     sql: `INSERT OR REPLACE INTO downloaded_videos
       (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen)
@@ -1218,6 +1230,41 @@ export async function markDownloadedVideoSeen(feedID, articleID, seen = true) {
     sql: 'UPDATE downloaded_videos SET seen = ? WHERE feed_id = ? AND article_id = ?',
     params: [seen ? 1 : 0, feedID, articleID],
   });
+}
+
+/**
+ * Save the last playback position (in seconds) for a downloaded video.
+ *
+ * Pass positionSeconds = null to clear the saved position (e.g. after
+ * the video was watched to the end, so the next watch starts over).
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {number|null} positionSeconds - Seconds into the video, or null
+ * @returns {Promise<void>}
+ */
+export async function saveDownloadedVideoPosition(feedID, articleID, positionSeconds) {
+  await callWorker('exec', {
+    sql: 'UPDATE downloaded_videos SET playback_position_seconds = ? WHERE feed_id = ? AND article_id = ?',
+    params: [positionSeconds, feedID, articleID],
+  });
+}
+
+/**
+ * Fetch the saved playback position for a downloaded video.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<number|null>} Seconds into the video, or null when
+ *   there is no saved position (never started, finished, or reset)
+ */
+export async function getDownloadedVideoPlaybackPosition(feedID, articleID) {
+  const rows = (await callWorker('query', {
+    sql: 'SELECT playback_position_seconds FROM downloaded_videos WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  })) || [];
+  const value = rows.length > 0 ? rows[0].playback_position_seconds : null;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 /**

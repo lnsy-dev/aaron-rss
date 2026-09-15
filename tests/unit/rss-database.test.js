@@ -67,7 +67,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -90,12 +90,13 @@ describe('rss database helpers', () => {
     expect(tables[14]).toContain('UNIQUE (feed_id, article_id)');
     expect(tables[15]).toContain('PRAGMA table_info(downloaded_videos)');
     expect(tables[16]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
-    expect(tables[17]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[17]).toContain('FROM articles');
-    expect(tables[17]).toContain('download_path IS NOT NULL');
-    expect(tables[18]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[19]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[20]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    expect(tables[17]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
+    expect(tables[18]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[18]).toContain('FROM articles');
+    expect(tables[18]).toContain('download_path IS NOT NULL');
+    expect(tables[19]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[20]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[21]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -129,7 +130,12 @@ describe('rss database helpers', () => {
         return {
           id: m.id,
           ok: true,
-          result: [{ name: 'video_id' }, { name: 'file_path' }, { name: 'seen' }],
+          result: [
+            { name: 'video_id' },
+            { name: 'file_path' },
+            { name: 'seen' },
+            { name: 'playback_position_seconds' },
+          ],
         };
       }
       if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(research_topics)') {
@@ -469,6 +475,7 @@ describe('rss database helpers', () => {
           title: 'My Video',
           downloaded_at: '2026-01-01T00:00:00.000Z',
           file_size_bytes: 42,
+          playback_position_seconds: 137.5,
         },
       ],
     });
@@ -487,6 +494,7 @@ describe('rss database helpers', () => {
       title: 'My Video',
       downloadedAt: '2026-01-01T00:00:00.000Z',
       fileSizeBytes: 42,
+      playbackPositionSeconds: 137.5,
     });
   });
 
@@ -635,6 +643,60 @@ describe('rss database helpers', () => {
     expect(unseenMessage.params.params).toEqual([0, 'feed123', 'art2']);
     // Defaults to seen (watched).
     expect(defaultMessage.params.params).toEqual([1, 'feed123', 'art3']);
+  });
+
+  it('saveDownloadedVideoPosition writes the position with bound params', async () => {
+    const db = await importDatabaseModule();
+    await db.saveDownloadedVideoPosition('feed123', 'art1', 137.5);
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toBe('UPDATE downloaded_videos SET playback_position_seconds = ? WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual([137.5, 'feed123', 'art1']);
+  });
+
+  it('saveDownloadedVideoPosition clears the position with null', async () => {
+    const db = await importDatabaseModule();
+    await db.saveDownloadedVideoPosition('feed123', 'art1', null);
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.params).toEqual([null, 'feed123', 'art1']);
+  });
+
+  it('getDownloadedVideoPlaybackPosition returns the saved seconds', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ playback_position_seconds: 137.5 }],
+    });
+
+    const db = await importDatabaseModule();
+    const position = await db.getDownloadedVideoPlaybackPosition('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toBe('SELECT playback_position_seconds FROM downloaded_videos WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+    expect(position).toBe(137.5);
+  });
+
+  it('getDownloadedVideoPlaybackPosition returns null when no position is saved', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ playback_position_seconds: null }],
+    });
+
+    const db = await importDatabaseModule();
+    expect(await db.getDownloadedVideoPlaybackPosition('feed123', 'art1')).toBeNull();
+  });
+
+  it('getDownloadedVideoPlaybackPosition returns null when the video has no row', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+
+    const db = await importDatabaseModule();
+    expect(await db.getDownloadedVideoPlaybackPosition('feed123', 'missing')).toBeNull();
   });
 
   it('listPrunableDownloadedVideos selects old read unstarred articles with downloads', async () => {

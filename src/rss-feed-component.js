@@ -19,6 +19,8 @@ import {
   loadArticleContent,
   countUnseenDownloadedVideos,
   markDownloadedVideoSeen,
+  saveDownloadedVideoPosition,
+  getDownloadedVideoPlaybackPosition,
   createResearchTopic,
   deleteResearchTopic,
   updateResearchTopic,
@@ -3147,6 +3149,13 @@ class RSSFeedComponent extends DataroomElement {
       overlay._videoChromeCleanup = null;
     }
 
+    // Write the final playback position of an embedded downloaded video
+    // before its element is removed.
+    if (overlay._videoPositionFlush) {
+      overlay._videoPositionFlush();
+      overlay._videoPositionFlush = null;
+    }
+
     // Release the original-page iframe and extracted body so the renderer
     // can reclaim the browsing context and large article objects.
     if (overlay._originalFrame) {
@@ -4154,10 +4163,114 @@ class RSSFeedComponent extends DataroomElement {
       wrapper.appendChild(video);
     }
 
+    // Resume where the user last stopped and keep saving progress while
+    // they watch (no-op for dangling entries with no feed row).
+    this._attachPlaybackPositionMemory(video, feed, article, wrapper);
+
     // Watching the downloaded copy clears its ready state so the Videos
     // button badge stays accurate.
     this._markDownloadedVideoSeen(feed?.feedID, article.articleID);
     return true;
+  }
+
+  /**
+   * Restore the last playback position of an embedded downloaded video
+   * and keep the position saved as it plays.
+   *
+   * The saved position is applied once the video's metadata is available
+   * (currentTime cannot seek before that), and skipped when the previous
+   * session had effectively finished the video. Progress is persisted at
+   * most every five seconds while playing, plus immediately on pause,
+   * when the video ends (clearing the position so the next watch starts
+   * over), and when the viewer closes. All writes are fire-and-forget:
+   * failures are logged, never thrown, so bookkeeping never disturbs
+   * playback.
+   *
+   * @param {HTMLVideoElement} video - The embedded player
+   * @param {object|null} feed - The article's feed (null for dangling entries)
+   * @param {object} article - The article being played
+   * @param {HTMLElement} [wrapper] - The .rss-youtube-external container;
+   *   when given, the close-time flush hook is registered on its overlay
+   * @returns {void}
+   */
+  _attachPlaybackPositionMemory(video, feed, article, wrapper) {
+    const feedID = feed?.feedID;
+    const articleID = article?.articleID;
+    if (!feedID || !articleID) {
+      return;
+    }
+
+    /** Seconds before the end at which a saved position counts as "finished". */
+    const FINISHED_EPSILON_SECONDS = 5;
+    /** How often the position is persisted while the video plays. */
+    const SAVE_INTERVAL_MS = 5000;
+    /** readyState value meaning duration/currentTime are seekable. */
+    const HAVE_METADATA = 1;
+
+    // undefined is a sentinel meaning "nothing written yet" — distinct
+    // from null, which is written deliberately to clear the position.
+    let lastSavedSeconds;
+
+    const savePosition = (seconds) => {
+      // Skip redundant writes (e.g. pause firing after a periodic save).
+      if (seconds === lastSavedSeconds) {
+        return;
+      }
+      lastSavedSeconds = seconds;
+      saveDownloadedVideoPosition(feedID, articleID, seconds)
+        .catch((error) => console.error('Failed to save video playback position:', error));
+    };
+
+    const maybeSaveCurrentTime = () => {
+      if (Number.isFinite(video.currentTime) && video.currentTime > 0) {
+        savePosition(video.currentTime);
+      }
+    };
+
+    // Restore: fetch the saved position and apply it as soon as seeking
+    // works. A position within the last few seconds means the previous
+    // session had effectively finished — start over instead.
+    getDownloadedVideoPlaybackPosition(feedID, articleID)
+      .then((saved) => {
+        if (!saved) {
+          return;
+        }
+        const restore = () => {
+          if (Number.isFinite(video.duration) && saved > video.duration - FINISHED_EPSILON_SECONDS) {
+            return;
+          }
+          video.currentTime = saved;
+        };
+        if (video.readyState >= HAVE_METADATA) {
+          restore();
+        } else {
+          video.addEventListener('loadedmetadata', restore, { once: true });
+        }
+      })
+      .catch((error) => console.error('Failed to load video playback position:', error));
+
+    // Periodic save while playing (timeupdate fires ~4x/second; the
+    // throttle keeps it at one write per interval).
+    let lastSaveAt = 0;
+    video.addEventListener('timeupdate', () => {
+      const now = Date.now();
+      if (now - lastSaveAt >= SAVE_INTERVAL_MS) {
+        lastSaveAt = now;
+        maybeSaveCurrentTime();
+      }
+    });
+    video.addEventListener('pause', maybeSaveCurrentTime);
+    // Watched to the end: clear the position so the next watch restarts.
+    video.addEventListener('ended', () => savePosition(null));
+
+    // Closing the viewer removes the element, which fires pause — but a
+    // deterministic flush hook on the overlay guarantees the final
+    // position is written even when the element is torn down without
+    // pausing (app quit, overlay removed programmatically).
+    const overlay = wrapper && wrapper.closest ? wrapper.closest('.rss-article-viewer-overlay') : null;
+    if (overlay) {
+      overlay._videoPositionFlush = maybeSaveCurrentTime;
+    }
   }
 
   /**

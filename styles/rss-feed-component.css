@@ -126,6 +126,18 @@ body command-panel dialog {
   padding: 1.5rem 1rem 4rem;
 }
 
+/*
+  Windowed rendering placeholder. Its height is set from JavaScript to
+  stand in for article rows that are outside the rendered window, so the
+  document keeps its total height when rows above the viewport are
+  trimmed.
+*/
+.rss-window-spacer {
+  width: 100%;
+  height: 0;
+  pointer-events: none;
+}
+
 .rss-spinner {
   position: absolute;
   top: 50%;

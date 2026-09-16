@@ -6299,6 +6299,14 @@ class RSSFeedComponent extends DataroomElement {
           const feed = await addFeed(subscription.url, subscription.name);
           if (feed) {
             added++;
+            // Restore the per-feed preference carried in the OPML.
+            if (subscription.openOriginalByDefault !== undefined) {
+              await updateFeedOpenOriginalByDefault(
+                feed.feedID,
+                subscription.openOriginalByDefault
+              );
+              feed.openOriginalByDefault = subscription.openOriginalByDefault;
+            }
           }
         }
       } catch (importError) {

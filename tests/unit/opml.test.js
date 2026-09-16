@@ -168,5 +168,37 @@ describe('opml', () => {
       expect(subscriptions[1].name).toBe('Feed B');
       expect(subscriptions[1].url).toBe('https://b.example/rss.xml');
     });
+
+    it('round-trips the openOriginalByDefault preference through export and parse', () => {
+      const feeds = [
+        { name: 'Flagged', url: 'https://flagged.example/rss.xml', openOriginalByDefault: true },
+        { name: 'Unflagged', url: 'https://unflagged.example/rss.xml' },
+      ];
+
+      const opml = exportOPML(feeds, 'Preferences');
+      expect(opml).toContain('openOriginalByDefault="true"');
+
+      const subscriptions = parseOPML(opml);
+      expect(subscriptions[0].openOriginalByDefault).toBe(true);
+      // Absent attribute stays undefined so imports can tell "unset"
+      // apart from an explicit false.
+      expect(subscriptions[1].openOriginalByDefault).toBeUndefined();
+    });
+
+    it('parses openOriginalByDefault written by other readers and mixed-case names', () => {
+      const opml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<opml version="2.0"><head><title>t</title></head><body>',
+        '<outline type="rss" text="One" xmlUrl="https://one.example/rss.xml" openOriginalByDefault="true"/>',
+        '<outline type="rss" text="Two" xmlUrl="https://two.example/rss.xml" openoriginalbydefault="1"/>',
+        '<outline type="rss" text="Three" xmlUrl="https://three.example/rss.xml" openOriginalByDefault="false"/>',
+        '</body></opml>',
+      ].join('');
+
+      const subscriptions = parseOPML(opml);
+      expect(subscriptions[0].openOriginalByDefault).toBe(true);
+      expect(subscriptions[1].openOriginalByDefault).toBe(true);
+      expect(subscriptions[2].openOriginalByDefault).toBe(false);
+    });
   });
 });

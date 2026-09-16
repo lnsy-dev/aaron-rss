@@ -169,6 +169,11 @@ class RSSFeedComponent extends DataroomElement {
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
+    // Distraction Free Mode: hides the app chrome (header, footer, and
+    // article action buttons) and, inside an open article viewer,
+    // everything except the reading body. Toggled by the command-panel
+    // command; keyboard controls keep working.
+    this.distractionFree = false;
     // Shown at most once per session: the FFmpeg install dialog appears
     // the first time a download runs without FFmpeg (see
     // _maybeShowFFmpegInstallNotice).
@@ -794,6 +799,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Export OPML', action: () => this.handleExportOPML() },
       { name: 'Import OPML', action: () => this.handleImportOPML() },
       { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
+      { name: 'Toggle Distraction Free Mode', action: () => this.toggleDistractionFreeMode() },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
@@ -802,6 +808,38 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     this.appendChild(this.commandPanel);
+  }
+
+  /**
+   * Flip Distraction Free Mode on or off.
+   *
+   * @returns {void}
+   */
+  toggleDistractionFreeMode() {
+    this.setDistractionFreeMode(!this.distractionFree);
+  }
+
+  /**
+   * Turn Distraction Free Mode on or off.
+   *
+   * The mode hides the app chrome — header with the hamburger menu,
+   * footer, and article action buttons — and, while an article viewer
+   * is open, everything except the reading body (see the
+   * body.distraction-free CSS rules). Keyboard controls and the command
+   * panel (Ctrl+Shift+P) keep working; a toast confirms the state since
+   * the chrome that would show it is hidden.
+   *
+   * @param {boolean} enabled
+   * @returns {void}
+   */
+  setDistractionFreeMode(enabled) {
+    this.distractionFree = Boolean(enabled);
+    document.body.classList.toggle('distraction-free', this.distractionFree);
+    this.showToast(
+      this.distractionFree
+        ? 'Distraction Free Mode on — Ctrl+Shift+P for commands'
+        : 'Distraction Free Mode off'
+    );
   }
 
   /**

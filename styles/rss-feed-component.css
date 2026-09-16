@@ -127,6 +127,36 @@ body command-panel dialog {
 }
 
 /*
+  Distraction Free Mode (command-panel command "Toggle Distraction Free
+  Mode"). Hides the app chrome — the header with the hamburger menu, the
+  footer, and the per-article action buttons — and, while an article
+  viewer is open, everything except its reading body. Keyboard controls
+  and the command panel keep working; only pointer chrome is hidden.
+*/
+body.distraction-free .rss-header,
+body.distraction-free .rss-footer,
+body.distraction-free .rss-article-actions {
+  display: none;
+}
+
+/* The footer reserved 4rem of bottom padding; reclaim it. */
+body.distraction-free .rss-content-area {
+  padding-bottom: 1.5rem;
+}
+
+body.distraction-free
+  .rss-article-viewer-overlay
+  .rss-article-viewer-header,
+body.distraction-free
+  .rss-article-viewer-overlay
+  .rss-article-viewer-meta,
+body.distraction-free
+  .rss-article-viewer-overlay
+  .rss-article-viewer-actions {
+  display: none;
+}
+
+/*
   Windowed rendering placeholder. Its height is set from JavaScript to
   stand in for article rows that are outside the rendered window, so the
   document keeps its total height when rows above the viewport are

@@ -331,6 +331,7 @@ test.describe('Aaron RSS', () => {
       'Export OPML',
       'Import OPML',
       'Quick Keys',
+      'Toggle Distraction Free Mode',
       'Help',
     ]);
   });

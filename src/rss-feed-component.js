@@ -5330,7 +5330,27 @@ class RSSFeedComponent extends DataroomElement {
     modal.body.appendChild(buttonContainer);
   }
 
+  /**
+   * Download a YouTube video on explicit user request.
+   *
+   * Clicking "Download Video" is the user dealing with the item, so the
+   * article is marked read immediately — whatever the download's outcome
+   * (failures are reported by toast, and the article stays available in
+   * the feed's read archive). The download itself runs through
+   * feed-manager so the saved path is persisted.
+   *
+   * @param {object} article
+   * @param {object} feed
+   * @param {HTMLElement} [buttonElement] - The clicked button, if any
+   * @returns {Promise<void>}
+   */
   async _downloadYouTubeVideo(article, feed, buttonElement) {
+    // The user has handled this item: it leaves the unread list right
+    // away rather than only after a successful download.
+    if (feed?.feedID && article?.articleID && article.read !== true) {
+      this.markAsRead(feed.feedID, article.articleID);
+    }
+
     const button = buttonElement || null;
     if (button) {
       button.disabled = true;
@@ -5360,10 +5380,9 @@ class RSSFeedComponent extends DataroomElement {
         button.textContent = 'Downloaded ✓';
       }
 
-      // Downloaded videos live in the Videos view, not the main feed:
-      // mark the article read so it leaves the unread list. The ready
-      // badge on the footer Videos button points the user there.
-      await this.markAsRead(feed.feedID, article.articleID);
+      // The article was marked read when the download started (the
+      // Videos view is where downloaded items live). The ready badge on
+      // the footer Videos button points the user there.
       await this._refreshVideosReadyBadge();
       // If the article viewer is currently open on this article, play
       // the fresh download inline (this also marks the video seen).

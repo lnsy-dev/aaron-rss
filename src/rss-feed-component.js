@@ -16,6 +16,7 @@ import {
   loadSettings,
   saveSettings,
   updateFeedOpenOriginalByDefault,
+  updateFeedAutoDownloadYouTube,
   loadArticleContent,
   countUnseenDownloadedVideos,
   markDownloadedVideoSeen,
@@ -2583,6 +2584,38 @@ class RSSFeedComponent extends DataroomElement {
       menu.appendChild(openOriginalItem);
     }
 
+    if (feed) {
+      const autoDownloadItem = document.createElement('div');
+      autoDownloadItem.className = 'rss-menu-item rss-menu-item-checkbox';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = Boolean(feed.autoDownloadYouTube);
+      checkbox.tabIndex = -1;
+
+      const label = document.createElement('span');
+      label.textContent = 'Download Videos Automatically';
+
+      autoDownloadItem.appendChild(checkbox);
+      autoDownloadItem.appendChild(label);
+      autoDownloadItem.addEventListener('click', async () => {
+        const newValue = !checkbox.checked;
+        try {
+          await this.setFeedAutoDownloadYouTube(feedID, newValue);
+          checkbox.checked = newValue;
+          if (newValue) {
+            // Only future videos are fetched; the feed's existing
+            // articles are never downloaded retroactively.
+            this.showToast('New videos will download automatically');
+          }
+        } catch (error) {
+          console.error('Failed to update feed setting:', error);
+          this.showToast('Failed to update feed setting', 'error');
+        }
+      });
+      menu.appendChild(autoDownloadItem);
+    }
+
     if (feed && feed.homePageURL) {
       const menuItem = document.createElement('div');
       menuItem.className = 'rss-menu-item';
@@ -4379,6 +4412,26 @@ class RSSFeedComponent extends DataroomElement {
     const feed = this.feeds.find((f) => f.feedID === feedID);
     if (feed) {
       feed.openOriginalByDefault = value;
+    }
+  }
+
+  /**
+   * Set whether a feed automatically downloads the videos of newly
+   * arrived articles.
+   *
+   * Only future videos are fetched: existing articles are never
+   * downloaded retroactively, so enabling the preference does not fill
+   * the disk with the feed's backlog (see autoDownloadNewYouTubeVideos).
+   *
+   * @param {string} feedID
+   * @param {boolean} value
+   * @returns {Promise<void>}
+   */
+  async setFeedAutoDownloadYouTube(feedID, value) {
+    await updateFeedAutoDownloadYouTube(feedID, value);
+    const feed = this.feeds.find((f) => f.feedID === feedID);
+    if (feed) {
+      feed.autoDownloadYouTube = value;
     }
   }
 

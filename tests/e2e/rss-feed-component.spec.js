@@ -861,6 +861,7 @@ test.describe('Aaron RSS', () => {
       'Refresh',
       'Mark All Unread',
       'Open Original by Default',
+      'Download Videos Automatically',
       'Visit Website',
       'Delete',
     ]);
@@ -908,6 +909,55 @@ test.describe('Aaron RSS', () => {
 
     const isEnabled = await component.evaluate((el) => el.feeds[0].openOriginalByDefault);
     expect(isEnabled).toBe(true);
+  });
+
+  test('feed kebab menu has a Download Videos Automatically checkbox', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-1',
+          url: 'https://example.com/feed.xml',
+          name: 'Example Feed',
+          homePageURL: 'https://example.com',
+          articles: [],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    await page.locator('.rss-kebab-button').click();
+
+    const menu = page.locator('.rss-kebab-menu');
+    await expect(menu).toBeVisible();
+
+    const checkboxItem = menu.locator('.rss-menu-item-checkbox', {
+      hasText: 'Download Videos Automatically',
+    });
+    await expect(checkboxItem).toBeVisible();
+
+    const checkbox = checkboxItem.locator('input[type="checkbox"]');
+    await expect(checkbox).not.toBeChecked();
+
+    await checkboxItem.click();
+    await expect(checkbox).toBeChecked();
+
+    const isEnabled = await component.evaluate((el) => el.feeds[0].autoDownloadYouTube);
+    expect(isEnabled).toBe(true);
+
+    // Unchecking clears the preference again.
+    await page.locator('.rss-kebab-button').click();
+    const reopenedItem = page
+      .locator('.rss-kebab-menu')
+      .locator('.rss-menu-item-checkbox', { hasText: 'Download Videos Automatically' });
+    await reopenedItem.click();
+    await expect(reopenedItem.locator('input[type="checkbox"]')).not.toBeChecked();
+    const isDisabled = await component.evaluate((el) => el.feeds[0].autoDownloadYouTube);
+    expect(isDisabled).toBe(false);
   });
 
   test('clicking an article opens original website when feed setting is enabled', async ({ page }) => {

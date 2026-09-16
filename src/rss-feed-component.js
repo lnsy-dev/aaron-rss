@@ -5801,6 +5801,37 @@ class RSSFeedComponent extends DataroomElement {
 
         link.appendChild(image);
         wrapper.appendChild(link);
+      } else if (item.type === 'video' && item.fullsize) {
+        // Mastodon video/gifv attachment played inline. GIFV files are
+        // muted looping clips, so they autoplay like the web player does.
+        const video = document.createElement('video');
+        video.className = 'rss-social-video';
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = item.fullsize;
+        if (item.thumb) {
+          video.poster = item.thumb;
+        }
+        if (item.gifv) {
+          video.muted = true;
+          video.loop = true;
+          video.autoplay = true;
+          video.playsInline = true;
+        }
+        if (item.alt) {
+          video.setAttribute('aria-label', item.alt);
+        }
+        wrapper.appendChild(video);
+      } else if (item.type === 'audio' && item.fullsize) {
+        const audio = document.createElement('audio');
+        audio.className = 'rss-social-audio';
+        audio.controls = true;
+        audio.preload = 'none';
+        audio.src = item.fullsize;
+        if (item.alt) {
+          audio.setAttribute('aria-label', item.alt);
+        }
+        wrapper.appendChild(audio);
       } else if (item.type === 'external' && item.uri) {
         // External website preview card. Clicks open the site in the
         // user's default browser instead of navigating the app window.

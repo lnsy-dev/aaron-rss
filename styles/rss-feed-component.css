@@ -1155,6 +1155,21 @@ body command-panel dialog {
   object-fit: cover;
 }
 
+/* Mastodon video/gifv and audio attachments played inline. */
+.rss-social-media video {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  border: 1px solid var(--quaternary-color);
+  background: #000;
+}
+
+.rss-social-media audio {
+  width: 100%;
+  display: block;
+}
+
 /* External website link card (Bluesky embed external previews). */
 .rss-social-link-card {
   display: flex;

@@ -69,7 +69,10 @@ const PRODUCTION_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
-  "media-src 'self' media:",
+  // Mastodon (and other fediverse) media attachments stream straight
+  // from their instance CDNs over https, alongside locally downloaded
+  // videos served over media:.
+  "media-src 'self' media: https:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
@@ -98,7 +101,10 @@ const DEVELOPMENT_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
-  "media-src 'self' media:",
+  // Mastodon (and other fediverse) media attachments stream straight
+  // from their instance CDNs over https, alongside locally downloaded
+  // videos served over media:.
+  "media-src 'self' media: https:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   `connect-src 'self' ${devServerOrigin} ${devServerWsScheme}://${devServerHost}`,

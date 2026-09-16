@@ -684,6 +684,17 @@ body command-panel dialog {
   margin: 0.25rem 0 1rem;
 }
 
+/* Links inside modal help text (e.g. the FFmpeg install instructions). */
+.rss-modal-help a {
+  color: var(--notification-color);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.rss-modal-help a:hover {
+  color: var(--foreground-color);
+}
+
 .rss-modal-buttons {
   display: flex;
   justify-content: flex-end;

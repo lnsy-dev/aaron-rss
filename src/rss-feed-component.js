@@ -52,6 +52,7 @@ import {
   clearResearchTopicArticles,
 } from './lib/feed-manager.js';
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
+import { FFMPEG_INSTALL_URL } from './lib/ffmpeg-notice.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
 import {
   isFileSystemAccessSupported,
@@ -167,6 +168,10 @@ class RSSFeedComponent extends DataroomElement {
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
+    // Shown at most once per session: the FFmpeg install dialog appears
+    // the first time a download runs without FFmpeg (see
+    // _maybeShowFFmpegInstallNotice).
+    this._ffmpegInstallNoticeShown = false;
     this._articleViewerOverlay = null;
     // Cached {feed, article} pairs for the Videos view (see renderVideosView).
     this._videosEntries = null;
@@ -2781,6 +2786,7 @@ class RSSFeedComponent extends DataroomElement {
       const result = await downloadYouTubeVideoFromURL(url);
       if (result.error) {
         toast.fail(`Download failed: ${result.error}`);
+        this._maybeShowFFmpegInstallNotice(result);
         return;
       }
 
@@ -2788,6 +2794,7 @@ class RSSFeedComponent extends DataroomElement {
       // the file is instead of reporting a lost download.
       if (result.warning) {
         toast.fail(`Video ${result.warning}`);
+        this._maybeShowFFmpegInstallNotice(result);
         return;
       }
 
@@ -2796,6 +2803,7 @@ class RSSFeedComponent extends DataroomElement {
       } else {
         toast.complete('Video saved ✓');
       }
+      this._maybeShowFFmpegInstallNotice(result);
 
       // The new download lives in the Videos view; refresh the ready
       // badge (and the list itself when the Videos view is open).
@@ -5215,6 +5223,60 @@ class RSSFeedComponent extends DataroomElement {
    * @param {HTMLElement} [buttonElement] - The clicked button, if any
    * @returns {Promise<void>}
    */
+  /**
+   * Show the FFmpeg install dialog for a download that ran without it.
+   *
+   * The Electron main process marks download results with
+   * `ffmpegMissing` when no FFmpeg was found on the machine and the
+   * automatic static-build download failed. The dialog directs the user
+   * to the official install instructions; it appears at most once per
+   * session so a stalled download or several attempts cannot nag.
+   *
+   * @param {object} result - The download result; checked for `ffmpegMissing`.
+   * @returns {void}
+   */
+  _maybeShowFFmpegInstallNotice(result) {
+    if (!result?.ffmpegMissing || this._ffmpegInstallNoticeShown) {
+      return;
+    }
+    this._ffmpegInstallNoticeShown = true;
+
+    const modal = this.createModal('Install FFmpeg to download videos');
+
+    const message = document.createElement('p');
+    message.className = 'rss-modal-help';
+    message.textContent =
+      'FFmpeg was not found on this computer and could not be set up ' +
+      'automatically. Video downloads use FFmpeg to merge the video and ' +
+      'audio streams — without it, downloads can fail or save ' +
+      'lower-quality video. Please install FFmpeg, then try the download ' +
+      'again.';
+    modal.body.appendChild(message);
+
+    const linkParagraph = document.createElement('p');
+    linkParagraph.className = 'rss-modal-help';
+    const link = document.createElement('a');
+    link.href = FFMPEG_INSTALL_URL;
+    link.textContent = FFMPEG_INSTALL_URL;
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.openExternalURL(FFMPEG_INSTALL_URL);
+    });
+    linkParagraph.appendChild(link);
+    modal.body.appendChild(linkParagraph);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'rss-modal-buttons';
+    const openButton = document.createElement('button');
+    openButton.textContent = 'Open Install Instructions';
+    openButton.addEventListener('click', () => {
+      this.openExternalURL(FFMPEG_INSTALL_URL);
+      this.closeModal();
+    });
+    buttonContainer.appendChild(openButton);
+    modal.body.appendChild(buttonContainer);
+  }
+
   async _downloadYouTubeVideo(article, feed, buttonElement) {
     const button = buttonElement || null;
     if (button) {
@@ -5230,6 +5292,7 @@ class RSSFeedComponent extends DataroomElement {
       const result = await downloadArticleYouTubeVideo(feed, article);
       if (result.error) {
         toast.fail(`Download failed: ${result.error}`);
+        this._maybeShowFFmpegInstallNotice(result);
         if (button) {
           button.disabled = false;
           button.textContent = 'Download Video';
@@ -5238,6 +5301,7 @@ class RSSFeedComponent extends DataroomElement {
       }
 
       toast.complete('Video saved ✓');
+      this._maybeShowFFmpegInstallNotice(result);
       if (button) {
         button.disabled = false;
         button.textContent = 'Downloaded ✓';

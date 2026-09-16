@@ -16,6 +16,7 @@ import fsConstants from 'node:fs';
 import fs from 'node:fs/promises';
 import zlib from 'node:zlib';
 import { isYouTubeStream } from '../src/lib/youtube.js';
+import { annotateFFmpegMissing } from '../src/lib/ffmpeg-notice.js';
 import YTDlpWrapImport from 'yt-dlp-wrap-plus';
 
 /**
@@ -1228,6 +1229,11 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
     return { error: 'Live streams are not downloaded' };
   }
 
+  // True when this download ran without FFmpeg because none was found
+  // and the automatic static-build download previously failed. The
+  // renderer shows its "install FFmpeg" dialog for these results.
+  let ffmpegUnavailable = false;
+
   try {
     reportDownloadProgress(onProgress, { stage: 'starting', percent: null });
 
@@ -1241,6 +1247,10 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
 
     const outputTemplate = path.join(getDownloadDirectory(), '%(id)s.%(ext)s');
     const [runtimeArgs, ffmpegPath] = await Promise.all([getJsRuntimeArgs(), findFFmpeg()]);
+    // findFFmpeg() returns null only when FFmpeg is absent from the
+    // machine AND provisioning failed (see the ffmpegPathCache = ''
+    // branch), so this pairs the flag with exactly that situation.
+    ffmpegUnavailable = !ffmpegPath && ffmpegProvisionFailed;
     const args = [...runtimeArgs, ...authArgs];
     if (ffmpegPath) {
       // GUI apps have a minimal PATH, so hand yt-dlp ffmpeg explicitly.
@@ -1282,23 +1292,35 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
     const info = await fetchVideoInfo(ytDlpWrap, url, authArgs);
     const videoID = info?.id;
     if (!videoID) {
-      return { error: 'Could not determine downloaded video ID' };
+      return annotateFFmpegMissing(
+        { error: 'Could not determine downloaded video ID' },
+        ffmpegUnavailable
+      );
     }
 
     const filePath = await findDownloadedFile(videoID);
     if (!filePath) {
-      return { error: 'Download completed but file was not found' };
+      return annotateFFmpegMissing(
+        { error: 'Download completed but file was not found' },
+        ffmpegUnavailable
+      );
     }
 
     // The metadata lookup already ran for the video ID, so its title rides
     // along for free; callers recording the download in the video library
     // use it as the display name.
-    return { filePath, videoID, title: info?.title || null };
+    return annotateFFmpegMissing(
+      { filePath, videoID, title: info?.title || null },
+      ffmpegUnavailable
+    );
   } catch (error) {
     if (isBotCheckError(error)) {
-      return { error: BOT_CHECK_ERROR_MESSAGE };
+      return annotateFFmpegMissing({ error: BOT_CHECK_ERROR_MESSAGE }, ffmpegUnavailable);
     }
-    return { error: error.message || String(error) };
+    return annotateFFmpegMissing(
+      { error: error.message || String(error) },
+      ffmpegUnavailable
+    );
   }
 }
 

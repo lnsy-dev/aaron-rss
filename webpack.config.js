@@ -236,8 +236,10 @@ export default {
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
           "img-src 'self' https: http: data:",
           // Downloaded videos are served to <video> elements over the
-          // app's media:// protocol (see electron/media-protocol.js).
-          "media-src 'self' media:",
+          // app's media:// protocol (see electron/media-protocol.js);
+          // Mastodon/fediverse media streams from instance CDNs over
+          // https.
+          "media-src 'self' media: https:",
           "frame-src https: http:",
           "worker-src 'self' blob:",
           `connect-src 'self' ws://localhost:${port} http://localhost:${port}`,

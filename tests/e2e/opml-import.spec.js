@@ -137,4 +137,44 @@ test.describe('OPML import progress', () => {
     });
     await expect(manageBody.locator('.rss-manage-feed-info h3', { hasText: 'Second Feed' })).toHaveCount(0);
   });
+
+  test('restores the openOriginalByDefault preference from the OPML', async ({ page }) => {
+    // Replace the shared picker stub with one serving an OPML that marks
+    // only the first feed with the app's open-original preference.
+    const flaggedOPML = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+<head><title>Subscriptions</title></head>
+<body>
+<outline text="First Feed" title="First Feed" type="rss" xmlUrl="${FEED_URLS[0]}" openOriginalByDefault="true"/>
+<outline text="Second Feed" title="Second Feed" type="rss" xmlUrl="${FEED_URLS[1]}"/>
+</body>
+</opml>`;
+    await page.evaluate((opml) => {
+      window.showOpenFilePicker = async () => [
+        {
+          getFile: async () => ({
+            name: 'flagged.opml',
+            text: async () => opml,
+          }),
+        },
+      ];
+    }, flaggedOPML);
+
+    const component = page.locator('rss-feed-component');
+    await component.evaluate((el) => {
+      void el.handleImportOPML();
+    });
+
+    // this.feeds is only populated by the post-import DB reload, so once
+    // both feeds are listed their persisted preferences are readable.
+    await expect
+      .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 30000 })
+      .toBe(2);
+
+    const flags = await component.evaluate((el) =>
+      Object.fromEntries(el.feeds.map((feed) => [feed.url, feed.openOriginalByDefault]))
+    );
+    expect(flags[FEED_URLS[0]]).toBe(true);
+    expect(flags[FEED_URLS[1]]).toBeFalsy();
+  });
 });

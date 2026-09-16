@@ -368,6 +368,11 @@ export async function refreshFeed(feedID, maxArticles = 50) {
     // content as soon as it lands.
     await scrapeNewArticleMarkdown(feedID, existingFeed, updatedFeed);
 
+    // Feeds with "Download Videos Automatically" fetch the videos of
+    // newly arrived articles in the background; the pre-refresh backlog
+    // is never downloaded (see autoDownloadNewYouTubeVideos).
+    autoDownloadNewYouTubeVideos(existingFeed, updatedFeed);
+
     return updatedFeed;
   } catch (error) {
     console.error('Failed to refresh feed:', error);
@@ -429,6 +434,62 @@ export async function scrapeNewArticleMarkdown(feedID, existingFeed, updatedFeed
 }
 
 /**
+ * Auto-download the YouTube videos of newly arrived articles.
+ *
+ * Runs after a refresh has persisted its merge, for feeds whose
+ * "Download Videos Automatically" preference is enabled. Only articles
+ * that were not in the pre-refresh feed are downloaded — the feed's
+ * existing backlog is never fetched, so checking the box starts with a
+ * clean slate and only videos arriving afterwards land on disk.
+ *
+ * Downloads run sequentially in the background so a refresh never
+ * stalls on yt-dlp; per-video failures are logged, never thrown. The
+ * returned promise is for tests and other callers that want to wait —
+ * the refresh pipeline deliberately does not.
+ *
+ * @param {object|null} existingFeed - Pre-refresh feed (slim articles, carries the preference)
+ * @param {object|null} updatedFeed - Merged post-refresh feed
+ * @returns {Promise<void>} Resolves when the queued downloads finish.
+ */
+export function autoDownloadNewYouTubeVideos(existingFeed, updatedFeed) {
+  if (!existingFeed?.autoDownloadYouTube || !updatedFeed?.feedID) {
+    return Promise.resolve();
+  }
+
+  const existingIDs = new Set(
+    (existingFeed.articles || []).map((article) => article.articleID)
+  );
+  const newVideos = (updatedFeed.articles || []).filter(
+    (article) =>
+      !existingIDs.has(article.articleID) &&
+      article.url &&
+      isYouTubeURL(article.url) &&
+      !isYouTubeStream(article.url)
+  );
+  if (newVideos.length === 0) {
+    return Promise.resolve();
+  }
+
+  const feed = updatedFeed;
+  return (async () => {
+    for (const article of newVideos) {
+      try {
+        const result = await downloadArticleYouTubeVideo(feed, article);
+        if (result.error) {
+          console.error(
+            `Failed to auto-download video for article ${article.articleID}:`,
+            result.error
+          );
+        }
+      } catch (error) {
+        // One failed download must not block the rest of the batch.
+        console.error(`Failed to auto-download video for article ${article.articleID}:`, error);
+      }
+    }
+  })();
+}
+
+/**
  * Clear every article of a research topic's member feeds while keeping
  * the scrape memory.
  *
@@ -473,7 +534,8 @@ export async function clearResearchTopicArticles(topicID) {
  * Manually download the YouTube video attached to an article.
  *
  * Downloads only run when the user explicitly clicks the article's
- * Download button; nothing is fetched automatically during refreshes.
+ * Download button (feeds with the auto-download preference instead use
+ * autoDownloadNewYouTubeVideos during refreshes).
  * On success the article's download_path is persisted so the file can be
  * deleted later and the UI can show its downloaded state.
  *

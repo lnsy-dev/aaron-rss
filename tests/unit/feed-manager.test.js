@@ -376,14 +376,15 @@ describe('feed manager', () => {
     expect(saveArticles).not.toHaveBeenCalled();
   });
 
-  it('refreshFeed no longer auto-downloads YouTube videos even when a feed was previously opted in', async () => {
+  it('refreshFeed never downloads the pre-existing backlog even when auto-download is on', async () => {
     const feeds = [
       {
         feedID: 'feed-yt',
         url: 'https://example.com/feed',
         name: 'YouTube Feed',
         synthetic: false,
-        // Legacy setting may still be stored; it must not trigger downloads.
+        // The feed opted into auto-download, but art1 predates the
+        // opt-in: only articles arriving in later refreshes are fetched.
         autoDownloadYouTube: true,
         articles: [
           {
@@ -403,6 +404,86 @@ describe('feed manager', () => {
 
     const { refreshFeed } = await importFeedManager();
     await refreshFeed('feed-yt', 50);
+
+    expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+  });
+
+  it('refreshFeed auto-downloads newly arrived YouTube videos for opted-in feeds', async () => {
+    const YT_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    const feeds = [
+      {
+        feedID: 'feed-yt',
+        url: 'https://example.com/feed',
+        name: 'YouTube Feed',
+        synthetic: false,
+        autoDownloadYouTube: true,
+        articles: [
+          {
+            articleID: 'old',
+            uniqueID: 'u1',
+            url: 'https://example.com/old-post',
+            read: false,
+            starred: false,
+          },
+        ],
+      },
+    ];
+
+    loadAllFeeds.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
+    fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
+
+    // The refresh brings one new YouTube article alongside the backlog.
+    const newArticle = {
+      articleID: 'fresh',
+      uniqueID: 'u2',
+      url: YT_URL,
+      read: false,
+      starred: false,
+    };
+    refreshFeedInWorker.mockResolvedValueOnce({
+      ...feeds[0],
+      lastFetchWasSuccessful: true,
+      lastFetchEndTime: new Date(),
+      articles: [...feeds[0].articles, newArticle],
+    });
+
+    const { refreshFeed } = await importFeedManager();
+    await refreshFeed('feed-yt', 50);
+    // Let the background download queue spin up.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(downloadYouTubeVideo).toHaveBeenCalledTimes(1);
+    expect(downloadYouTubeVideo).toHaveBeenCalledWith(YT_URL);
+  });
+
+  it('refreshFeed does not auto-download newly arrived videos for feeds without the preference', async () => {
+    const YT_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    const feeds = [
+      {
+        feedID: 'feed-yt',
+        url: 'https://example.com/feed',
+        name: 'YouTube Feed',
+        synthetic: false,
+        autoDownloadYouTube: false,
+        articles: [],
+      },
+    ];
+
+    loadAllFeeds.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
+    fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
+
+    refreshFeedInWorker.mockResolvedValueOnce({
+      ...feeds[0],
+      lastFetchWasSuccessful: true,
+      lastFetchEndTime: new Date(),
+      articles: [{ articleID: 'fresh', uniqueID: 'u2', url: YT_URL, read: false, starred: false }],
+    });
+
+    const { refreshFeed } = await importFeedManager();
+    await refreshFeed('feed-yt', 50);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(downloadYouTubeVideo).not.toHaveBeenCalled();
   });
@@ -1331,5 +1412,94 @@ describe('downloadYouTubeVideoFromURL resilience', () => {
     expect(result.filePath).toBe('/downloads/Aaron-RSS-YouTube/abc12345678.mp4');
     expect(result.warning).toContain('abc12345678.mp4');
     expect(result.warning).toContain('could not be added to the Videos list');
+  });
+
+  describe('autoDownloadNewYouTubeVideos', () => {
+    const YT_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+    const feedWith = (articles, autoDownloadYouTube) => ({
+      feedID: 'feed-auto',
+      articles,
+      autoDownloadYouTube,
+    });
+
+    it('does nothing when the feed lacks the auto-download preference', async () => {
+      const { autoDownloadNewYouTubeVideos } = await importFeedManager();
+
+      const existing = feedWith([{ articleID: 'old' }], false);
+      const updated = feedWith(
+        [{ articleID: 'old' }, { articleID: 'new', url: YT_URL }],
+        false
+      );
+
+      await autoDownloadNewYouTubeVideos(existing, updated);
+
+      expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+    });
+
+    it('downloads only articles that arrived after the pre-refresh feed', async () => {
+      const { autoDownloadNewYouTubeVideos } = await importFeedManager();
+
+      // The backlog (old-1/old-2) was present when the box was checked:
+      // it must never be downloaded, whatever the feed contains now.
+      const existing = feedWith(
+        [{ articleID: 'old-1' }, { articleID: 'old-2' }],
+        true
+      );
+      const updated = feedWith(
+        [
+          { articleID: 'old-1', url: YT_URL },
+          { articleID: 'old-2', url: YT_URL },
+          { articleID: 'new-1', url: YT_URL },
+          { articleID: 'new-2', url: YT_URL },
+        ],
+        true
+      );
+
+      await autoDownloadNewYouTubeVideos(existing, updated);
+
+      expect(downloadYouTubeVideo).toHaveBeenCalledTimes(2);
+      expect(downloadYouTubeVideo).toHaveBeenNthCalledWith(1, YT_URL);
+      expect(downloadYouTubeVideo).toHaveBeenNthCalledWith(2, YT_URL);
+    });
+
+    it('skips articles that are not downloadable YouTube videos', async () => {
+      const { autoDownloadNewYouTubeVideos } = await importFeedManager();
+
+      const existing = feedWith([], true);
+      const updated = feedWith(
+        [
+          { articleID: 'post', url: 'https://example.com/blog/post' },
+          { articleID: 'live', url: 'https://www.youtube.com/live/abc12345678' },
+          { articleID: 'no-url' },
+        ],
+        true
+      );
+
+      await autoDownloadNewYouTubeVideos(existing, updated);
+
+      expect(downloadYouTubeVideo).not.toHaveBeenCalled();
+    });
+
+    it('keeps downloading the remaining videos after one fails', async () => {
+      const { autoDownloadNewYouTubeVideos } = await importFeedManager();
+
+      downloadYouTubeVideo
+        .mockResolvedValueOnce({ error: 'Requested format is not available' })
+        .mockResolvedValueOnce({ filePath: '/downloads/Aaron-RSS-YouTube/video.mp4' });
+
+      const existing = feedWith([], true);
+      const updated = feedWith(
+        [
+          { articleID: 'fails', url: YT_URL },
+          { articleID: 'works', url: YT_URL },
+        ],
+        true
+      );
+
+      await autoDownloadNewYouTubeVideos(existing, updated);
+
+      expect(downloadYouTubeVideo).toHaveBeenCalledTimes(2);
+    });
   });
 });

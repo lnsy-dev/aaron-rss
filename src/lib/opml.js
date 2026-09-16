@@ -7,7 +7,7 @@
  *
  * Exported helpers:
  *   - exportOPML(feeds, title) -> XML string
- *   - parseOPML(text)          -> Array<{name, url, homePageURL}>
+ *   - parseOPML(text)          -> Array<{name, url, homePageURL, openOriginalByDefault}>
  */
 
 import { decodeHTMLEntities } from './html-utils.js';
@@ -86,11 +86,31 @@ export function exportOPML(feeds, title = 'Subscriptions') {
       attrs.push(`htmlUrl="${escapeXML(feed.homePageURL)}"`);
     }
 
+    // App-specific preference kept alongside the subscription so an
+    // export/import round-trip preserves it (only written when set,
+    // keeping exports clean for other readers).
+    if (feed.openOriginalByDefault) {
+      attrs.push('openOriginalByDefault="true"');
+    }
+
     lines.push(`    <outline ${attrs.join(' ')}/>`);
   }
 
   lines.push('  </body>', '</opml>');
   return lines.join('\n');
+}
+
+/**
+ * Interpret an outline's openOriginalByDefault attribute value.
+ *
+ * @param {string|undefined} value - Raw attribute value (case folded by parseAttributes).
+ * @returns {boolean|undefined} True/false when the attribute is present, undefined when absent.
+ */
+function isOpenOriginalByDefaultFlag(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  return value === 'true' || value === '1';
 }
 
 /**
@@ -100,8 +120,11 @@ export function exportOPML(feeds, title = 'Subscriptions') {
  * Prefers the text attribute for the subscription name, falling back to
  * title, name, or the feed URL itself.
  *
+ * The app-specific openOriginalByDefault attribute (written by
+ * exportOPML) round-trips so imports restore the preference.
+ *
  * @param {string} text - OPML XML
- * @returns {Array<{name: string, url: string, homePageURL?: string}>}
+ * @returns {Array<{name: string, url: string, homePageURL?: string, openOriginalByDefault?: boolean}>}
  */
 export function parseOPML(text) {
   if (!text) {
@@ -125,6 +148,7 @@ export function parseOPML(text) {
       name: decodeHTMLEntities(rawName).trim() || url,
       url: decodeHTMLEntities(url).trim(),
       homePageURL: attrs.htmlurl ? decodeHTMLEntities(attrs.htmlurl).trim() : undefined,
+      openOriginalByDefault: isOpenOriginalByDefaultFlag(attrs.openoriginalbydefault),
     });
   }
 

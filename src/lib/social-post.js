@@ -472,12 +472,36 @@ async function fetchMastodonPost(url) {
     depth: 0,
   }));
 
-  const media = (statusData.media_attachments || []).map((attachment) => ({
-    type: attachment.type === 'image' ? 'image' : 'external',
-    thumb: attachment.preview_url,
-    fullsize: attachment.url,
-    alt: attachment.description || '',
-  }));
+  // Mastodon attachment types: image, video, gifv (a muted looping
+  // video file), audio. Videos used to be mapped to external link
+  // cards (which the renderer then dropped, lacking a uri), so posts
+  // showed no video at all — they now map to a playable video item.
+  const media = (statusData.media_attachments || []).map((attachment) => {
+    const alt = attachment.description || '';
+    if (attachment.type === 'video' || attachment.type === 'gifv') {
+      return {
+        type: 'video',
+        gifv: attachment.type === 'gifv',
+        thumb: attachment.preview_url,
+        fullsize: attachment.url,
+        alt,
+      };
+    }
+    if (attachment.type === 'audio') {
+      return {
+        type: 'audio',
+        thumb: attachment.preview_url,
+        fullsize: attachment.url,
+        alt,
+      };
+    }
+    return {
+      type: attachment.type === 'image' ? 'image' : 'external',
+      thumb: attachment.preview_url,
+      fullsize: attachment.url,
+      alt,
+    };
+  });
 
   return {
     platform: 'mastodon',

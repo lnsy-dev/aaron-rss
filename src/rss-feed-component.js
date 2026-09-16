@@ -16,6 +16,7 @@ import {
   loadSettings,
   saveSettings,
   updateFeedOpenOriginalByDefault,
+  updateFeedAutoDownloadYouTube,
   loadArticleContent,
   countUnseenDownloadedVideos,
   markDownloadedVideoSeen,
@@ -52,6 +53,7 @@ import {
   clearResearchTopicArticles,
 } from './lib/feed-manager.js';
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
+import { FFMPEG_INSTALL_URL } from './lib/ffmpeg-notice.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
 import {
   isFileSystemAccessSupported,
@@ -91,6 +93,17 @@ import {
   buildImageAcceptTypes,
 } from './lib/image-utils.js';
 import { fetchBytes } from './lib/rss-network.js';
+import {
+  WINDOWED_RENDER_DEFAULTS,
+  MAX_CHUNKS_PER_TICK,
+  ESTIMATED_ITEM_HEIGHT_PX,
+  rollingAverage,
+  appendCount,
+  trimStartCount,
+  trimEndCount,
+  buildGroupedRenderPlan,
+  findItemIndex,
+} from './lib/windowed-list.js';
 import DOMPurify from 'dompurify';
 
 const DEFAULT_SETTINGS = {
@@ -156,6 +169,15 @@ class RSSFeedComponent extends DataroomElement {
     this.feeds = [];
     this.isRefreshing = false;
     this.activeModal = null;
+    // Distraction Free Mode: hides the app chrome (header, footer, and
+    // article action buttons) and, inside an open article viewer,
+    // everything except the reading body. Toggled by the command-panel
+    // command; keyboard controls keep working.
+    this.distractionFree = false;
+    // Shown at most once per session: the FFmpeg install dialog appears
+    // the first time a download runs without FFmpeg (see
+    // _maybeShowFFmpegInstallNotice).
+    this._ffmpegInstallNoticeShown = false;
     this._articleViewerOverlay = null;
     // Cached {feed, article} pairs for the Videos view (see renderVideosView).
     this._videosEntries = null;
@@ -176,6 +198,16 @@ class RSSFeedComponent extends DataroomElement {
     this._selectedArticle = null;
     this._lastViewedArticle = null;
     this._nextArticleAfterViewed = null;
+    // Windowed rendering state (see src/lib/windowed-list.js). The flat
+    // session drives the timeline/topic views; the grouped session tracks
+    // which feeds have rendered article rows in the grouped feeds view.
+    this._flatWindow = null;
+    this._groupedRender = null;
+    this._windowedScrollTicking = false;
+    // True while a grouped view render is assigning details.open; the
+    // toggle events those assignments queue must not be mistaken for
+    // user-initiated feed expansions.
+    this._suppressToggleRender = false;
 
     this.classList.add('rss-feed-component');
 
@@ -238,6 +270,15 @@ class RSSFeedComponent extends DataroomElement {
     // hundreds of per-article listeners that leak data across refreshes.
     this._contentClickHandler = (e) => this._handleContentClick(e);
     this.contentArea.addEventListener('click', this._contentClickHandler);
+
+    // Windowed rendering: grow/trim the rendered article window as the
+    // page scrolls, and lazily render a collapsed feed's rows when the
+    // user expands it. The toggle event does not bubble, so the listener
+    // runs in the capture phase to see every feed's details element.
+    this._windowedScrollHandler = () => this._handleWindowedScroll();
+    window.addEventListener('scroll', this._windowedScrollHandler, { passive: true });
+    this._detailsToggleHandler = (event) => this._handleDetailsToggle(event);
+    this.contentArea.addEventListener('toggle', this._detailsToggleHandler, true);
 
     this._setupImageContextMenu();
 
@@ -652,22 +693,26 @@ class RSSFeedComponent extends DataroomElement {
       empty.className = 'rss-no-articles';
       empty.textContent = 'No articles in this topic yet';
       container.appendChild(empty);
-    } else {
-      for (const { feed, article } of this._topicEntries) {
+    }
+
+    this.contentArea.innerHTML = '';
+    this.contentArea.appendChild(container);
+
+    if (rows.length > 0) {
+      // Windowed render (same as the Timeline view): only the first slice
+      // of topic articles becomes DOM rows.
+      this._beginFlatWindow(container, this._topicEntries, (item) => {
         // The wrapper carries the member feed's data-feed-id so the
         // delegated click handler and article actions resolve the real
         // feed for read/star updates and the article viewer.
         const entry = document.createElement('div');
         entry.className = 'rss-timeline-item';
-        entry.setAttribute('data-feed-id', feed.feedID);
+        entry.setAttribute('data-feed-id', item.feed.feedID);
 
-        this.renderArticle(entry, article, feed, { showFeedName: true });
-        container.appendChild(entry);
-      }
+        this.renderArticle(entry, item.article, item.feed, { showFeedName: true });
+        return entry;
+      });
     }
-
-    this.contentArea.innerHTML = '';
-    this.contentArea.appendChild(container);
 
     this._restoreSelection();
     this._ensureFirstArticleSelected();
@@ -754,6 +799,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Export OPML', action: () => this.handleExportOPML() },
       { name: 'Import OPML', action: () => this.handleImportOPML() },
       { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
+      { name: 'Toggle Distraction Free Mode', action: () => this.toggleDistractionFreeMode() },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
@@ -762,6 +808,38 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     this.appendChild(this.commandPanel);
+  }
+
+  /**
+   * Flip Distraction Free Mode on or off.
+   *
+   * @returns {void}
+   */
+  toggleDistractionFreeMode() {
+    this.setDistractionFreeMode(!this.distractionFree);
+  }
+
+  /**
+   * Turn Distraction Free Mode on or off.
+   *
+   * The mode hides the app chrome — header with the hamburger menu,
+   * footer, and article action buttons — and, while an article viewer
+   * is open, everything except the reading body (see the
+   * body.distraction-free CSS rules). Keyboard controls and the command
+   * panel (Ctrl+Shift+P) keep working; a toast confirms the state since
+   * the chrome that would show it is hidden.
+   *
+   * @param {boolean} enabled
+   * @returns {void}
+   */
+  setDistractionFreeMode(enabled) {
+    this.distractionFree = Boolean(enabled);
+    document.body.classList.toggle('distraction-free', this.distractionFree);
+    this.showToast(
+      this.distractionFree
+        ? 'Distraction Free Mode on — Ctrl+Shift+P for commands'
+        : 'Distraction Free Mode off'
+    );
   }
 
   /**
@@ -1214,6 +1292,14 @@ class RSSFeedComponent extends DataroomElement {
       this._videosEntries = null;
     }
 
+    // Windowed-render sessions are rebuilt per view render; drop the
+    // stale ones so scroll/toggle handlers never touch removed DOM. The
+    // grouped session's rendered-feed set is kept aside first so the next
+    // grouped render can prioritize feeds the user is already reading.
+    this._flatWindow = null;
+    const previousGroupedRender = this._groupedRender;
+    this._groupedRender = null;
+
     // Cancel any pending animation-frame render so direct renders always
     // win and never get overwritten by a stale scheduled render.
     this._cancelScheduledRender();
@@ -1238,6 +1324,28 @@ class RSSFeedComponent extends DataroomElement {
 
     // Remember which feeds the user has collapsed so incremental refreshes
     // do not force every feed back open.
+    this._suppressToggleRender = true;
+    try {
+      this._renderGroupedFeeds(previousGroupedRender);
+    } finally {
+      // Assignments to details.open inside the render queue toggle events
+      // that fire before this timeout task; they must not trigger the
+      // on-demand renderer (see _handleDetailsToggle) — the render plan
+      // alone decides which rows exist up front.
+      setTimeout(() => {
+        this._suppressToggleRender = false;
+      }, 0);
+    }
+  }
+
+  /**
+   * Render the grouped feeds view: capture open state, plan the windowed
+   * render, and build one block per feed.
+   *
+   * @param {object|null} previousGroupedRender - The previous render's grouped session, if any.
+   * @returns {void}
+   */
+  _renderGroupedFeeds(previousGroupedRender) {
     const openState = new Map();
     for (const details of this.contentArea.querySelectorAll('.rss-feed-details')) {
       const feedDiv = details.closest('.rss-feed');
@@ -1251,6 +1359,37 @@ class RSSFeedComponent extends DataroomElement {
     if (this.feeds.length === 0) {
       this.contentArea.appendChild(this._createEmptyStateElement());
       return;
+    }
+
+    // Plan the grouped view's windowed render: which feeds render article
+    // rows up front and which stay deferred until opened or scrolled in.
+    const config = this._windowedConfig();
+    const cappedCounts = new Map(
+      this.feeds.map((feed) => [
+        feed.feedID,
+        Math.min(
+          feed.articles.filter((article) => !article.read).length,
+          this.settings.maxArticlesPerFeed
+        ),
+      ])
+    );
+    this._groupedRender = buildGroupedRenderPlan({
+      feeds: this.feeds.map((feed) => ({
+        feedID: feed.feedID,
+        articleCount: cappedCounts.get(feed.feedID),
+      })),
+      budget: config.groupedArticleBudget,
+      perFeedChunk: config.groupedPerFeedChunk,
+      openState,
+      previouslyRendered: previousGroupedRender?.renderedFeedIDs ?? new Set(),
+    });
+    this._groupedRender.feedSessions = new Map();
+    for (const feed of this.feeds) {
+      this._groupedRender.feedSessions.set(feed.feedID, {
+        feedID: feed.feedID,
+        availableCount: cappedCounts.get(feed.feedID),
+        renderedCount: this._groupedRender.renderCounts.get(feed.feedID) ?? 0,
+      });
     }
 
     for (const feed of this.feeds) {
@@ -1334,20 +1473,24 @@ class RSSFeedComponent extends DataroomElement {
       empty.className = 'rss-no-articles';
       empty.textContent = 'No unread articles';
       container.appendChild(empty);
-    } else {
-      for (const { feed, article } of items) {
+    }
+
+    this.contentArea.appendChild(container);
+
+    if (items.length > 0) {
+      // Windowed render: only the first slice of items becomes DOM rows;
+      // scrolling extends (and trims) the window.
+      this._beginFlatWindow(container, items, (item) => {
         // The wrapper carries data-feed-id so selection, click delegation,
         // and article actions keep working exactly as in the feeds view.
         const entry = document.createElement('div');
         entry.className = 'rss-timeline-item';
-        entry.setAttribute('data-feed-id', feed.feedID);
+        entry.setAttribute('data-feed-id', item.feed.feedID);
 
-        this.renderArticle(entry, article, feed, { showFeedName: true });
-        container.appendChild(entry);
-      }
+        this.renderArticle(entry, item.article, item.feed, { showFeedName: true });
+        return entry;
+      });
     }
-
-    this.contentArea.appendChild(container);
 
     this._restoreSelection();
     this._ensureFirstArticleSelected();
@@ -1520,6 +1663,615 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Tuning values for the windowed renderers.
+   *
+   * @returns {typeof WINDOWED_RENDER_DEFAULTS}
+   */
+  _windowedConfig() {
+    return WINDOWED_RENDER_DEFAULTS;
+  }
+
+  /**
+   * Handle a page scroll for the windowed renderers.
+   *
+   * Work is coalesced to one run per animation frame so a burst of
+   * scroll events cannot pile up render passes.
+   *
+   * @returns {void}
+   */
+  _handleWindowedScroll() {
+    if (this._windowedScrollTicking) {
+      return;
+    }
+    this._windowedScrollTicking = true;
+    requestAnimationFrame(() => {
+      this._windowedScrollTicking = false;
+      this._processWindowedScroll();
+    });
+  }
+
+  /**
+   * Extend and trim the rendered windows based on the current scroll
+   * position: append chunks while the end of the rendered content is
+   * within the edge distance of the viewport, drop rows that scrolled
+   * far out of view, and extend partially rendered feeds in the grouped
+   * view.
+   *
+   * @returns {void}
+   */
+  _processWindowedScroll() {
+    const config = this._windowedConfig();
+    let domChanged = false;
+
+    const flat = this._flatWindow;
+    if (flat) {
+      const scroller = document.scrollingElement || document.documentElement;
+      const distanceToEnd = () =>
+        scroller.scrollHeight - scroller.scrollTop - window.innerHeight;
+
+      // Extend near the bottom, bounded per tick to keep scrolling smooth.
+      let chunks = 0;
+      while (
+        flat.end < flat.items.length &&
+        distanceToEnd() < config.edgeDistancePx &&
+        chunks < MAX_CHUNKS_PER_TICK
+      ) {
+        if (this._flatAppendItems(config.flatChunkCount) === 0) {
+          break;
+        }
+        chunks += 1;
+        domChanged = true;
+      }
+
+      if (this._flatTrimEdges()) {
+        domChanged = true;
+      }
+    }
+
+    if (this._groupedRender && this._extendGroupedFeedsNearViewport(config)) {
+      domChanged = true;
+    }
+
+    if (domChanged) {
+      this._refreshFindAfterWindowChange();
+    }
+  }
+
+  /**
+   * Begin a windowed render session over a flat list view (timeline or
+   * research topic): add the top spacer, render the first slice of
+   * items, and keep the session on the component so scrolling extends
+   * and trims the window.
+   *
+   * When the current selection already points beyond the initial window,
+   * the window is centered on that item instead so a re-render (for
+   * example after marking an article read) keeps the reading position.
+   *
+   * @param {HTMLElement} container - The list container; rows are appended after existing children.
+   * @param {Array<{feed: object, article: object}>} items - Full item list.
+   * @param {function(object): HTMLElement} makeWrapper - Builds the wrapper element for one item.
+   * @returns {void}
+   */
+  _beginFlatWindow(container, items, makeWrapper) {
+    const config = this._windowedConfig();
+
+    const topSpacer = document.createElement('div');
+    topSpacer.className = 'rss-window-spacer';
+    container.appendChild(topSpacer);
+
+    this._flatWindow = {
+      items,
+      container,
+      makeWrapper,
+      topSpacer,
+      topSpacerHeight: 0,
+      wrappers: [],
+      start: 0,
+      end: 0,
+      avgItemHeight: ESTIMATED_ITEM_HEIGHT_PX,
+    };
+
+    const selected = this._selectedArticle;
+    if (selected) {
+      const index = findItemIndex(items, selected.feedID, selected.articleID);
+      if (index >= config.flatInitialCount) {
+        this._flatResetWindow(index);
+        return;
+      }
+    }
+
+    this._flatAppendItems(Math.min(config.flatInitialCount, items.length));
+  }
+
+  /**
+   * Append the next chunk of flat items at the end of the window.
+   *
+   * @param {number} count - Requested items; clamped to what remains.
+   * @returns {number} Items actually rendered.
+   */
+  _flatAppendItems(count) {
+    const flat = this._flatWindow;
+    if (!flat) {
+      return 0;
+    }
+    const added = appendCount({ end: flat.end, total: flat.items.length }, count);
+    if (added === 0) {
+      return 0;
+    }
+
+    const heightBefore = flat.container.offsetHeight;
+    for (let i = flat.end; i < flat.end + added; i++) {
+      const wrapper = flat.makeWrapper(flat.items[i]);
+      flat.container.appendChild(wrapper);
+      flat.wrappers.push(wrapper);
+    }
+    const delta = flat.container.offsetHeight - heightBefore;
+    if (delta > 0) {
+      flat.avgItemHeight = rollingAverage(flat.avgItemHeight, delta / added);
+    }
+    flat.end += added;
+    return added;
+  }
+
+  /**
+   * Prepend a chunk of flat items above the window, growing the top
+   * spacer by their measured height so the visible content does not
+   * shift. Everything runs synchronously, so the browser only paints the
+   * final layout.
+   *
+   * @param {number} count - Requested items; clamped to what is available.
+   * @returns {number} Items actually rendered.
+   */
+  _flatPrependItems(count) {
+    const flat = this._flatWindow;
+    if (!flat) {
+      return 0;
+    }
+    const added = Math.min(count, flat.start);
+    if (added === 0) {
+      return 0;
+    }
+
+    const created = [];
+    for (let i = flat.start - added; i < flat.start; i++) {
+      created.push(flat.makeWrapper(flat.items[i]));
+    }
+
+    const heightBefore = flat.container.offsetHeight;
+    // Insert each row before the current first row, keeping their order.
+    const anchor = flat.wrappers[0] || null;
+    for (const wrapper of created) {
+      flat.container.insertBefore(wrapper, anchor);
+    }
+    flat.wrappers.unshift(...created);
+
+    const delta = flat.container.offsetHeight - heightBefore;
+    flat.start -= added;
+    if (delta > 0) {
+      // The spacer absorbs the inserted height so the document keeps its
+      // total height and the viewport stays put.
+      flat.topSpacerHeight += delta;
+      flat.avgItemHeight = rollingAverage(flat.avgItemHeight, delta / added);
+      this._syncFlatTopSpacer();
+    }
+    return added;
+  }
+
+  /**
+   * Drop rendered rows that sit far outside the viewport. Rows above the
+   * viewport transfer their height into the top spacer so the page does
+   * not shift; rows below the viewport are simply removed, since nothing
+   * above them depends on their height.
+   *
+   * @returns {boolean} Whether any rows were removed.
+   */
+  _flatTrimEdges() {
+    const flat = this._flatWindow;
+    if (!flat) {
+      return false;
+    }
+    const config = this._windowedConfig();
+    if (flat.wrappers.length <= config.flatKeepRendered) {
+      return false;
+    }
+
+    // Batch all the reads before the writes to avoid layout thrash.
+    const rects = flat.wrappers.map((wrapper) => wrapper.getBoundingClientRect());
+    const trimDistancePx = window.innerHeight * config.trimViewportFactor;
+    const cutStart = trimStartCount(rects, config.flatKeepRendered, trimDistancePx);
+    const cutEnd = trimEndCount(rects, config.flatKeepRendered, trimDistancePx);
+    let changed = false;
+
+    if (cutStart > 0) {
+      const heightBefore = flat.container.offsetHeight;
+      const removed = flat.wrappers.splice(0, cutStart);
+      for (const wrapper of removed) {
+        wrapper.remove();
+      }
+      flat.start += cutStart;
+      const delta = heightBefore - flat.container.offsetHeight;
+      if (delta > 0) {
+        flat.topSpacerHeight += delta;
+        this._syncFlatTopSpacer();
+      }
+      changed = true;
+    }
+
+    if (cutEnd > 0) {
+      const removed = flat.wrappers.splice(flat.wrappers.length - cutEnd, cutEnd);
+      for (const wrapper of removed) {
+        wrapper.remove();
+      }
+      flat.end -= cutEnd;
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  /**
+   * Rewrite the flat window around a target item index: drop everything
+   * currently rendered and render a window centered on the target. Used
+   * for programmatic jumps to items outside the current window. The top
+   * spacer uses the measured average row height, so the jump lands close
+   * to the target; callers scroll the target row into view afterwards.
+   *
+   * @param {number} centerIndex - Item index to center the window on.
+   * @returns {void}
+   */
+  _flatResetWindow(centerIndex) {
+    const flat = this._flatWindow;
+    if (!flat) {
+      return;
+    }
+    const config = this._windowedConfig();
+
+    for (const wrapper of flat.wrappers) {
+      wrapper.remove();
+    }
+    flat.wrappers = [];
+
+    const half = Math.ceil(config.flatInitialCount / 2);
+    const maxStart = Math.max(0, flat.items.length - config.flatInitialCount);
+    const start = Math.max(0, Math.min(centerIndex - half, maxStart));
+
+    flat.topSpacerHeight = Math.round(start * flat.avgItemHeight);
+    this._syncFlatTopSpacer();
+    flat.start = start;
+    flat.end = start;
+    this._flatAppendItems(
+      Math.min(config.flatInitialCount, flat.items.length - start)
+    );
+  }
+
+  /**
+   * Write the flat session's top spacer height to the DOM.
+   *
+   * @returns {void}
+   */
+  _syncFlatTopSpacer() {
+    const flat = this._flatWindow;
+    if (flat) {
+      flat.topSpacer.style.height = `${flat.topSpacerHeight}px`;
+    }
+  }
+
+  /**
+   * Re-run the find bar against the mutated rendered window so its
+   * highlights, rail markers, and counter stay consistent with the DOM.
+   *
+   * @returns {void}
+   */
+  _refreshFindAfterWindowChange() {
+    if (this._findBar?.classList.contains('rss-find-bar--visible')) {
+      this._runFind({ selectFirst: false });
+    }
+  }
+
+  /**
+   * Handle a feed's details element being expanded in the grouped view:
+   * render the feed's first rows if they were deferred.
+   *
+   * @param {Event} event
+   * @returns {void}
+   */
+  _handleDetailsToggle(event) {
+    const details = event.target;
+    if (!(details instanceof HTMLDetailsElement) || !details.open) {
+      return;
+    }
+    if (this._suppressToggleRender || !this._groupedRender) {
+      return;
+    }
+    const feedDiv = details.closest('.rss-feed');
+    const feedID = feedDiv?.getAttribute('data-feed-id');
+    const session = feedID
+      ? this._groupedRender.feedSessions.get(feedID)
+      : null;
+    if (!session || session.renderedCount >= session.availableCount) {
+      return;
+    }
+    const config = this._windowedConfig();
+    if (this._renderFeedRowsInto(session, config.groupedPerFeedChunk) > 0) {
+      this._refreshFindAfterWindowChange();
+    }
+  }
+
+  /**
+   * Look up a feed's details element in the grouped view.
+   *
+   * @param {string} feedID
+   * @returns {HTMLDetailsElement|null}
+   */
+  _groupedDetails(feedID) {
+    return this.querySelector(
+      `.rss-feed[data-feed-id="${CSS.escape(feedID)}"] .rss-feed-details`
+    );
+  }
+
+  /**
+   * Render more rows for a grouped-view feed session into that feed's
+   * article container.
+   *
+   * @param {object} session - The feed's {feedID, availableCount, renderedCount} session entry.
+   * @param {number} count - Requested rows.
+   * @returns {number} Rows actually rendered.
+   */
+  _renderFeedRowsInto(session, count) {
+    const feed = this.feeds.find((f) => f.feedID === session.feedID);
+    if (!feed) {
+      return 0;
+    }
+    const details = this._groupedDetails(session.feedID);
+    const container = details?.querySelector('.rss-articles-container');
+    if (!container) {
+      return 0;
+    }
+    const articles = feed.articles
+      .filter((article) => !article.read)
+      .slice(0, this.settings.maxArticlesPerFeed);
+    const from = session.renderedCount;
+    const to = Math.min(
+      session.availableCount,
+      articles.length,
+      from + Math.max(0, count)
+    );
+    for (let i = from; i < to; i++) {
+      this.renderArticle(container, articles[i], feed);
+    }
+    session.renderedCount = to;
+    if (to > from) {
+      this._groupedRender.renderedFeedIDs.add(session.feedID);
+    }
+    return to - from;
+  }
+
+  /**
+   * Extend partially rendered feeds in the grouped view whose last row
+   * is near the viewport, bounded per tick.
+   *
+   * @param {object} config - Windowed render config.
+   * @returns {boolean} Whether any feed gained rows.
+   */
+  _extendGroupedFeedsNearViewport(config) {
+    let budget = MAX_CHUNKS_PER_TICK;
+    let changed = false;
+    for (const block of this.contentArea.querySelectorAll('.rss-feed')) {
+      if (budget <= 0) {
+        break;
+      }
+      const feedID = block.getAttribute('data-feed-id');
+      const session = this._groupedRender?.feedSessions.get(feedID);
+      if (
+        !session ||
+        session.renderedCount === 0 ||
+        session.renderedCount >= session.availableCount
+      ) {
+        continue;
+      }
+      const details = block.querySelector('.rss-feed-details');
+      if (!details?.open) {
+        continue;
+      }
+      const container = details.querySelector('.rss-articles-container');
+      if (!container) {
+        continue;
+      }
+      const rect = container.getBoundingClientRect();
+      if (rect.bottom > window.innerHeight + config.edgeDistancePx) {
+        continue;
+      }
+      if (this._renderFeedRowsInto(session, config.groupedPerFeedChunk) > 0) {
+        changed = true;
+        budget -= 1;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Make the next/previous article exist in the DOM before keyboard
+   * navigation steps onto it. Flat views append/prepend a chunk; the
+   * grouped view extends the feed at the rendered edge or reveals the
+   * adjacent deferred feed.
+   *
+   * @param {'next'|'prev'} direction
+   * @returns {boolean} Whether the DOM changed (article lists should be re-queried).
+   */
+  _windowedEnsureNavRoom(direction) {
+    const config = this._windowedConfig();
+    const flat = this._flatWindow;
+    let changed = false;
+    if (flat) {
+      changed =
+        direction === 'next'
+          ? this._flatAppendItems(config.flatChunkCount) > 0
+          : this._flatPrependItems(config.flatChunkCount) > 0;
+    } else if (this._groupedRender) {
+      changed = this._ensureGroupedNavRoom(direction, config);
+    }
+    if (changed) {
+      this._refreshFindAfterWindowChange();
+    }
+    return changed;
+  }
+
+  /**
+   * Grouped-view companion to _windowedEnsureNavRoom: extend the feed
+   * at the rendered edge, or open and render the adjacent deferred feed
+   * so navigation can move into it.
+   *
+   * @param {'next'|'prev'} direction
+   * @param {object} config - Windowed render config.
+   * @returns {boolean} Whether the DOM changed.
+   */
+  _ensureGroupedNavRoom(direction, config) {
+    const articles = this._getVisibleArticles();
+    if (articles.length === 0) {
+      return false;
+    }
+    const edge =
+      direction === 'next'
+        ? articles[articles.length - 1]
+        : articles[0];
+
+    // Room within the edge article's own feed comes first.
+    const session = this._groupedRender.feedSessions.get(edge.feedID);
+    if (
+      session &&
+      session.renderedCount > 0 &&
+      session.renderedCount < session.availableCount
+    ) {
+      if (this._renderFeedRowsInto(session, config.groupedPerFeedChunk) > 0) {
+        return true;
+      }
+    }
+
+    // Otherwise reveal the adjacent feed that has no rows yet.
+    const order = this.feeds.map((feed) => feed.feedID);
+    const currentIdx = order.indexOf(edge.feedID);
+    const step = direction === 'next' ? 1 : -1;
+    for (let i = currentIdx + step; i >= 0 && i < order.length; i += step) {
+      const candidate = this._groupedRender.feedSessions.get(order[i]);
+      if (
+        !candidate ||
+        candidate.availableCount === 0 ||
+        candidate.renderedCount > 0
+      ) {
+        continue;
+      }
+      const details = this._groupedDetails(order[i]);
+      if (!details) {
+        continue;
+      }
+      details.open = true;
+      if (this._renderFeedRowsInto(candidate, config.groupedPerFeedChunk) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Make sure an article row exists in the DOM in a windowed view. Used
+   * when restoring a selection that points outside the current window.
+   *
+   * @param {string} feedID
+   * @param {string} articleID
+   * @returns {boolean} Whether the article is rendered now.
+   */
+  _windowedEnsureArticleRendered(feedID, articleID) {
+    const config = this._windowedConfig();
+    const flat = this._flatWindow;
+    if (flat) {
+      const index = findItemIndex(flat.items, feedID, articleID);
+      if (index < 0) {
+        return false;
+      }
+      if (index < flat.start || index >= flat.end) {
+        this._flatResetWindow(index);
+        this._refreshFindAfterWindowChange();
+      }
+      return true;
+    }
+
+    if (this._groupedRender) {
+      const session = this._groupedRender.feedSessions.get(feedID);
+      if (!session || session.availableCount === 0) {
+        return false;
+      }
+      if (session.renderedCount > 0) {
+        // Rows render top-down per feed, so any rendered feed that
+        // contains the article already has it in the DOM.
+        return true;
+      }
+      const feed = this.feeds.find((f) => f.feedID === feedID);
+      const articles = feed
+        ? feed.articles
+            .filter((article) => !article.read)
+            .slice(0, this.settings.maxArticlesPerFeed)
+        : [];
+      const articleIndex = articles.findIndex((a) => a.articleID === articleID);
+      if (articleIndex < 0) {
+        return false;
+      }
+      const details = this._groupedDetails(feedID);
+      if (!details) {
+        return false;
+      }
+      if (!details.open) {
+        details.open = true;
+      }
+      while (session.renderedCount <= articleIndex) {
+        const before = session.renderedCount;
+        this._renderFeedRowsInto(session, config.groupedPerFeedChunk);
+        if (session.renderedCount === before) {
+          return false;
+        }
+      }
+      this._refreshFindAfterWindowChange();
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Make sure a grouped feed's first rows exist, opening its details
+   * element. Used by feed-level keyboard navigation when it lands on a
+   * feed whose rows are still deferred.
+   *
+   * @param {string} feedID
+   * @returns {boolean} Whether rows were rendered (or already existed).
+   */
+  _windowedEnsureFeedRendered(feedID) {
+    if (!this._groupedRender || !feedID) {
+      return false;
+    }
+    const session = this._groupedRender.feedSessions.get(feedID);
+    if (!session || session.availableCount === 0) {
+      return false;
+    }
+    if (session.renderedCount > 0) {
+      return true;
+    }
+    const details = this._groupedDetails(feedID);
+    if (!details) {
+      return false;
+    }
+    details.open = true;
+    const changed =
+      this._renderFeedRowsInto(
+        session,
+        this._windowedConfig().groupedPerFeedChunk
+      ) > 0;
+    if (changed) {
+      this._refreshFindAfterWindowChange();
+    }
+    return changed;
+  }
+
+  /**
    * Render a single feed block.
    *
    * @param {HTMLElement} container
@@ -1579,14 +2331,27 @@ class RSSFeedComponent extends DataroomElement {
       .filter((article) => !article.read)
       .slice(0, this.settings.maxArticlesPerFeed);
 
+    // Windowed render: the grouped plan decides how many of this feed's
+    // rows exist up front. Deferred feeds collapse until the user opens
+    // them (or keyboard navigation does), at which point their rows are
+    // rendered on demand (see _handleDetailsToggle).
+    let renderCount = articles.length;
+    if (this._groupedRender) {
+      const session = this._groupedRender.feedSessions.get(feed.feedID);
+      renderCount = session ? session.renderedCount : 0;
+      if (renderCount === 0 && articles.length > 0) {
+        details.open = false;
+      }
+    }
+
     if (articles.length === 0) {
       const emptyArticles = document.createElement('div');
       emptyArticles.className = 'rss-no-articles';
       emptyArticles.textContent = 'No unread articles';
       articlesContainer.appendChild(emptyArticles);
     } else {
-      for (const article of articles) {
-        this.renderArticle(articlesContainer, article, feed);
+      for (let i = 0; i < renderCount; i++) {
+        this.renderArticle(articlesContainer, articles[i], feed);
       }
     }
 
@@ -1857,6 +2622,38 @@ class RSSFeedComponent extends DataroomElement {
       menu.appendChild(openOriginalItem);
     }
 
+    if (feed) {
+      const autoDownloadItem = document.createElement('div');
+      autoDownloadItem.className = 'rss-menu-item rss-menu-item-checkbox';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = Boolean(feed.autoDownloadYouTube);
+      checkbox.tabIndex = -1;
+
+      const label = document.createElement('span');
+      label.textContent = 'Download Videos Automatically';
+
+      autoDownloadItem.appendChild(checkbox);
+      autoDownloadItem.appendChild(label);
+      autoDownloadItem.addEventListener('click', async () => {
+        const newValue = !checkbox.checked;
+        try {
+          await this.setFeedAutoDownloadYouTube(feedID, newValue);
+          checkbox.checked = newValue;
+          if (newValue) {
+            // Only future videos are fetched; the feed's existing
+            // articles are never downloaded retroactively.
+            this.showToast('New videos will download automatically');
+          }
+        } catch (error) {
+          console.error('Failed to update feed setting:', error);
+          this.showToast('Failed to update feed setting', 'error');
+        }
+      });
+      menu.appendChild(autoDownloadItem);
+    }
+
     if (feed && feed.homePageURL) {
       const menuItem = document.createElement('div');
       menuItem.className = 'rss-menu-item';
@@ -2060,6 +2857,7 @@ class RSSFeedComponent extends DataroomElement {
       const result = await downloadYouTubeVideoFromURL(url);
       if (result.error) {
         toast.fail(`Download failed: ${result.error}`);
+        this._maybeShowFFmpegInstallNotice(result);
         return;
       }
 
@@ -2067,6 +2865,7 @@ class RSSFeedComponent extends DataroomElement {
       // the file is instead of reporting a lost download.
       if (result.warning) {
         toast.fail(`Video ${result.warning}`);
+        this._maybeShowFFmpegInstallNotice(result);
         return;
       }
 
@@ -2075,6 +2874,7 @@ class RSSFeedComponent extends DataroomElement {
       } else {
         toast.complete('Video saved ✓');
       }
+      this._maybeShowFFmpegInstallNotice(result);
 
       // The new download lives in the Videos view; refresh the ready
       // badge (and the list itself when the Videos view is open).
@@ -3654,6 +4454,26 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Set whether a feed automatically downloads the videos of newly
+   * arrived articles.
+   *
+   * Only future videos are fetched: existing articles are never
+   * downloaded retroactively, so enabling the preference does not fill
+   * the disk with the feed's backlog (see autoDownloadNewYouTubeVideos).
+   *
+   * @param {string} feedID
+   * @param {boolean} value
+   * @returns {Promise<void>}
+   */
+  async setFeedAutoDownloadYouTube(feedID, value) {
+    await updateFeedAutoDownloadYouTube(feedID, value);
+    const feed = this.feeds.find((f) => f.feedID === feedID);
+    if (feed) {
+      feed.autoDownloadYouTube = value;
+    }
+  }
+
+  /**
    * Mark an article as unread.
    *
    * @param {string} feedID
@@ -4494,7 +5314,81 @@ class RSSFeedComponent extends DataroomElement {
    * @param {HTMLElement} [buttonElement] - The clicked button, if any
    * @returns {Promise<void>}
    */
+  /**
+   * Show the FFmpeg install dialog for a download that ran without it.
+   *
+   * The Electron main process marks download results with
+   * `ffmpegMissing` when no FFmpeg was found on the machine and the
+   * automatic static-build download failed. The dialog directs the user
+   * to the official install instructions; it appears at most once per
+   * session so a stalled download or several attempts cannot nag.
+   *
+   * @param {object} result - The download result; checked for `ffmpegMissing`.
+   * @returns {void}
+   */
+  _maybeShowFFmpegInstallNotice(result) {
+    if (!result?.ffmpegMissing || this._ffmpegInstallNoticeShown) {
+      return;
+    }
+    this._ffmpegInstallNoticeShown = true;
+
+    const modal = this.createModal('Install FFmpeg to download videos');
+
+    const message = document.createElement('p');
+    message.className = 'rss-modal-help';
+    message.textContent =
+      'FFmpeg was not found on this computer and could not be set up ' +
+      'automatically. Video downloads use FFmpeg to merge the video and ' +
+      'audio streams — without it, downloads can fail or save ' +
+      'lower-quality video. Please install FFmpeg, then try the download ' +
+      'again.';
+    modal.body.appendChild(message);
+
+    const linkParagraph = document.createElement('p');
+    linkParagraph.className = 'rss-modal-help';
+    const link = document.createElement('a');
+    link.href = FFMPEG_INSTALL_URL;
+    link.textContent = FFMPEG_INSTALL_URL;
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.openExternalURL(FFMPEG_INSTALL_URL);
+    });
+    linkParagraph.appendChild(link);
+    modal.body.appendChild(linkParagraph);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'rss-modal-buttons';
+    const openButton = document.createElement('button');
+    openButton.textContent = 'Open Install Instructions';
+    openButton.addEventListener('click', () => {
+      this.openExternalURL(FFMPEG_INSTALL_URL);
+      this.closeModal();
+    });
+    buttonContainer.appendChild(openButton);
+    modal.body.appendChild(buttonContainer);
+  }
+
+  /**
+   * Download a YouTube video on explicit user request.
+   *
+   * Clicking "Download Video" is the user dealing with the item, so the
+   * article is marked read immediately — whatever the download's outcome
+   * (failures are reported by toast, and the article stays available in
+   * the feed's read archive). The download itself runs through
+   * feed-manager so the saved path is persisted.
+   *
+   * @param {object} article
+   * @param {object} feed
+   * @param {HTMLElement} [buttonElement] - The clicked button, if any
+   * @returns {Promise<void>}
+   */
   async _downloadYouTubeVideo(article, feed, buttonElement) {
+    // The user has handled this item: it leaves the unread list right
+    // away rather than only after a successful download.
+    if (feed?.feedID && article?.articleID && article.read !== true) {
+      this.markAsRead(feed.feedID, article.articleID);
+    }
+
     const button = buttonElement || null;
     if (button) {
       button.disabled = true;
@@ -4509,6 +5403,7 @@ class RSSFeedComponent extends DataroomElement {
       const result = await downloadArticleYouTubeVideo(feed, article);
       if (result.error) {
         toast.fail(`Download failed: ${result.error}`);
+        this._maybeShowFFmpegInstallNotice(result);
         if (button) {
           button.disabled = false;
           button.textContent = 'Download Video';
@@ -4517,15 +5412,15 @@ class RSSFeedComponent extends DataroomElement {
       }
 
       toast.complete('Video saved ✓');
+      this._maybeShowFFmpegInstallNotice(result);
       if (button) {
         button.disabled = false;
         button.textContent = 'Downloaded ✓';
       }
 
-      // Downloaded videos live in the Videos view, not the main feed:
-      // mark the article read so it leaves the unread list. The ready
-      // badge on the footer Videos button points the user there.
-      await this.markAsRead(feed.feedID, article.articleID);
+      // The article was marked read when the download started (the
+      // Videos view is where downloaded items live). The ready badge on
+      // the footer Videos button points the user there.
       await this._refreshVideosReadyBadge();
       // If the article viewer is currently open on this article, play
       // the fresh download inline (this also marks the video seen).
@@ -4944,6 +5839,37 @@ class RSSFeedComponent extends DataroomElement {
 
         link.appendChild(image);
         wrapper.appendChild(link);
+      } else if (item.type === 'video' && item.fullsize) {
+        // Mastodon video/gifv attachment played inline. GIFV files are
+        // muted looping clips, so they autoplay like the web player does.
+        const video = document.createElement('video');
+        video.className = 'rss-social-video';
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = item.fullsize;
+        if (item.thumb) {
+          video.poster = item.thumb;
+        }
+        if (item.gifv) {
+          video.muted = true;
+          video.loop = true;
+          video.autoplay = true;
+          video.playsInline = true;
+        }
+        if (item.alt) {
+          video.setAttribute('aria-label', item.alt);
+        }
+        wrapper.appendChild(video);
+      } else if (item.type === 'audio' && item.fullsize) {
+        const audio = document.createElement('audio');
+        audio.className = 'rss-social-audio';
+        audio.controls = true;
+        audio.preload = 'none';
+        audio.src = item.fullsize;
+        if (item.alt) {
+          audio.setAttribute('aria-label', item.alt);
+        }
+        wrapper.appendChild(audio);
       } else if (item.type === 'external' && item.uri) {
         // External website preview card. Clicks open the site in the
         // user's default browser instead of navigating the app window.
@@ -5514,6 +6440,14 @@ class RSSFeedComponent extends DataroomElement {
           const feed = await addFeed(subscription.url, subscription.name);
           if (feed) {
             added++;
+            // Restore the per-feed preference carried in the OPML.
+            if (subscription.openOriginalByDefault !== undefined) {
+              await updateFeedOpenOriginalByDefault(
+                feed.feedID,
+                subscription.openOriginalByDefault
+              );
+              feed.openOriginalByDefault = subscription.openOriginalByDefault;
+            }
           }
         }
       } catch (importError) {
@@ -6387,6 +7321,10 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Re-apply the selected class after a fresh render.
    *
+   * In windowed views the selected row may live outside the rendered
+   * window; it is materialized first (re-centering the window) and then
+   * scrolled minimally into view.
+   *
    * @returns {void}
    */
   _restoreSelection() {
@@ -6394,9 +7332,12 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
     const { feedID, articleID } = this._selectedArticle;
-    const article = this.querySelector(
-      `[data-feed-id="${CSS.escape(feedID)}"] .rss-article[data-article-id="${CSS.escape(articleID)}"]`
-    );
+    const selector = `[data-feed-id="${CSS.escape(feedID)}"] .rss-article[data-article-id="${CSS.escape(articleID)}"]`;
+    let article = this.querySelector(selector);
+    if (!article && this._windowedEnsureArticleRendered(feedID, articleID)) {
+      article = this.querySelector(selector);
+      article?.scrollIntoView({ block: 'nearest' });
+    }
     if (article) {
       article.classList.add('rss-article-selected');
     } else {
@@ -6461,10 +7402,13 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Select the next visible article.
    *
+   * In windowed views, stepping past the last rendered row first extends
+   * the window so navigation can continue into unrendered items.
+   *
    * @returns {void}
    */
   _selectNextArticle() {
-    const articles = this._getVisibleArticles();
+    let articles = this._getVisibleArticles();
     if (articles.length === 0) {
       this._selectedArticle = null;
       return;
@@ -6482,6 +7426,25 @@ class RSSFeedComponent extends DataroomElement {
       }
     }
 
+    if (
+      index >= articles.length - 1 &&
+      this._windowedEnsureNavRoom('next')
+    ) {
+      articles = this._getVisibleArticles();
+      if (articles.length === 0) {
+        this._selectedArticle = null;
+        return;
+      }
+      index = articles.findIndex(
+        (a) =>
+          a.feedID === this._selectedArticle?.feedID &&
+          a.articleID === this._selectedArticle?.articleID
+      );
+      if (index < 0) {
+        index = articles.length - 1;
+      }
+    }
+
     const nextIndex = Math.min(index + 1, articles.length - 1);
     const { feedID, articleID } = articles[nextIndex];
     this._selectArticle(feedID, articleID);
@@ -6490,10 +7453,13 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Select the previous visible article.
    *
+   * In windowed views, stepping above the first rendered row first
+   * prepends a chunk so navigation can continue into unrendered items.
+   *
    * @returns {void}
    */
   _selectPreviousArticle() {
-    const articles = this._getVisibleArticles();
+    let articles = this._getVisibleArticles();
     if (articles.length === 0) {
       this._selectedArticle = null;
       return;
@@ -6509,6 +7475,15 @@ class RSSFeedComponent extends DataroomElement {
       if (found >= 0) {
         index = found;
       }
+    }
+
+    if (index === 0 && this._selectedArticle && this._windowedEnsureNavRoom('prev')) {
+      const first = articles[0];
+      articles = this._getVisibleArticles();
+      const found = articles.findIndex(
+        (a) => a.feedID === first.feedID && a.articleID === first.articleID
+      );
+      index = found >= 0 ? found : 0;
     }
 
     const prevIndex = Math.max(index - 1, 0);
@@ -6537,7 +7512,12 @@ class RSSFeedComponent extends DataroomElement {
     for (let i = startIndex + 1; i < feeds.length; i++) {
       const feed = feeds[i];
       const details = feed.querySelector('.rss-feed-details');
-      const firstArticle = feed.querySelector('.rss-article');
+      let firstArticle = feed.querySelector('.rss-article');
+      if (!firstArticle) {
+        // Windowed grouped view: the feed's rows may still be deferred.
+        this._windowedEnsureFeedRendered(feed.getAttribute('data-feed-id'));
+        firstArticle = feed.querySelector('.rss-article');
+      }
       if (firstArticle) {
         if (details) {
           details.open = true;
@@ -6571,7 +7551,12 @@ class RSSFeedComponent extends DataroomElement {
     for (let i = startIndex - 1; i >= 0; i--) {
       const feed = feeds[i];
       const details = feed.querySelector('.rss-feed-details');
-      const firstArticle = feed.querySelector('.rss-article');
+      let firstArticle = feed.querySelector('.rss-article');
+      if (!firstArticle) {
+        // Windowed grouped view: the feed's rows may still be deferred.
+        this._windowedEnsureFeedRendered(feed.getAttribute('data-feed-id'));
+        firstArticle = feed.querySelector('.rss-article');
+      }
       if (firstArticle) {
         if (details) {
           details.open = true;
@@ -6609,20 +7594,31 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Return the article that follows the given article in the visible list.
    *
+   * In windowed views, when the given article is the last rendered row,
+   * the window is extended first so the survivor can be found.
+   *
    * @param {string} feedID
    * @param {string} articleID
    * @returns {{feedID: string, articleID: string}|null}
    */
   _findNextVisibleArticle(feedID, articleID) {
-    const articles = this._getVisibleArticles();
-    const index = articles.findIndex(
-      (a) => a.feedID === feedID && a.articleID === articleID
-    );
-    if (index >= 0 && index < articles.length - 1) {
-      const next = articles[index + 1];
-      return { feedID: next.feedID, articleID: next.articleID };
+    const find = () => {
+      const articles = this._getVisibleArticles();
+      const index = articles.findIndex(
+        (a) => a.feedID === feedID && a.articleID === articleID
+      );
+      if (index >= 0 && index < articles.length - 1) {
+        const next = articles[index + 1];
+        return { feedID: next.feedID, articleID: next.articleID };
+      }
+      return null;
+    };
+
+    let result = find();
+    if (!result && this._windowedEnsureNavRoom('next')) {
+      result = find();
     }
-    return null;
+    return result;
   }
 
   /**

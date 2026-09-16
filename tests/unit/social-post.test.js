@@ -426,6 +426,102 @@ describe('social-post', () => {
       expect(post.comments[0].author).toBe('Replyer');
       expect(post.comments[0].text).toBe('<p>Reply one</p>');
     });
+
+    it('maps video attachments to playable video items', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('/api/v1/statuses/456/context')) {
+          return { ok: true, status: 200, text: JSON.stringify({ descendants: [] }) };
+        }
+        if (url.includes('/api/v1/statuses/456')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              content: '<p>Watch this</p>',
+              account: { display_name: 'Alice', acct: 'alice@example.com' },
+              media_attachments: [
+                {
+                  type: 'video',
+                  url: 'https://files.example.com/video.mp4',
+                  preview_url: 'https://files.example.com/video-thumb.jpg',
+                  description: 'A clip',
+                },
+              ],
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://example.com/@alice/456');
+
+      // Videos must map to a video item the viewer can play inline, not
+      // to an external card it would drop for lacking a uri.
+      expect(post.media).toEqual([
+        {
+          type: 'video',
+          gifv: false,
+          thumb: 'https://files.example.com/video-thumb.jpg',
+          fullsize: 'https://files.example.com/video.mp4',
+          alt: 'A clip',
+        },
+      ]);
+    });
+
+    it('flags gifv attachments as looping videos', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('/api/v1/statuses/789/context')) {
+          return { ok: true, status: 200, text: JSON.stringify({ descendants: [] }) };
+        }
+        if (url.includes('/api/v1/statuses/789')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              content: '<p>Loop</p>',
+              account: { acct: 'alice@example.com' },
+              media_attachments: [
+                { type: 'gifv', url: 'https://files.example.com/clip.mp4', preview_url: null },
+              ],
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://example.com/@alice/789');
+
+      expect(post.media[0].type).toBe('video');
+      expect(post.media[0].gifv).toBe(true);
+      expect(post.media[0].fullsize).toBe('https://files.example.com/clip.mp4');
+    });
+
+    it('maps audio attachments to audio items', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('/api/v1/statuses/321/context')) {
+          return { ok: true, status: 200, text: JSON.stringify({ descendants: [] }) };
+        }
+        if (url.includes('/api/v1/statuses/321')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              content: '<p>Listen</p>',
+              account: { acct: 'alice@example.com' },
+              media_attachments: [
+                { type: 'audio', url: 'https://files.example.com/voice.mp3', preview_url: null },
+              ],
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://example.com/@alice/321');
+
+      expect(post.media[0].type).toBe('audio');
+      expect(post.media[0].fullsize).toBe('https://files.example.com/voice.mp3');
+    });
   });
 
   describe('enrichBlueskyFeedItems', () => {

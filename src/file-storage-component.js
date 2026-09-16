@@ -19,6 +19,7 @@
 
 import DataroomElement from 'dataroom-js';
 import { loadAllFeeds, addFeed } from './lib/feed-manager.js';
+import { updateFeedOpenOriginalByDefault } from './lib/database.js';
 import { exportOPML, parseOPML } from './lib/opml.js';
 import {
   isFileSystemAccessSupported,
@@ -116,6 +117,14 @@ class FileStorageComponent extends DataroomElement {
         const feed = await addFeed(subscription.url, subscription.name);
         if (feed) {
           added++;
+          // Restore the per-feed preference carried in the OPML.
+          if (subscription.openOriginalByDefault !== undefined) {
+            await updateFeedOpenOriginalByDefault(
+              feed.feedID,
+              subscription.openOriginalByDefault
+            );
+            feed.openOriginalByDefault = subscription.openOriginalByDefault;
+          }
         }
       }
 

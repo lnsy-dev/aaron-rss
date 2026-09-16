@@ -44,6 +44,7 @@ import {
 } from './podcast-download.js';
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 import { installProcessErrorGuards } from './error-guards.js';
+import { windowChromeOptions, usesApplicationMenu } from './window-chrome.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -68,7 +69,10 @@ const PRODUCTION_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
-  "media-src 'self' media:",
+  // Mastodon (and other fediverse) media attachments stream straight
+  // from their instance CDNs over https, alongside locally downloaded
+  // videos served over media:.
+  "media-src 'self' media: https:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
@@ -97,7 +101,10 @@ const DEVELOPMENT_CSP = [
   "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' https://www.youtube.com https://s.ytimg.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' https: http: data:",
-  "media-src 'self' media:",
+  // Mastodon (and other fediverse) media attachments stream straight
+  // from their instance CDNs over https, alongside locally downloaded
+  // videos served over media:.
+  "media-src 'self' media: https:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   `connect-src 'self' ${devServerOrigin} ${devServerWsScheme}://${devServerHost}`,
@@ -301,12 +308,16 @@ function sendToMainWindow(channel) {
 }
 
 /**
- * Build and install the application menu.
+ * Build and install the application menu (macOS only).
  *
  * Keeps the standard role-based menus (File/Edit/Window/Help) and adds
  * a "Reopen Window" item to the View menu so there is always a way to
  * get the main window back after closing it. The Help menu gains the
  * "Quick Keys" reference dialog, also reachable with Cmd+?/Ctrl+?.
+ *
+ * Linux and Windows run without an application menu (see
+ * window-chrome.js); the shortcuts their users still need are
+ * registered on the window's before-input-event in createWindow().
  */
 function createAppMenu() {
   const template = [
@@ -366,9 +377,11 @@ async function createWindow() {
     // body background color defined in styles/variables.css as
     // --background-color: #f2ece2.
     backgroundColor: '#f2ece2',
-    // macOS: use a transparent title bar that lets the page background
-    // show through, with the traffic-light buttons inset from the edge.
-    titleBarStyle: 'hiddenInset',
+    // Platform chrome: macOS hides the title bar (the page's drag region
+    // moves the window); Linux/Windows keep native decorations so tiling
+    // window managers can tile the window without reserved client-area
+    // chrome. See window-chrome.js.
+    ...windowChromeOptions(process.platform),
     webPreferences: {
       // Secure defaults: the renderer is plain web code, no Node access.
       contextIsolation: true,
@@ -425,17 +438,48 @@ async function createWindow() {
     shell.openExternal(details.url);
   });
 
-  // Forward Escape presses over IPC so the renderer can act on them even
-  // when keyboard focus sits inside a cross-origin iframe (e.g. the
-  // "Open Original" website viewer), where document keydown events never
-  // arrive. The event is NOT prevented here so in-page handlers (command
-  // panel, modal inputs) still see it; the renderer deduplicates via a
-  // timestamp guard in _runEscapeAction().
+  // Forward keystrokes the renderer cannot rely on a menu to deliver.
+  // Escape goes over IPC so it works even when keyboard focus sits
+  // inside a cross-origin iframe (e.g. the "Open Original" website
+  // viewer), where document keydown events never arrive; the renderer
+  // deduplicates via a timestamp guard in _runEscapeAction(). Ctrl+?
+  // opens the Quick Keys reference — previously the Help menu's
+  // accelerator, re-registered here because Linux/Windows have no
+  // application menu (see window-chrome.js). The event is NOT prevented
+  // on Escape so in-page handlers (command panel, modal inputs) still
+  // see it; the renderer deduplicates via a timestamp guard.
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.key !== 'Escape') {
+    if (input.type !== 'keyDown') {
       return;
     }
-    win.webContents.send('escape-pressed');
+    if (input.key === 'Escape') {
+      win.webContents.send('escape-pressed');
+      return;
+    }
+    // The produced character for Ctrl+Shift+/ is "?" on most layouts;
+    // match that, exactly like the menu accelerator did.
+    if (input.control && input.key === '?') {
+      event.preventDefault();
+      sendToMainWindow('show-quick-keys');
+      return;
+    }
+    // Dev conveniences previously provided by the menu roles; kept only
+    // in unpackaged runs so end-user builds have no hidden menu keys.
+    if (!app.isPackaged) {
+      const key = input.key.toLowerCase();
+      if (
+        (input.control && input.shift && key === 'i') ||
+        key === 'f12'
+      ) {
+        event.preventDefault();
+        win.webContents.toggleDevTools();
+        return;
+      }
+      if (input.control && key === 'r') {
+        event.preventDefault();
+        win.webContents.reload();
+      }
+    }
   });
 }
 
@@ -670,9 +714,18 @@ app.whenReady().then(async () => {
 
   await createWindow();
 
-  // Install the application menu (View > Reopen Window etc.) now that
-  // the first window exists and createWindow() can be referenced.
-  createAppMenu();
+  // Install the application menu now that the first window exists and
+  // createWindow() can be referenced. macOS gets the standard menus
+  // (its keyboard shortcuts require them); Linux and Windows run with
+  // no in-window menu bar at all — it reserved a strip of the client
+  // area that clipped the layout in tiling window managers (see
+  // window-chrome.js), and the shortcuts it carried are re-registered
+  // on the window's before-input-event below.
+  if (usesApplicationMenu(process.platform)) {
+    createAppMenu();
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 
   // External watch API: serve Research Topics over localhost HTTP once
   // the window (and thus the database bridge) is up.

@@ -56,6 +56,7 @@ import { showVideoDownloadToast } from './lib/video-download-toast.js';
 import { FFMPEG_INSTALL_URL } from './lib/ffmpeg-notice.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
 import { isFullScreen, toggleFullScreen as toggleDocumentFullScreen } from './lib/fullscreen.js';
+import { shouldCaptureEscape, syncEscapeCapture } from './lib/escape-capture.js';
 import {
   isFileSystemAccessSupported,
   isUserCancellation,
@@ -82,6 +83,7 @@ import {
   detectKeyboardPlatform,
   getQuickKeyGroups,
   isQuickKeysEvent,
+  isDistractionFreeShortcutEvent,
 } from './lib/quick-keys.js';
 import { isYouTubeURL, isYouTubeStream, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
@@ -196,6 +198,8 @@ class RSSFeedComponent extends DataroomElement {
     this._visibilityHandler = null;
     this._renderFrame = null;
     this._keyboardHandler = null;
+    this._fullScreenChangeHandler = null;
+    this._escapeCaptured = false;
     this._selectedArticle = null;
     this._lastViewedArticle = null;
     this._nextArticleAfterViewed = null;
@@ -824,18 +828,36 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Toggle full screen for the app window.
    *
-   * Goes through the standard Fullscreen API (see src/lib/fullscreen.js)
-   * so it works on Linux/Windows where there is no application menu with
-   * the `togglefullscreen` role. A toast confirms the state; a refusal
-   * (e.g. the API blocked without a user gesture) is surfaced as an
-   * error toast instead of an unhandled rejection.
+   * In Electron this goes through the main process and the native
+   * window full screen (see the toggle-full-screen IPC handler in
+   * electron/main.js): Chromium reserves Escape for leaving *document*
+   * full screen and never delivers that keydown to the page, which
+   * made Escape unable to close an article in full screen. Native
+   * window full screen keeps Escape in the page. In plain browsers the
+   * document Fullscreen API is the only mechanism (see
+   * src/lib/fullscreen.js) and Escape capture bridges the gap while
+   * Distraction Free Mode is on. A toast confirms the state; a refusal
+   * is surfaced as an error toast instead of an unhandled rejection.
    *
    * @returns {void}
    */
   toggleFullScreen() {
+    if (window.electron?.toggleWindowFullScreen) {
+      window.electron.toggleWindowFullScreen()
+        .then((entered) => {
+          this.showToast(entered ? 'Full screen on' : 'Full screen off');
+        })
+        .catch((error) => {
+          console.error('Failed to toggle full screen:', error);
+          this.showToast('Full screen is not available here', 'error');
+        });
+      return;
+    }
     toggleDocumentFullScreen()
       .then((entered) => {
         this.showToast(entered ? 'Full screen on' : 'Full screen off');
+        // Entering full screen changes whether Escape must be captured.
+        this._updateEscapeCapture();
       })
       .catch((error) => {
         console.error('Failed to toggle full screen:', error);
@@ -868,6 +890,9 @@ class RSSFeedComponent extends DataroomElement {
   setDistractionFreeMode(enabled) {
     this.distractionFree = Boolean(enabled);
     document.body.classList.toggle('distraction-free', this.distractionFree);
+    // While full screen, turning the mode on must keep Escape working as
+    // "navigate backwards" instead of the browser's "leave full screen".
+    this._updateEscapeCapture();
     this.showToast(
       this.distractionFree
         ? 'Distraction Free Mode on — Ctrl+Shift+P for commands'
@@ -6707,6 +6732,12 @@ class RSSFeedComponent extends DataroomElement {
     this._keyboardHandler = (event) => this._handleKeyDown(event);
     document.addEventListener('keydown', this._keyboardHandler, true);
 
+    // Full screen can end outside this component's toggles (macOS View
+    // menu, F11), which also changes whether Escape must be captured
+    // from the browser while Distraction Free Mode is on.
+    this._fullScreenChangeHandler = () => this._updateEscapeCapture();
+    document.addEventListener('fullscreenchange', this._fullScreenChangeHandler);
+
     // In Electron, key events targeting a cross-origin iframe never reach
     // this document, so Escape would stop working while focus sits inside
     // the "Open Original" website viewer. The main process forwards those
@@ -6724,6 +6755,31 @@ class RSSFeedComponent extends DataroomElement {
     if (window.electron?.onShowQuickKeys) {
       window.electron.onShowQuickKeys(() => this.showQuickKeysModal());
     }
+  }
+
+  /**
+   * Capture Escape from the browser while reading in Distraction Free
+   * Mode full screen.
+   *
+   * A document shown through the Fullscreen API makes the browser
+   * reserve Escape for leaving full screen — the keydown never reaches
+   * _runEscapeAction(), so the article viewer could not be closed
+   * without first dropping out of full screen. Locking Escape through
+   * the Keyboard Lock API (web path only; see src/lib/escape-capture.js)
+   * keeps full screen up and lets Escape navigate backwards as usual.
+   *
+   * @returns {Promise<void>}
+   */
+  async _updateEscapeCapture() {
+    const capture = shouldCaptureEscape({
+      distractionFree: this.distractionFree,
+      fullScreen: isFullScreen(),
+    });
+    this._escapeCaptured = await syncEscapeCapture(
+      navigator.keyboard,
+      capture,
+      this._escapeCaptured
+    );
   }
 
   /**
@@ -6797,6 +6853,16 @@ class RSSFeedComponent extends DataroomElement {
     if (isFindShortcut) {
       event.preventDefault();
       this._toggleFind();
+      return;
+    }
+
+    // Distraction Free Mode: Cmd+D on macOS, Ctrl+D elsewhere. Deliberately
+    // sits before the typing/modal guard — like the find shortcut — so the
+    // display-mode toggle stays reachable from input fields and open
+    // dialogs, including from inside the mode itself to leave it again.
+    if (isDistractionFreeShortcutEvent(event)) {
+      event.preventDefault();
+      this.toggleDistractionFreeMode();
       return;
     }
 
@@ -7747,6 +7813,15 @@ class RSSFeedComponent extends DataroomElement {
     if (this._keyboardHandler) {
       document.removeEventListener('keydown', this._keyboardHandler, true);
       this._keyboardHandler = null;
+    }
+
+    if (this._fullScreenChangeHandler) {
+      document.removeEventListener('fullscreenchange', this._fullScreenChangeHandler);
+      this._fullScreenChangeHandler = null;
+    }
+    if (this._escapeCaptured) {
+      navigator.keyboard?.unlock();
+      this._escapeCaptured = false;
     }
 
     if (this._documentClickHandler) {

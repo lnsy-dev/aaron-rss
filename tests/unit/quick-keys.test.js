@@ -11,6 +11,7 @@ import {
   formatKeyCombo,
   getQuickKeyGroups,
   isQuickKeysEvent,
+  isDistractionFreeShortcutEvent,
 } from '../../src/lib/quick-keys.js';
 
 describe('detectKeyboardPlatform', () => {
@@ -121,6 +122,7 @@ describe('getQuickKeyGroups', () => {
     expect(combos).toContain('ArrowDown');
     expect(combos).toContain('Mod+F');
     expect(combos).toContain('Mod+P');
+    expect(combos).toContain('Mod+D');
     expect(combos).toContain('Escape');
   });
 });
@@ -169,5 +171,38 @@ describe('isQuickKeysEvent', () => {
   it('rejects unshifted physical / and / without command modifiers', () => {
     expect(isQuickKeysEvent({ key: '/', code: 'Slash', metaKey: true })).toBe(false);
     expect(isQuickKeysEvent({ key: '/', code: 'Slash', shiftKey: true })).toBe(false);
+  });
+});
+
+describe('isDistractionFreeShortcutEvent', () => {
+  it('matches Cmd+D (macOS)', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'd', metaKey: true })).toBe(true);
+  });
+
+  it('matches Ctrl+D (Windows/Linux)', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'd', ctrlKey: true })).toBe(true);
+  });
+
+  it('matches with the uppercase D produced by Caps Lock layouts', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'D', ctrlKey: true })).toBe(true);
+  });
+
+  it('rejects plain d without modifiers', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'd' })).toBe(false);
+  });
+
+  it('rejects command/ctrl with a different key', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'f', ctrlKey: true })).toBe(false);
+    expect(isDistractionFreeShortcutEvent({ key: 'd', metaKey: false, ctrlKey: false })).toBe(false);
+  });
+
+  it('rejects Shift+Cmd/Ctrl+D (a different shortcut on many layouts)', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'd', ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(isDistractionFreeShortcutEvent({ key: 'd', metaKey: true, shiftKey: true })).toBe(false);
+  });
+
+  it('rejects Alt+Cmd/Ctrl+D (a different shortcut on many layouts)', () => {
+    expect(isDistractionFreeShortcutEvent({ key: 'd', ctrlKey: true, altKey: true })).toBe(false);
+    expect(isDistractionFreeShortcutEvent({ key: 'd', metaKey: true, altKey: true })).toBe(false);
   });
 });

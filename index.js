@@ -32,6 +32,12 @@ import '@lnsy/command-panel/src/command-panel.js';
 
 import './src/rss-feed-component.js';
 import { convertSyntheticSocialFeeds } from './src/lib/migrate-social-feeds.js';
+import { initUserTheme } from './src/lib/user-theme.js';
+
+// Apply the user's ~/.config/theme.css (Electron only; on the plain web
+// there is no config folder and this quietly does nothing). A failure
+// here must never break application startup — the bundled theme stays.
+initUserTheme().catch(() => {});
 
 /**
  * Expose a one-time migration helper for converting synthetic Bluesky/Mastodon

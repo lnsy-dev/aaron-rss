@@ -45,6 +45,7 @@ import {
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 import { installProcessErrorGuards } from './error-guards.js';
 import { windowChromeOptions, usesApplicationMenu } from './window-chrome.js';
+import { readUserThemeCss } from './user-theme.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -530,7 +531,33 @@ async function fetchBinary(url) {
 
 ipcMain.handle('fetch-text', async (_, url) => fetchText(url));
 ipcMain.handle('fetch-binary', async (_, url) => fetchBinary(url));
-ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));ipcMain.handle('download-youtube-video', async (event, url) => {
+ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));
+
+// User theme override from ~/.config/theme.css. A missing folder or
+// file resolves to null and the renderer keeps the bundled theme
+// without any notice (see electron/user-theme.js).
+ipcMain.handle('get-user-theme', () => readUserThemeCss());
+
+// Native window full screen for the command panel's "Toggle Full
+// Screen" command. The document Fullscreen API cannot be used here:
+// Chromium reserves Escape for leaving document full screen and never
+// delivers that keydown to the page, which made Escape unable to close
+// an article while full screen. Window full screen keeps Escape in the
+// page, so only the command panel (and the View menu) leave it.
+ipcMain.handle('toggle-full-screen', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  if (!win || win.isDestroyed()) {
+    return false;
+  }
+  // macOS fullscreen transitions asynchronously, so isFullScreen() lags
+  // behind setFullScreen() — return the requested state instead of the
+  // mid-transition one.
+  const next = !win.isFullScreen();
+  win.setFullScreen(next);
+  return next;
+});
+
+ipcMain.handle('download-youtube-video', async (event, url) => {
   // Stream download progress to the requesting window so the renderer
   // can render a live progress toast while yt-dlp runs.
   const sender = event.sender;

@@ -40,6 +40,30 @@ contextBridge.exposeInMainWorld('electron', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   /**
+   * Read the user's theme override from ~/.config/theme.css.
+   *
+   * The main process reads the file quietly: when the ~/.config folder
+   * or the theme.css file does not exist it resolves to null and the
+   * renderer keeps the bundled theme.
+   *
+   * @returns {Promise<string|null>} The theme stylesheet text, or null when there is none
+   */
+  getUserThemeCss: () => ipcRenderer.invoke('get-user-theme'),
+
+  /**
+   * Toggle the window's native full screen state.
+   *
+   * The command panel's "Toggle Full Screen" command uses this instead
+   * of the document Fullscreen API: Chromium reserves Escape for
+   * leaving document full screen and never delivers that keydown to
+   * the page, so Escape could not close an article while full screen.
+   * Native window full screen keeps Escape in the page.
+   *
+   * @returns {Promise<boolean>} True when the window is full screen afterwards
+   */
+  toggleWindowFullScreen: () => ipcRenderer.invoke('toggle-full-screen'),
+
+  /**
    * Subscribe to Escape presses forwarded from the main process.
    *
    * The main process intercepts Escape at the webContents level so the

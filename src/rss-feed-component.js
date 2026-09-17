@@ -55,6 +55,7 @@ import {
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
 import { FFMPEG_INSTALL_URL } from './lib/ffmpeg-notice.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
+import { isFullScreen, toggleFullScreen as toggleDocumentFullScreen } from './lib/fullscreen.js';
 import {
   isFileSystemAccessSupported,
   isUserCancellation,
@@ -800,6 +801,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Import OPML', action: () => this.handleImportOPML() },
       { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
       { name: 'Toggle Distraction Free Mode', action: () => this.toggleDistractionFreeMode() },
+      { name: 'Toggle Full Screen', action: () => this.toggleFullScreen() },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
@@ -817,6 +819,37 @@ class RSSFeedComponent extends DataroomElement {
    */
   toggleDistractionFreeMode() {
     this.setDistractionFreeMode(!this.distractionFree);
+  }
+
+  /**
+   * Toggle full screen for the app window.
+   *
+   * Goes through the standard Fullscreen API (see src/lib/fullscreen.js)
+   * so it works on Linux/Windows where there is no application menu with
+   * the `togglefullscreen` role. A toast confirms the state; a refusal
+   * (e.g. the API blocked without a user gesture) is surfaced as an
+   * error toast instead of an unhandled rejection.
+   *
+   * @returns {void}
+   */
+  toggleFullScreen() {
+    toggleDocumentFullScreen()
+      .then((entered) => {
+        this.showToast(entered ? 'Full screen on' : 'Full screen off');
+      })
+      .catch((error) => {
+        console.error('Failed to toggle full screen:', error);
+        this.showToast('Full screen is not available here', 'error');
+      });
+  }
+
+  /**
+   * Whether the document is currently full screen.
+   *
+   * @returns {boolean}
+   */
+  isFullScreen() {
+    return isFullScreen();
   }
 
   /**

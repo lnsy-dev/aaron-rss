@@ -139,6 +139,25 @@ body.distraction-free .rss-article-actions {
   display: none;
 }
 
+/*
+  Downloads stay reachable in Distraction Free Mode: hovering a podcast
+  or YouTube article reveals just its "Download Podcast" / "Download
+  Video" action. The hover target is the whole article row so the
+  pointer can travel from the summary down to the button without the
+  button vanishing mid-move; for plain articles the revealed container
+  stays empty, so nothing shifts.
+*/
+body.distraction-free .rss-article:hover .rss-article-actions {
+  display: flex;
+}
+
+body.distraction-free
+  .rss-article:hover
+  .rss-article-actions
+  .rss-action-button:not(.rss-youtube-download-button):not(.rss-podcast-download-button) {
+  display: none;
+}
+
 /* The footer reserved 4rem of bottom padding; reclaim it. */
 body.distraction-free .rss-content-area {
   padding-bottom: 1.5rem;

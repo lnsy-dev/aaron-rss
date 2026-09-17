@@ -83,6 +83,7 @@ import {
   detectKeyboardPlatform,
   getQuickKeyGroups,
   isQuickKeysEvent,
+  isDistractionFreeShortcutEvent,
 } from './lib/quick-keys.js';
 import { isYouTubeURL, isYouTubeStream, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
@@ -6852,6 +6853,16 @@ class RSSFeedComponent extends DataroomElement {
     if (isFindShortcut) {
       event.preventDefault();
       this._toggleFind();
+      return;
+    }
+
+    // Distraction Free Mode: Cmd+D on macOS, Ctrl+D elsewhere. Deliberately
+    // sits before the typing/modal guard — like the find shortcut — so the
+    // display-mode toggle stays reachable from input fields and open
+    // dialogs, including from inside the mode itself to leave it again.
+    if (isDistractionFreeShortcutEvent(event)) {
+      event.preventDefault();
+      this.toggleDistractionFreeMode();
       return;
     }
 

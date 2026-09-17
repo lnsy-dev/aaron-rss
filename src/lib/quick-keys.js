@@ -69,6 +69,7 @@ const QUICK_KEY_GROUPS = [
     title: 'Application',
     items: [
       { combo: 'Mod+P', description: 'Open the command panel (or Ctrl+Shift+P)' },
+      { combo: 'Mod+D', description: 'Toggle Distraction Free Mode' },
       { combo: 'Mod+?', description: 'Show this quick keys reference' },
     ],
   },
@@ -153,4 +154,25 @@ export function isQuickKeysEvent(event) {
   // physical key as '/' even while Shift is held; Shift+/ IS the ? key,
   // so accept that shape too.
   return event.code === 'Slash' && event.shiftKey === true;
+}
+
+/**
+ * Determine whether a keydown event is the Distraction Free Mode
+ * shortcut (Cmd+D on macOS, Ctrl+D elsewhere).
+ *
+ * Shift and Alt variants are rejected: they mean different shortcuts on
+ * many layouts, and the plain combo is what the Quick Keys reference
+ * documents.
+ *
+ * @param {{key: string, metaKey?: boolean, ctrlKey?: boolean, altKey?: boolean, shiftKey?: boolean}} event
+ * @returns {boolean}
+ */
+export function isDistractionFreeShortcutEvent(event) {
+  if (event.altKey || event.shiftKey) {
+    return false;
+  }
+  if (!(event.metaKey || event.ctrlKey)) {
+    return false;
+  }
+  return event.key.toLowerCase() === 'd';
 }

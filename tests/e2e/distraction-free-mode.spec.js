@@ -97,4 +97,36 @@ test.describe('Distraction Free Mode', () => {
     await expect(page.locator('.rss-header')).toBeVisible();
     await expect(page.locator('.rss-footer')).toBeVisible();
   });
+
+  test('toggles with the Cmd/Ctrl+D keyboard shortcut, even from inputs', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    const component = page.locator('rss-feed-component');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+    await expect(page.locator('.rss-header')).toBeVisible();
+
+    // Ctrl+D (Cmd+D on macOS) turns the mode on and the chrome hides.
+    await page.keyboard.press('Control+D');
+    await expect(page.locator('body')).toHaveClass(/distraction-free/);
+    await expect(page.locator('.rss-header')).toBeHidden();
+    await expect(page.locator('.rss-footer')).toBeHidden();
+
+    // The same shortcut, from inside the mode itself, turns it off again.
+    await page.keyboard.press('Control+D');
+    await expect(page.locator('body')).not.toHaveClass(/distraction-free/);
+    await expect(page.locator('.rss-header')).toBeVisible();
+    await expect(page.locator('.rss-footer')).toBeVisible();
+
+    // It is a display-mode toggle, not a navigation key: it stays
+    // reachable while typing in the find bar.
+    await page.keyboard.press('Control+F');
+    const findBar = page.locator('.rss-find-bar');
+    await expect(findBar).toHaveClass(/rss-find-bar--visible/);
+    await page.keyboard.press('Control+D');
+    await expect(page.locator('body')).toHaveClass(/distraction-free/);
+    await page.keyboard.press('Control+D');
+    await expect(page.locator('body')).not.toHaveClass(/distraction-free/);
+  });
 });

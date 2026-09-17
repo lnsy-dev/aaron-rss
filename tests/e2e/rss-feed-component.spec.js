@@ -332,6 +332,7 @@ test.describe('Aaron RSS', () => {
       'Import OPML',
       'Quick Keys',
       'Toggle Distraction Free Mode',
+      'Toggle Full Screen',
       'Help',
     ]);
   });

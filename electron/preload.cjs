@@ -40,6 +40,17 @@ contextBridge.exposeInMainWorld('electron', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
   /**
+   * Read the user's theme override from ~/.config/theme.css.
+   *
+   * The main process reads the file quietly: when the ~/.config folder
+   * or the theme.css file does not exist it resolves to null and the
+   * renderer keeps the bundled theme.
+   *
+   * @returns {Promise<string|null>} The theme stylesheet text, or null when there is none
+   */
+  getUserThemeCss: () => ipcRenderer.invoke('get-user-theme'),
+
+  /**
    * Toggle the window's native full screen state.
    *
    * The command panel's "Toggle Full Screen" command uses this instead

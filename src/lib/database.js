@@ -750,6 +750,16 @@ export async function saveArticles(feedID, articles) {
  * Delete articles for a feed that are no longer in the merged set and are
  * not starred.
  *
+ * Read, unstarred articles being dropped are first recorded in the
+ * cleared_articles memory. Feeds that keep their entire publishing
+ * history in the feed body (e.g. static-site Atom feeds) would otherwise
+ * resurrect these articles as brand-new unread items on the next
+ * refresh: the merge cap drops the article, the delete removes it, and
+ * the still-listed item is re-added unread — forever. The memory feeds
+ * back into the merge via listClearedUniqueIDs. Unread dropped articles
+ * are deliberately not remembered: the user has not read them yet, so
+ * they may legitimately return.
+ *
  * @param {string} feedID
  * @param {Array<string>} articleIDs
  * @returns {Promise<void>}
@@ -760,6 +770,22 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
   }
 
   const placeholders = articleIDs.map(() => '?').join(', ');
+
+  // Remember the identity of the read articles about to be deleted, using
+  // the database's own read flags (not the refresh's loaded snapshot, which
+  // can already be stale) so a read state change mid-refresh is respected.
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO cleared_articles (feed_id, article_id, unique_id, url, title, cleared_at)
+      SELECT feed_id, article_id, unique_id, url, title, ?
+      FROM articles
+      WHERE feed_id = ?
+        AND article_id NOT IN (${placeholders})
+        AND read = 1
+        AND starred = 0
+        AND unique_id IS NOT NULL`,
+    params: [new Date().toISOString(), feedID, ...articleIDs],
+  });
+
   await callWorker('exec', {
     sql: `DELETE FROM articles
       WHERE feed_id = ?

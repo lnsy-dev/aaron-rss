@@ -1142,13 +1142,21 @@ describe('rss database helpers', () => {
     const db = await importDatabaseModule();
     await db.deleteArticlesNotInSet('feed123', ['art1', 'art2']);
 
-    const message = FakeWorker.instance.messages[0];
-    expect(message.action).toBe('exec');
-    expect(message.params.sql).toContain('DELETE FROM articles');
-    expect(message.params.sql).toContain('feed_id = ?');
-    expect(message.params.sql).toContain('article_id NOT IN (?, ?)');
-    expect(message.params.sql).toContain('starred = 0');
-    expect(message.params.params).toEqual(['feed123', 'art1', 'art2']);
+    // First message: remember the read articles about to be dropped.
+    const [rememberMessage, deleteMessage] = FakeWorker.instance.messages;
+    expect(rememberMessage.action).toBe('exec');
+    expect(rememberMessage.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+    expect(rememberMessage.params.sql).toContain('read = 1');
+    expect(rememberMessage.params.sql).toContain('starred = 0');
+    expect(rememberMessage.params.sql).toContain('article_id NOT IN (?, ?)');
+    expect(rememberMessage.params.params[1]).toBe('feed123');
+    // Second message: delete them.
+    expect(deleteMessage.action).toBe('exec');
+    expect(deleteMessage.params.sql).toContain('DELETE FROM articles');
+    expect(deleteMessage.params.sql).toContain('feed_id = ?');
+    expect(deleteMessage.params.sql).toContain('article_id NOT IN (?, ?)');
+    expect(deleteMessage.params.sql).toContain('starred = 0');
+    expect(deleteMessage.params.params).toEqual(['feed123', 'art1', 'art2']);
   });
 
   it('deleteArticlesNotInSet is a no-op for an empty kept set', async () => {

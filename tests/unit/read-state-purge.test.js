@@ -211,4 +211,111 @@ describe('read articles survive the purge + refresh cycle', () => {
     await db.deleteFeed(feedID);
     expect(await db.listClearedUniqueIDs(feedID)).toEqual([]);
   });
+
+  describe('full-history feeds and the maxArticles cap', () => {
+    /**
+     * Run one full refresh cycle (merge + persist + cap delete) against
+     * the real database, the same sequence refreshFeed performs.
+     *
+     * @param {string} feedID
+     * @param {Array<object>} sourceItems - Feed items from the source XML
+     * @param {number} maxArticles
+     * @returns {Promise<Array<object>>} The merged articles
+     */
+    async function runRefreshCycle(feedID, sourceItems, maxArticles) {
+      const db = await import('../../src/lib/database.js');
+      const { processNewArticles, updateExistingArticles, mergeArticles } = await import(
+        '../../src/lib/article-processor.js'
+      );
+
+      const existingFeed = await db.loadFeedForRefresh(feedID);
+      const clearedSet = new Set(await db.listClearedUniqueIDs(feedID));
+
+      const newArticles = processNewArticles(sourceItems, existingFeed, clearedSet);
+      const updatedArticles = updateExistingArticles(sourceItems, existingFeed);
+      const merged = mergeArticles(updatedArticles, newArticles, maxArticles);
+
+      await db.saveArticles(feedID, merged);
+      await db.deleteArticlesNotInSet(feedID, merged.map((a) => a.articleID));
+      return merged;
+    }
+
+    it('does not resurrect read articles dropped by the cap when the feed still lists them', async () => {
+      const db = await import('../../src/lib/database.js');
+
+      // A static-site blog feed that lists its entire history with stable
+      // Atom ids as uniqueIDs (hakkerman.eu lists all 88 posts; 60 here).
+      // Subscribing stores every parsed item — only the refresh merge
+      // applies the maxArticles cap.
+      const feedID = 'zola-history-feed';
+      const totalPosts = 60;
+      const sourceItems = [];
+      for (let i = 1; i <= totalPosts; i++) {
+        const slug = `post-${String(i).padStart(3, '0')}`;
+        sourceItems.push({
+          uniqueID: `https://hakkerman.example.com/blog/${slug}/`,
+          title: `Post ${i}`,
+          contentHTML: `<p>Post ${i}</p>`,
+          contentText: `Post ${i}`,
+          url: `https://hakkerman.example.com/blog/${slug}/`,
+          summary: `Post ${i}`,
+          datePublished: daysAgo(totalPosts - i), // post 1 is newest
+        });
+      }
+
+      await db.saveFeed({
+        feedID,
+        url: 'https://hakkerman.example.com/atom.xml',
+        name: 'HakkerBlog',
+        articles: sourceItems.map((item, index) => ({
+          articleID: `art-${index + 1}`,
+          uniqueID: item.uniqueID,
+          title: item.title,
+          read: false,
+          starred: false,
+          dateArrived: daysAgo(totalPosts), // the whole backlog arrived at once
+          datePublished: item.datePublished,
+        })),
+      });
+
+      // The user works through the backlog and reads the 10 oldest posts
+      // (which sit past the 50-article cap) plus the one at the boundary.
+      const readItems = sourceItems.slice(50); // ranks 51..60
+      const boundaryItem = sourceItems[49]; // rank 50, stays inside the cap
+      const stored = await db.loadFeed(feedID);
+      const articleIDByUID = new Map(stored.articles.map((a) => [a.uniqueID, a.articleID]));
+      for (const item of [...readItems, boundaryItem]) {
+        await db.updateArticleStatus(feedID, articleIDByUID.get(item.uniqueID), { read: true });
+      }
+
+      // Refresh 1: the cap keeps the 50 newest; the read articles past it
+      // are dropped and (with the fix) remembered.
+      await runRefreshCycle(feedID, sourceItems, 50);
+      // Refreshes 2 and 3: the unchanged feed body still lists every item.
+      await runRefreshCycle(feedID, sourceItems, 50);
+      await runRefreshCycle(feedID, sourceItems, 50);
+
+      const finalFeed = await db.loadFeed(feedID);
+      const storedReadUIDs = new Set(
+        finalFeed.articles.filter((a) => a.read).map((a) => a.uniqueID)
+      );
+      const remembered = new Set(await db.listClearedUniqueIDs(feedID));
+      const unreadUIDs = finalFeed.articles.filter((a) => !a.read).map((a) => a.uniqueID);
+
+      // No article the user read may come back as unread, and each is
+      // either stored as read (inside the cap) or remembered (dropped by
+      // the cap) — never deleted-and-forgotten, which would let the feed
+      // re-add it unread on the next refresh.
+      for (const item of [...readItems, boundaryItem]) {
+        expect(unreadUIDs).not.toContain(item.uniqueID);
+        expect(
+          storedReadUIDs.has(item.uniqueID) || remembered.has(item.uniqueID)
+        ).toBe(true);
+      }
+      // The boundary article stays stored as read: it is inside the cap.
+      expect(storedReadUIDs.has(boundaryItem.uniqueID)).toBe(true);
+      // The cap still bounds the stored set.
+      expect(finalFeed.articles.length).toBeLessThanOrEqual(50);
+    });
+  });
 });

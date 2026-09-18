@@ -334,6 +334,21 @@ body.distraction-free
   font-weight: 600;
 }
 
+/*
+  Clickable feed name in the Timeline view: clicking a blog name jumps
+  to that feed's block in the grouped Feeds view (openFeedsViewAtFeed).
+*/
+.rss-article-feed-name.rss-feed-name-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.rss-article-feed-name.rss-feed-name-link:hover {
+  color: var(--foreground-color);
+}
+
 .rss-empty-state {
   text-align: center;
   padding: 3rem 1rem;

@@ -602,6 +602,112 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Switch to the grouped Feeds view and scroll to one feed's block.
+   *
+   * Backs the clickable feed name in the Timeline view: clicking a blog
+   * name leaves the flat list, opens the grouped view, makes sure the
+   * target feed's rows are rendered (windowed grouped views keep
+   * off-screen feeds collapsed), and scrolls the block into view with
+   * the feed's summary as close to the top as the sticky header allows.
+   *
+   * @param {string} feedID
+   * @returns {Promise<void>}
+   */
+  async openFeedsViewAtFeed(feedID) {
+    if (!feedID) {
+      return;
+    }
+    if (!this.feeds.some((feed) => feed.feedID === feedID)) {
+      return;
+    }
+
+    if (this.viewMode !== 'feeds') {
+      if (this.viewMode === 'videos' || this.viewMode === 'topic') {
+        this._videosReturnMode = 'feeds';
+      }
+      this.viewMode = 'feeds';
+      this.settings.viewMode = 'feeds';
+      this._syncViewToggle();
+      try {
+        await saveSettings({ viewMode: 'feeds' });
+      } catch (error) {
+        console.error('Failed to save view mode:', error);
+      }
+      this.renderFeeds();
+    }
+
+    // Deferred feeds in the windowed grouped render have no rows yet;
+    // render them and open the details so the block is visible.
+    if (this._windowedEnsureFeedRendered(feedID)) {
+      this._refreshFindAfterWindowChange();
+    }
+    const details = this._groupedDetails(feedID);
+    if (details) {
+      details.open = true;
+    }
+
+    // One frame later: details.open toggles fire before this task, and
+    // on-demand row rendering may still be pending, so scroll only once
+    // the block has its final size. One instant scroll (never smooth):
+    // the selection restore issues its own scroll, and concurrent smooth
+    // animations cancel each other in Chromium, leaving the page stuck
+    // half way. Compensate for the sticky header so the feed's name is
+    // not hidden underneath it.
+    requestAnimationFrame(() => {
+      const block = this.querySelector(`.rss-feed[data-feed-id="${CSS.escape(feedID)}"]`);
+      if (!block) {
+        return;
+      }
+      const header = this.querySelector('.rss-header');
+      const headerHeight = header ? header.offsetHeight : 0;
+      const targetTop = headerHeight + 4;
+
+      const align = () => {
+        const top = block.getBoundingClientRect().top + window.scrollY - targetTop;
+        window.scrollTo({ top, behavior: 'auto' });
+      };
+      align();
+
+      // Windowed rendering keeps extending feeds ABOVE the target after
+      // the jump (viewport-proximity chunks), pushing the block back down
+      // the page. Hold the position briefly, re-aligning whenever the
+      // block drifts, until the layout settles. Any manual input cancels
+      // the hold so the user always wins.
+      const cancelHold = () => {
+        window.removeEventListener('wheel', cancelHold);
+        window.removeEventListener('touchstart', cancelHold);
+        window.removeEventListener('keydown', cancelHold);
+        if (frame !== null) {
+          cancelAnimationFrame(frame);
+          frame = null;
+        }
+        if (deadline !== null) {
+          clearTimeout(deadline);
+          deadline = null;
+        }
+      };
+      let frame = null;
+      let deadline = setTimeout(() => {
+        deadline = null;
+        cancelHold();
+      }, 1500);
+      window.addEventListener('wheel', cancelHold, { passive: true });
+      window.addEventListener('touchstart', cancelHold, { passive: true });
+      window.addEventListener('keydown', cancelHold);
+
+      const hold = () => {
+        frame = null;
+        const drift = block.getBoundingClientRect().top - targetTop;
+        if (Math.abs(drift) > 2) {
+          align();
+        }
+        frame = requestAnimationFrame(hold);
+      };
+      frame = requestAnimationFrame(hold);
+    });
+  }
+
+  /**
    * Open a Research Topic as its own view.
    *
    * The topic's articles are presented like a standard feed (the same
@@ -1037,6 +1143,15 @@ class RSSFeedComponent extends DataroomElement {
       // always resolved from this.feeds. They live outside any article.
       if (feed) {
         this.showFeedMenu(feedID, actionEl);
+      }
+      return;
+    }
+
+    if (action === 'open-feed') {
+      // Timeline feed-name click: switch to the grouped Feeds view and
+      // scroll straight to this feed's block.
+      if (feed) {
+        this.openFeedsViewAtFeed(feed.feedID);
       }
       return;
     }
@@ -1545,7 +1660,10 @@ class RSSFeedComponent extends DataroomElement {
         entry.className = 'rss-timeline-item';
         entry.setAttribute('data-feed-id', item.feed.feedID);
 
-        this.renderArticle(entry, item.article, item.feed, { showFeedName: true });
+        this.renderArticle(entry, item.article, item.feed, {
+          showFeedName: true,
+          clickableFeedName: true,
+        });
         return entry;
       });
     }
@@ -2424,8 +2542,8 @@ class RSSFeedComponent extends DataroomElement {
    * @param {HTMLElement} container
    * @param {object} article
    * @param {object} feed
-   * @param {object} [options]
-   * @param {boolean} [options.showFeedName=false] - Prefix the meta line with the feed name (used by the timeline view).
+   * @param {object} [options]    * @param {boolean} [options.showFeedName=false] - Prefix the meta line with the feed name (used by the timeline view).
+    * @param {boolean} [options.clickableFeedName=false] - Make the feed name clickable to jump to that feed in the Feeds view (timeline only).
    * @returns {void}
    */
   renderArticle(container, article, feed, options = {}) {
@@ -2475,6 +2593,13 @@ class RSSFeedComponent extends DataroomElement {
       const feedSpan = document.createElement('span');
       feedSpan.className = 'rss-article-feed-name';
       feedSpan.textContent = feed.name;
+      if (options.clickableFeedName) {
+        // Timeline affordance: the blog name jumps to that feed's block
+        // in the grouped Feeds view (see openFeedsViewAtFeed).
+        feedSpan.classList.add('rss-feed-name-link');
+        feedSpan.setAttribute('data-action', 'open-feed');
+        feedSpan.title = `Show ${feed.name} in Feeds view`;
+      }
       metaDiv.appendChild(feedSpan);
     }
 

@@ -3,12 +3,21 @@
  *
  * Fetches a web article and extracts clean Markdown using Defuddle,
  * the same content-extraction engine used by Obsidian Web Clipper.
+ * URLs pointing at PDF documents are routed to the PDF text extractor
+ * (unpdf) so their text opens as a readable article.
  *
  * @see https://github.com/kepano/defuddle
  */
 
 import Defuddle from 'defuddle';
 import { fetchText } from './rss-network.js';
+import { repairBrokenEntitiesInHTML } from './html-utils.js';
+import {
+  extractPDFArticle,
+  isPDFContentType,
+  isPDFURL,
+  looksLikePDFText,
+} from './pdf-extractor.js';
 
 /**
  * Remove unescaped control characters from JSON-LD schema.org script blocks.
@@ -39,6 +48,11 @@ export function sanitizeSchemaOrgScripts(doc) {
 /**
  * Fetch a web page and extract its main content as Markdown.
  *
+ * URLs that point at PDF documents (by .pdf extension, PDF content-type,
+ * or a `%PDF-` magic-byte sniff) are routed to the PDF text extractor
+ * instead of the HTML parser, so feed items linking report PDFs — like
+ * the USDA NASS publications — open as readable articles.
+ *
  * @param {string} url - The article URL
  * @returns {Promise<object>} Extracted article with markdown and metadata
  */
@@ -47,9 +61,21 @@ export async function extractArticle(url) {
     throw new Error('No URL provided for article extraction');
   }
 
+  // Unambiguous PDF link: skip the HTML path (and its text fetch) and
+  // go straight to the byte-oriented PDF extractor.
+  if (isPDFURL(url)) {
+    return extractPDFArticle(url);
+  }
+
   const response = await fetchText(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch article: ${response.status}`);
+  }
+
+  // A PDF served at a URL without the .pdf extension is caught by its
+  // content-type or by the `%PDF-` header that survives the text decode.
+  if (isPDFContentType(response.contentType) || looksLikePDFText(response.text)) {
+    return extractPDFArticle(url);
   }
 
   if (typeof DOMParser === 'undefined') {
@@ -67,12 +93,16 @@ export async function extractArticle(url) {
     throw new Error('Defuddle returned no content for this article');
   }
 
+  // Publishers occasionally serve content with broken (empty) entities —
+  // e.g. "they&;re" where an apostrophe entity was mangled upstream.
+  // Defuddle's markdown output re-escapes them faithfully, so repair the
+  // encoded forms here to keep exports and scraped markdown readable.
   return {
     url,
-    markdown: result.content || '',
-    title: result.title || '',
-    author: result.author || '',
-    description: result.description || '',
+    markdown: repairBrokenEntitiesInHTML(result.content || ''),
+    title: repairBrokenEntitiesInHTML(result.title || ''),
+    author: repairBrokenEntitiesInHTML(result.author || ''),
+    description: repairBrokenEntitiesInHTML(result.description || ''),
     domain: result.domain || '',
     site: result.site || '',
     published: result.published || '',

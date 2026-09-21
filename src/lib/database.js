@@ -940,6 +940,29 @@ export function loadAllFeeds() {
 }
 
 /**
+ * List every feed's identity columns for a refresh cycle.
+ *
+ * The refresh orchestrator only needs each feed's id (plus name/url for
+ * progress labels), so unlike loadAllFeeds this never selects article
+ * rows: pulling every article's full content through the worker would
+ * serialize megabytes on the sqlite worker and the renderer main thread
+ * at the exact moment the user is interacting with the app.
+ *
+ * @returns {Promise<Array<{feedID: string, url: string, name: string}>>}
+ */
+export function listFeedsForRefresh() {
+  return callWorker('query', {
+    sql: 'SELECT feed_id, url AS feed_url, name FROM feeds ORDER BY name',
+  }).then((rows) =>
+    rows.map((row) => ({
+      feedID: row.feed_id,
+      url: row.feed_url,
+      name: row.name,
+    }))
+  );
+}
+
+/**
  * Load a single feed with its articles.
  *
  * @param {string} feedID
@@ -1474,12 +1497,13 @@ export async function loadSettings() {
     showUnreadOnly: false,
     viewMode: 'timeline',
     theme: '',
+    articleFontStep: 0,
   };
 
   for (const row of rows) {
     const key = row.key;
     const value = row.value;
-    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval' || key === 'refreshConcurrency') {
+    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval' || key === 'refreshConcurrency' || key === 'articleFontStep') {
       settings[key] = parseInt(value, 10);
     } else if (key === 'showUnreadOnly') {
       settings[key] = value === 'true';

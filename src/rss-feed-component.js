@@ -68,8 +68,15 @@ import {
   pickOPMLFileFromDisk,
 } from './lib/file-storage.js';
 import { exportOPML, parseOPML } from './lib/opml.js';
-import { stripHTML } from './lib/html-utils.js';
+import { stripHTML, repairBrokenEntitiesInHTML } from './lib/html-utils.js';
 import { extractArticle } from './lib/article-extractor.js';
+import {
+  ARTICLE_FONT_DEFAULT_STEP,
+  articleFontStepAttrValue,
+  clampArticleFontStep,
+  getArticleFontAction,
+  parseArticleFontStep,
+} from './lib/article-font.js';
 import { renderMarkdown } from './lib/markdown-renderer.js';
 import { generateFrontMatter } from './lib/yaml-front-matter.js';
 import { sortFeedsByUnreadCount, buildTimelineItems } from './lib/feed-sorting.js';
@@ -108,6 +115,7 @@ import {
   findItemIndex,
 } from './lib/windowed-list.js';
 import DOMPurify from 'dompurify';
+import { createRefreshRenderScheduler } from './lib/refresh-render-scheduler.js';
 
 const DEFAULT_SETTINGS = {
   sourcesFolder: 'sources',
@@ -117,6 +125,7 @@ const DEFAULT_SETTINGS = {
   showUnreadOnly: false,
   viewMode: 'timeline',
   theme: '',
+  articleFontStep: ARTICLE_FONT_DEFAULT_STEP,
 };
 
 /** Minimum/maximum refresh interval allowed in the settings UI (minutes). */
@@ -127,6 +136,15 @@ const REFRESH_CONCURRENCY_BOUNDS = { min: 1, max: 16 };
 
 /** Per-refresh timeout so a hung feed/network call cannot lock the UI forever. */
 const REFRESH_TIMEOUT_MS = 120000;
+
+/**
+ * Minimum delay between incremental list re-renders while a refresh is
+ * fetching. Each completed feed updates this.feeds; re-rendering the whole
+ * content area per animation frame for those updates would monopolize the
+ * main thread and swallow the user's clicks. One render per interval keeps
+ * the list visibly filling in while interactions stay responsive.
+ */
+const REFRESH_MERGE_RENDER_INTERVAL_MS = 1000;
 
 /** How long the floating video chrome stays visible without mouse movement. */
 const VIDEO_CHROME_HIDE_DELAY_MS = 10000;
@@ -225,6 +243,13 @@ class RSSFeedComponent extends DataroomElement {
     // Toasts are owned by the central toast system (src/lib/toast.js).
     this._refreshToast = null;
     this._refreshProgress = null;
+    // Bounds incremental re-renders while a refresh is fetching so the
+    // fetch pipeline cannot monopolize the main thread with full list
+    // rebuilds (see _mergeUpdatedFeed).
+    this._refreshMergeRender = createRefreshRenderScheduler(
+      () => this.scheduleRenderFeeds(),
+      REFRESH_MERGE_RENDER_INTERVAL_MS
+    );
 
     try {
       const status = await getStatus();
@@ -234,6 +259,9 @@ class RSSFeedComponent extends DataroomElement {
       // the browser, where there is no API server.
       registerResearchApiBridge();
       this.settings = { ...DEFAULT_SETTINGS, ...(await loadSettings()) };
+      // Saved values are strings; normalize and clamp the persisted font step.
+      this.settings.articleFontStep = parseArticleFontStep(this.settings.articleFontStep);
+      this._applyArticleFontStep();
       const savedMode = this.settings.viewMode;
       if (savedMode === 'videos' || savedMode === 'topic') {
         // Videos and the Research Topic view are transient overlays; land
@@ -1808,7 +1836,9 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
-   * Cancel a pending scheduled render, if any.
+   * Cancel a pending scheduled render, if any. Also drops a pending
+   * refresh-merge render so a direct render always wins and no stale
+   * coalesced render fires afterwards.
    *
    * @returns {void}
    */
@@ -1816,6 +1846,9 @@ class RSSFeedComponent extends DataroomElement {
     if (this._renderFrame) {
       cancelAnimationFrame(this._renderFrame);
       this._renderFrame = null;
+    }
+    if (this._refreshMergeRender) {
+      this._refreshMergeRender.cancel();
     }
   }
 
@@ -4420,6 +4453,12 @@ class RSSFeedComponent extends DataroomElement {
    * Replace a feed in the current list with its freshly fetched version and
    * re-render so the user sees updates as they arrive instead of all at once.
    *
+   * Renders are coalesced to at most one per refresh interval: a burst of
+   * feed completions must not rebuild the whole content area every
+   * animation frame — that saturates the main thread and drops the user's
+   * clicks on buttons whose DOM nodes are constantly replaced. The
+   * completion path of the refresh always renders the final state.
+   *
    * @param {object} updatedFeed
    * @returns {void}
    */
@@ -4430,9 +4469,7 @@ class RSSFeedComponent extends DataroomElement {
     } else {
       this.feeds.push(updatedFeed);
     }
-    // Defer the render so a burst of incremental updates does not block
-    // the main thread while the user is interacting with articles.
-    this.scheduleRenderFeeds();
+    this._refreshMergeRender.schedule();
   }
 
   /**
@@ -4737,12 +4774,18 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Sanitize arbitrary HTML for in-app display.
    *
+   * Broken (empty) entities from mangled sources — e.g. "they&;re" or
+   * its escaped form "they&amp;;re", a stripped apostrophe reference —
+   * are repaired before sanitizing so already-stored articles read
+   * correctly. The repair emits &#8217; so the sanitizer keeps it as
+   * text; decoding first would be unsafe.
+   *
    * @param {string} html
    * @returns {string}
    */
   sanitizeHTML(html) {
     if (!html) return '';
-    return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+    return DOMPurify.sanitize(repairBrokenEntitiesInHTML(html), { USE_PROFILES: { html: true } });
   }
 
   /**
@@ -4832,6 +4875,13 @@ class RSSFeedComponent extends DataroomElement {
       }
     } catch (error) {
       console.error('Failed to open article viewer:', error);
+      const renderedCached = await this._renderCachedArticleFallback(
+        body, article, feed, error, 'article'
+      );
+      if (renderedCached) {
+        return;
+      }
+
       body.innerHTML = '';
 
       const errorMessage = document.createElement('p');
@@ -4847,6 +4897,66 @@ class RSSFeedComponent extends DataroomElement {
       });
       body.appendChild(originalLink);
     }
+  }
+
+  /**
+   * Render a viewer body from the article's stored content when the live
+   * fetch fails (offline, blocked host, connection timeout).
+   *
+   * The feed's copy of the article is already on disk, so a failed page
+   * extraction should degrade to that cached copy instead of an
+   * effectively empty viewer. Content columns are loaded on demand when
+   * the slim display load omitted them; the summary is the last resort.
+   *
+   * @param {HTMLElement} body - Viewer body element (cleared on success)
+   * @param {object} article
+   * @param {object|null} feed
+   * @param {Error} error - The live-fetch failure
+   * @param {string} label - What could not be fetched, for the notice
+   * @returns {Promise<boolean>} Whether cached content was rendered
+   */
+  async _renderCachedArticleFallback(body, article, feed, error, label) {
+    let cachedHTML = article.contentHTML || '';
+    let cachedText = article.contentText || '';
+
+    if (!cachedHTML && !cachedText && feed?.feedID && article.articleID) {
+      try {
+        const stored = await loadArticleContent(feed.feedID, article.articleID);
+        cachedHTML = stored.contentHTML || '';
+        cachedText = stored.contentText || '';
+      } catch (loadError) {
+        console.error('Failed to load cached article content:', loadError);
+      }
+    }
+
+    if (!cachedHTML && !cachedText && !article.summary) {
+      return false;
+    }
+
+    body.innerHTML = '';
+
+    const notice = document.createElement('p');
+    notice.className = 'rss-article-viewer-cached-notice';
+    notice.textContent = `Showing the saved copy — the live ${label} could not be fetched (${error.message}).`;
+    body.appendChild(notice);
+
+    const content = document.createElement('article');
+    content.className = 'rss-markdown-content';
+    if (cachedHTML) {
+      content.innerHTML = this.sanitizeHTML(cachedHTML);
+    } else if (cachedText) {
+      content.textContent = cachedText;
+    } else {
+      const summary = document.createElement('p');
+      summary.textContent = article.summary;
+      content.appendChild(summary);
+    }
+    body.appendChild(content);
+
+    if (this._findBar?.classList.contains('rss-find-bar--visible')) {
+      this._runFind({ selectFirst: true });
+    }
+    return true;
   }
 
   /**
@@ -4997,6 +5107,13 @@ class RSSFeedComponent extends DataroomElement {
       }
     } catch (error) {
       console.error(`Failed to load ${platformName} post:`, error);
+      const renderedCached = await this._renderCachedArticleFallback(
+        body, article, feed, error, `${platformName} post`
+      );
+      if (renderedCached) {
+        return;
+      }
+
       body.innerHTML = '';
 
       const errorMessage = document.createElement('p');
@@ -7000,6 +7117,16 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    // Article font size: Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0 reset.
+    // Also before the typing/modal guard so the shortcut adjusts the open
+    // article viewer regardless of focus, matching browser zoom.
+    const fontAction = getArticleFontAction(event);
+    if (fontAction) {
+      event.preventDefault();
+      this._handleArticleFontAction(fontAction);
+      return;
+    }
+
     if (this._isTypingInInput() || this.activeModal) {
       return;
     }
@@ -7035,6 +7162,73 @@ class RSSFeedComponent extends DataroomElement {
       this._markSelectedArticleAsRead();
       return;
     }
+  }
+
+  // ============================================================================
+  // Article font size
+  // ============================================================================
+
+  /**
+   * Handle an article font size shortcut (increase / decrease / reset).
+   *
+   * Updates the clamped step in settings, persists it, and applies it to
+   * the article viewer (or the whole component when no viewer is open, so
+   * the next opened article uses the new size).
+   *
+   * @param {'increase'|'decrease'|'reset'} action
+   * @returns {Promise<void>}
+   */
+  async _handleArticleFontAction(action) {
+    const current = parseArticleFontStep(this.settings.articleFontStep);
+    let next = current;
+    if (action === 'increase') {
+      next = clampArticleFontStep(current + 1);
+    } else if (action === 'decrease') {
+      next = clampArticleFontStep(current - 1);
+    } else {
+      next = ARTICLE_FONT_DEFAULT_STEP;
+    }
+
+    if (next === current) {
+      // Already at the limit; nudge the user instead of silently doing nothing.
+      this.showToast(
+        action === 'reset'
+          ? 'Article font already at default size'
+          : `Article font size limit reached (${next > 0 ? '+' : ''}${next})`,
+        'info'
+      );
+      return;
+    }
+
+    this.settings.articleFontStep = next;
+    try {
+      await saveSettings({ articleFontStep: next });
+    } catch (error) {
+      console.error('Failed to persist article font size:', error);
+    }
+
+    this._applyArticleFontStep();
+    this.showToast(
+      action === 'reset'
+        ? 'Article font reset to default'
+        : `Article font ${next > current ? 'increased' : 'decreased'} (${next > 0 ? '+' : ''}${next})`
+    );
+  }
+
+  /**
+   * Apply the current article font step to the DOM.
+   *
+   * Sets a `data-article-font-step` attribute on the component; the visual
+   * scale lives in CSS (styles/rss-feed-component.css) so no inline styles
+   * are needed. The article viewer body is the primary target, but the
+   * attribute sits on the component so preview panes and the next opened
+   * article pick it up too.
+   *
+   * @returns {void}
+   */
+  _applyArticleFontStep() {
+    const step = parseArticleFontStep(this.settings.articleFontStep);
+    this.setAttribute('data-article-font-step', articleFontStepAttrValue(step));
   }
 
   // ============================================================================

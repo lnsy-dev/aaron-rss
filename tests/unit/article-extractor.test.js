@@ -3,7 +3,9 @@
  *
  * Tests for src/lib/article-extractor.js. Because the library depends on
  * browser APIs (DOMParser) and the Defuddle browser bundle, the test mocks
- * both the network layer and the Defuddle module.
+ * both the network layer and the Defuddle module. The PDF extractor is
+ * mocked too: these tests cover routing (which URLs go to the PDF path),
+ * while the PDF extraction itself is covered in pdf-extractor.test.js.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -19,11 +21,28 @@ vi.mock('defuddle', () => ({
   default: vi.fn(() => ({ parse: mockParse })),
 }));
 
+vi.mock('../../src/lib/pdf-extractor.js', () => ({
+  extractPDFArticle: vi.fn(),
+  isPDFContentType: vi.fn(() => false),
+  isPDFURL: vi.fn(() => false),
+  looksLikePDFText: vi.fn(() => false),
+}));
+
 import { fetchText } from '../../src/lib/rss-network.js';
+import {
+  extractPDFArticle,
+  isPDFContentType,
+  isPDFURL,
+  looksLikePDFText,
+} from '../../src/lib/pdf-extractor.js';
 
 describe('article-extractor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default routing signals: no PDF detected anywhere.
+    isPDFURL.mockReturnValue(false);
+    isPDFContentType.mockReturnValue(false);
+    looksLikePDFText.mockReturnValue(false);
   });
 
   it('throws when no URL is provided', async () => {
@@ -71,6 +90,43 @@ describe('article-extractor', () => {
     expect(result.author).toBe('Jane Doe');
     expect(result.domain).toBe('example.com');
     expect(result.wordCount).toBe(42);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('repairs broken empty entities from mangled publisher content', async () => {
+    fetchText.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: '<html><body><article>Hello</article></body></html>',
+    });
+
+    // Defuddle faithfully re-escapes what the publisher served; a CMS
+    // stripped the apostrophe entity leaving "&;" (escaped "&amp;;").
+    mockParse.mockReturnValue({
+      content: 'Unlike Chromebooks, they&amp;;re not cheap.',
+      title: 'Googlebooks are (almost) here',
+      author: '',
+      description: 'A roundup where they&;re discussed',
+      domain: 'liliputing.com',
+      site: 'Liliputing',
+      published: '',
+      image: '',
+      favicon: '',
+      language: 'en',
+      wordCount: 6,
+    });
+
+    vi.stubGlobal('DOMParser', class {
+      parseFromString() {
+        return { documentElement: {}, body: {}, querySelector: () => null };
+      }
+    });
+
+    const result = await extractArticle('https://example.com/post');
+
+    expect(result.markdown).toBe('Unlike Chromebooks, they&#8217;re not cheap.');
+    expect(result.description).toBe('A roundup where they&#8217;re discussed');
 
     vi.unstubAllGlobals();
   });
@@ -125,5 +181,70 @@ describe('article-extractor', () => {
   it('does not fail when the document has no querySelectorAll', () => {
     expect(() => sanitizeSchemaOrgScripts(null)).not.toThrow();
     expect(() => sanitizeSchemaOrgScripts({})).not.toThrow();
+  });
+
+  it('routes .pdf URLs straight to the PDF extractor without fetching text', async () => {
+    isPDFURL.mockReturnValue(true);
+    extractPDFArticle.mockResolvedValue({ url: 'x', markdown: '# PDF' });
+
+    const result = await extractArticle('https://www.nass.usda.gov/report.pdf');
+
+    expect(isPDFURL).toHaveBeenCalledWith('https://www.nass.usda.gov/report.pdf');
+    expect(extractPDFArticle).toHaveBeenCalledWith('https://www.nass.usda.gov/report.pdf');
+    expect(result.markdown).toBe('# PDF');
+    expect(fetchText).not.toHaveBeenCalled();
+  });
+
+  it('routes text-fetched responses with a PDF content-type to the PDF extractor', async () => {
+    fetchText.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: '%PDF-1.6 binary-ish',
+      contentType: 'application/pdf',
+    });
+    isPDFContentType.mockReturnValue(true);
+    extractPDFArticle.mockResolvedValue({ markdown: 'extracted' });
+
+    await extractArticle('https://example.com/document');
+
+    expect(extractPDFArticle).toHaveBeenCalledWith('https://example.com/document');
+  });
+
+  it('routes responses whose text sniffs as %PDF- to the PDF extractor', async () => {
+    fetchText.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: '%PDF-1.4 …',
+      contentType: 'application/octet-stream',
+    });
+    looksLikePDFText.mockReturnValue(true);
+    extractPDFArticle.mockResolvedValue({ markdown: 'extracted' });
+
+    await extractArticle('https://example.com/no-extension');
+
+    expect(extractPDFArticle).toHaveBeenCalledWith('https://example.com/no-extension');
+  });
+
+  it('still extracts HTML pages when no PDF signal is present', async () => {
+    fetchText.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: '<html><body><article>Hello</article></body></html>',
+      contentType: 'text/html',
+    });
+    mockParse.mockReturnValue({ content: '# Hello', title: '', wordCount: 1 });
+
+    vi.stubGlobal('DOMParser', class {
+      parseFromString() {
+        return { documentElement: {}, body: {}, querySelector: () => null };
+      }
+    });
+
+    const result = await extractArticle('https://example.com/post');
+
+    expect(extractPDFArticle).not.toHaveBeenCalled();
+    expect(result.markdown).toBe('# Hello');
+
+    vi.unstubAllGlobals();
   });
 });

@@ -1122,6 +1122,33 @@ describe('rss database helpers', () => {
     expect(message.params.sql).toContain('COALESCE(v.file_path, a.download_path)');
   });
 
+  it('listFeedsForRefresh selects only feed identity columns with no article join', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [
+        { feed_id: 'feed-a', feed_url: 'https://alpha.example.com/feed', name: 'Alpha' },
+        { feed_id: 'feed-b', feed_url: 'https://beta.example.com/feed', name: 'Beta' },
+      ],
+    });
+
+    const db = await importDatabaseModule();
+    const feeds = await db.listFeedsForRefresh();
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.params).toBeUndefined();
+    expect(message.params.sql).toBe('SELECT feed_id, url AS feed_url, name FROM feeds ORDER BY name');
+
+    // The refresh loop only needs ids plus name/url for progress labels;
+    // mapped records must not carry articles or content columns.
+    expect(feeds).toEqual([
+      { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha' },
+      { feedID: 'feed-b', url: 'https://beta.example.com/feed', name: 'Beta' },
+    ]);
+    expect(Object.keys(feeds[0]).sort()).toEqual(['feedID', 'name', 'url']);
+  });
+
   it('loadArticleContent returns only the content columns for one article', async () => {
     FakeWorker.onMessage = (m) => ({
       id: m.id,

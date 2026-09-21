@@ -16,6 +16,7 @@ vi.mock('../../src/lib/database.js', () => ({
   runDatabaseMaintenance: vi.fn(),
   loadAllFeeds: vi.fn(),
   loadFeedsForDisplay: vi.fn(),
+  listFeedsForRefresh: vi.fn(),
   loadDownloadedArticles: vi.fn(),
   loadFeed: vi.fn(),
   loadFeedForRefresh: vi.fn(),
@@ -79,6 +80,7 @@ vi.mock('../../src/lib/podcast-bridge.js', () => ({
 
 import {
   loadAllFeeds,
+  listFeedsForRefresh,
   loadFeed,
   loadFeedForRefresh,
   saveFeed,
@@ -156,7 +158,7 @@ describe('feed manager', () => {
       { feedID: 'feed-b', url: 'https://beta.example.com/feed', name: 'Beta', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
@@ -178,7 +180,7 @@ describe('feed manager', () => {
       { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
 
     const { refreshAllFeeds } = await importFeedManager();
@@ -195,7 +197,7 @@ describe('feed manager', () => {
       { feedID: 'feed-b', url: 'https://beta.example.com/feed', name: 'Beta', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
@@ -219,7 +221,7 @@ describe('feed manager', () => {
       articles: [],
     }));
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
@@ -258,7 +260,7 @@ describe('feed manager', () => {
       articles: [],
     }));
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockImplementation((feedID) => {
       return Promise.resolve(feeds.find((f) => f.feedID === feedID));
     });
@@ -284,44 +286,60 @@ describe('feed manager', () => {
     expect(maxActive).toBe(2);
   });
 
-  it('refreshFeed offloads parsing and merging to the worker', async () => {
+  it('refreshFeed delegates fetching, parsing, and merging to the worker', async () => {
     const feeds = [
       { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
-    fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
     const { refreshFeed } = await importFeedManager();
     await refreshFeed('feed-a', 25);
 
+    // The whole per-feed refresh runs in the worker thread: it fetches
+    // the source itself through the relay, and the main thread never
+    // touches the network for regular feeds.
     expect(refreshFeedInWorker).toHaveBeenCalledWith({
-      feedText: '<rss/>',
-      htmlText: undefined,
+      fetchFromURL: feeds[0].url,
+      snapshotLinks: undefined,
       existingFeed: feeds[0],
       maxArticles: 25,
+      clearedUniqueIDs: undefined,
     });
+    expect(fetchText).not.toHaveBeenCalled();
   });
 
-  it('refreshFeed passes HTML text to the worker for synthetic feeds', async () => {
+  it('refreshFeed sends watched-page snapshots to the worker for link diffing', async () => {
     const feeds = [
-      { feedID: 'feed-a', url: 'https://alpha.example.com', name: 'Alpha', synthetic: true, articles: [] },
+      {
+        feedID: 'feed-snap',
+        url: 'https://example.com/journal/',
+        name: 'Journal',
+        synthetic: true,
+        articles: [],
+      },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
-    fetchText.mockResolvedValue({ ok: true, status: 200, text: '<html/>' });
+    loadPageSnapshot.mockResolvedValue({
+      feedID: 'feed-snap',
+      links: ['https://example.com/posts/old.html'],
+      capturedAt: new Date('2025-01-01T00:00:00Z'),
+    });
 
     const { refreshFeed } = await importFeedManager();
-    await refreshFeed('feed-a', 50);
+    await refreshFeed('feed-snap', 25);
 
     expect(refreshFeedInWorker).toHaveBeenCalledWith({
-      feedText: undefined,
-      htmlText: '<html/>',
+      fetchFromURL: feeds[0].url,
+      snapshotLinks: ['https://example.com/posts/old.html'],
       existingFeed: feeds[0],
-      maxArticles: 50,
+      maxArticles: 25,
+      clearedUniqueIDs: undefined,
     });
+    expect(fetchText).not.toHaveBeenCalled();
   });
 
   it('refreshFeed parses and enriches Bluesky feeds on the main thread', async () => {
@@ -343,7 +361,7 @@ describe('feed manager', () => {
       ],
     };
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
     parseFeedText.mockResolvedValue(parsedFeed);
@@ -359,21 +377,71 @@ describe('feed manager', () => {
     });
   });
 
-  it('refreshFeed saves a failed feed without calling the worker when fetch fails', async () => {
+  it('refreshFeed persists the worker failure record when the relayed fetch fails', async () => {
     const feeds = [
       { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockResolvedValue(feeds[0]);
+    // The fetch now happens inside the worker; a failed fetch comes back
+    // as a failed-feed record instead of a main-thread branch.
+    refreshFeedInWorker.mockResolvedValueOnce({
+      ...feeds[0],
+      lastFetchWasSuccessful: false,
+      lastFetchEndTime: new Date(),
+      articles: feeds[0].articles,
+    });
+
+    const { refreshFeed } = await importFeedManager();
+    const result = await refreshFeed('feed-a');
+
+    expect(result.lastFetchWasSuccessful).toBe(false);
+    expect(refreshFeedInWorker).toHaveBeenCalledWith(expect.objectContaining({
+      fetchFromURL: feeds[0].url,
+    }));
+    expect(saveFeedMetadata).toHaveBeenCalled();
+  });
+
+  it('refreshFeed saves metadata without the worker when a Bluesky fetch fails', async () => {
+    const feeds = [
+      { feedID: 'feed-bsky', url: 'https://bsky.app/profile/alice/rss', name: 'Alice', synthetic: false, articles: [] },
+    ];
+
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: false, status: 404, text: 'Not found' });
 
     const { refreshFeed } = await importFeedManager();
-    await refreshFeed('feed-a');
+    const result = await refreshFeed('feed-bsky');
 
+    expect(result.lastFetchWasSuccessful).toBe(false);
     expect(refreshFeedInWorker).not.toHaveBeenCalled();
     expect(saveFeedMetadata).toHaveBeenCalled();
     expect(saveArticles).not.toHaveBeenCalled();
+  });
+
+  it('refreshAllFeeds never loads full feed content from the database', async () => {
+    const feeds = [
+      { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha' },
+    ];
+
+    listFeedsForRefresh.mockResolvedValue(feeds);
+    loadFeedForRefresh.mockResolvedValue({ ...feeds[0], articles: [] });
+    refreshFeedInWorker.mockResolvedValue({
+      ...feeds[0],
+      lastFetchWasSuccessful: true,
+      articles: [],
+    });
+
+    const { refreshAllFeeds } = await importFeedManager();
+    await refreshAllFeeds(50);
+
+    // The refresh list is metadata-only: loading every article's full
+    // content at refresh start monopolizes the DB worker and the main
+    // thread exactly when the user just clicked Refresh.
+    expect(listFeedsForRefresh).toHaveBeenCalledTimes(1);
+    expect(loadAllFeeds).not.toHaveBeenCalled();
   });
 
   it('refreshFeed never downloads the pre-existing backlog even when auto-download is on', async () => {
@@ -398,7 +466,7 @@ describe('feed manager', () => {
       },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
@@ -429,7 +497,7 @@ describe('feed manager', () => {
       },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
@@ -470,7 +538,7 @@ describe('feed manager', () => {
       },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
 
@@ -974,7 +1042,6 @@ describe('feed manager', () => {
         links: ['https://example.com/posts/old.html'],
         capturedAt: new Date('2025-01-01T00:00:00Z'),
       });
-      fetchText.mockResolvedValue({ ok: true, status: 200, text: SNAPSHOT_HTML });
       // Echo the refreshed snapshot back the way the real worker does.
       refreshFeedInWorker.mockImplementationOnce(({ existingFeed }) =>
         Promise.resolve({
@@ -989,10 +1056,10 @@ describe('feed manager', () => {
       const { refreshFeed } = await importFeedManager();
       await refreshFeed('feed-snap', 50);
 
-      // The worker receives the previous snapshot for link diffing.
+      // The worker fetches the page itself and receives the previous
+      // snapshot for link diffing.
       expect(refreshFeedInWorker).toHaveBeenCalledWith({
-        feedText: undefined,
-        htmlText: SNAPSHOT_HTML,
+        fetchFromURL: feeds[0].url,
         snapshotLinks: ['https://example.com/posts/old.html'],
         existingFeed: feeds[0],
         maxArticles: 50,
@@ -1008,21 +1075,20 @@ describe('feed manager', () => {
       );
     });
 
-    it('refreshFeed uses the plain HTML path for non-snapshot synthetic feeds', async () => {
+    it('refreshFeed delegates non-snapshot synthetic feeds to the worker fetch', async () => {
       const feeds = [
         { feedID: 'feed-html', url: 'https://example.com', name: 'HTML', synthetic: true, articles: [] },
       ];
 
       loadFeedForRefresh.mockResolvedValue(feeds[0]);
-      fetchText.mockResolvedValue({ ok: true, status: 200, text: '<html/>' });
 
       const { refreshFeed } = await importFeedManager();
       await refreshFeed('feed-html', 50);
 
       expect(loadPageSnapshot).toHaveBeenCalledWith('feed-html');
       expect(refreshFeedInWorker).toHaveBeenCalledWith({
-        feedText: undefined,
-        htmlText: '<html/>',
+        fetchFromURL: feeds[0].url,
+        snapshotLinks: undefined,
         existingFeed: feeds[0],
         maxArticles: 50,
       });
@@ -1045,7 +1111,7 @@ describe('feed manager', () => {
       },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
     fetchText.mockResolvedValue({ ok: true, status: 200, text: '<rss/>' });
     refreshFeedInWorker.mockResolvedValue({
@@ -1069,7 +1135,7 @@ describe('feed manager', () => {
       { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha', synthetic: false, articles: [] },
     ];
 
-    loadAllFeeds.mockResolvedValue(feeds);
+    listFeedsForRefresh.mockResolvedValue(feeds);
     loadFeedForRefresh.mockResolvedValue(feeds[0]);
 
     const { refreshAllFeeds } = await importFeedManager();

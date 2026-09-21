@@ -125,6 +125,20 @@ describe('getQuickKeyGroups', () => {
     expect(combos).toContain('Mod+D');
     expect(combos).toContain('Escape');
   });
+
+  it('includes the article font size shortcuts', () => {
+    const combos = groups.flatMap((group) => group.items.map((item) => item.combo));
+    expect(combos).toContain('Mod+Plus');
+    expect(combos).toContain('Mod+Minus');
+    expect(combos).toContain('Mod+0');
+  });
+
+  it('formats the Plus and Minus tokens into key caps', () => {
+    expect(formatKeyCombo('Mod+Plus', 'mac')).toEqual(['⌘', '+']);
+    expect(formatKeyCombo('Mod+Plus', 'pc')).toEqual(['Ctrl', '+']);
+    expect(formatKeyCombo('Mod+Minus', 'mac')).toEqual(['⌘', '-']);
+    expect(formatKeyCombo('Mod+Minus', 'pc')).toEqual(['Ctrl', '-']);
+  });
 });
 
 describe('isQuickKeysEvent', () => {

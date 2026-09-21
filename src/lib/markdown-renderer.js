@@ -11,6 +11,7 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { emojify } from 'node-emoji';
+import { repairBrokenEntitiesInHTML } from './html-utils.js';
 
 /**
  * Configure marked for safe, readable article output.
@@ -34,7 +35,10 @@ marked.setOptions({
 export function renderMarkdown(markdown) {
   if (!markdown) return '';
 
-  const rawHtml = marked.parse(emojify(markdown));
+  // Repair broken (empty) entities from mangled sources — in their bare
+  // and escaped forms — before parsing; otherwise marked re-encodes them
+  // faithfully and "they&;re" reaches the reader verbatim.
+  const rawHtml = marked.parse(emojify(repairBrokenEntitiesInHTML(markdown)));
   return DOMPurify.sanitize(rawHtml, {
     USE_PROFILES: { html: true },
     ALLOWED_URI_REGEXP:

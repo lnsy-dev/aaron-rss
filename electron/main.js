@@ -45,6 +45,7 @@ import {
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 import { installProcessErrorGuards } from './error-guards.js';
 import { windowChromeOptions, usesApplicationMenu } from './window-chrome.js';
+import { buildWindowMenu } from './window-menu.js';
 import { readUserThemeCss } from './user-theme.js';
 
 // Install the crash guards before anything else can reject: a transient
@@ -309,12 +310,55 @@ function sendToMainWindow(channel) {
 }
 
 /**
+ * Whether the main window currently floats above all other windows
+ * ("Float on Top" checkbox in the Window menu). Remembered for the app
+ * session so a window re-created from the dock icon or View > Reopen
+ * Window comes back floating.
+ *
+ * @type {boolean}
+ */
+let floatOnTop = false;
+
+/**
+ * Reflect a Float on Top state change on the Window menu checkbox.
+ *
+ * @param {boolean} enabled - Current float-on-top state.
+ * @returns {void}
+ */
+function syncFloatOnTopMenu(enabled) {
+  const item = Menu.getApplicationMenu()?.getMenuItemById('float-on-top');
+  if (item) {
+    item.checked = enabled;
+  }
+}
+
+/**
+ * Toggle whether the main window floats above all other windows.
+ *
+ * Applies to the current main window and records the choice for the
+ * session.
+ *
+ * @param {boolean} enabled - Whether the window should float on top.
+ * @returns {void}
+ */
+function setFloatOnTop(enabled) {
+  floatOnTop = enabled;
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) {
+    win.setAlwaysOnTop(enabled);
+  }
+  syncFloatOnTopMenu(enabled);
+}
+
+/**
  * Build and install the application menu (macOS only).
  *
  * Keeps the standard role-based menus (File/Edit/Window/Help) and adds
  * a "Reopen Window" item to the View menu so there is always a way to
- * get the main window back after closing it. The Help menu gains the
- * "Quick Keys" reference dialog, also reachable with Cmd+?/Ctrl+?.
+ * get the main window back after closing it. The Window menu replaces
+ * its role with an equivalent template carrying a "Float on Top"
+ * checkbox (see window-menu.js), and the Help menu gains the "Quick
+ * Keys" reference dialog, also reachable with Cmd+?/Ctrl+?.
  *
  * Linux and Windows run without an application menu (see
  * window-chrome.js); the shortcuts their users still need are
@@ -338,14 +382,20 @@ function createAppMenu() {
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
+        // No zoomIn/zoomOut/resetZoom roles here: their built-in
+        // Cmd/Ctrl+Plus/Minus/0 accelerators would consume the keystrokes
+        // before the page sees them, and the app implements those exact
+        // shortcuts as an article font size control instead (see
+        // src/lib/article-font.js and _handleKeyDown in
+        // src/rss-feed-component.js). Browser-style page zoom is still
+        // available via pinch gestures and the touchpad.
         { role: 'togglefullscreen' },
       ],
     },
-    { role: 'windowMenu' },
+    buildWindowMenu({
+      floatOnTop,
+      onToggleFloatOnTop: setFloatOnTop,
+    }),
     {
       role: 'help',
       submenu: [
@@ -405,6 +455,15 @@ async function createWindow() {
   });
 
   mainWindow = win;
+
+  // Re-apply the session's Float on Top choice to a re-created window,
+  // and track changes made outside the menu (e.g. by the OS) so the
+  // preference and the checkbox stay truthful.
+  win.setAlwaysOnTop(floatOnTop);
+  win.on('always-on-top-changed', (_event, isAlwaysOnTop) => {
+    floatOnTop = isAlwaysOnTop;
+    syncFloatOnTopMenu(isAlwaysOnTop);
+  });
 
   // Keep the user from being navigated away from the app. External links
   // open in the system's default browser instead of a new Electron window.

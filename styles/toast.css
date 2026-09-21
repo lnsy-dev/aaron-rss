@@ -18,6 +18,10 @@
      Share button in the article viewer at z-index 600) so they must paint
      above every overlay, including the command palette at 1000. */
   z-index: 1100;
+  /* Toasts are pure status output: they must never swallow clicks meant
+     for controls underneath them (e.g. while the feed-refresh progress
+     toast is up, everything below it has to stay clickable). */
+  pointer-events: none;
   font-family: var(--font-ui);
 }
 

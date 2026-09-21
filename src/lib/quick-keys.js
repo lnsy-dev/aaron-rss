@@ -71,6 +71,9 @@ const QUICK_KEY_GROUPS = [
       { combo: 'Mod+P', description: 'Open the command panel (or Ctrl+Shift+P)' },
       { combo: 'Mod+D', description: 'Toggle Distraction Free Mode' },
       { combo: 'Mod+?', description: 'Show this quick keys reference' },
+      { combo: 'Mod+Plus', description: 'Larger article text' },
+      { combo: 'Mod+Minus', description: 'Smaller article text' },
+      { combo: 'Mod+0', description: 'Reset article text size' },
     ],
   },
 ];
@@ -90,6 +93,10 @@ const TOKEN_LABELS = {
   Escape: { mac: 'esc', pc: 'Esc' },
   ArrowDown: { mac: '↓', pc: '↓' },
   ArrowUp: { mac: '↑', pc: '↑' },
+  // Named tokens rather than bare '+'/'-': the '+' in a combo string is
+  // the separator, so a literal plus key must be spelled as a token.
+  Plus: { mac: '+', pc: '+' },
+  Minus: { mac: '-', pc: '-' },
 };
 
 /**

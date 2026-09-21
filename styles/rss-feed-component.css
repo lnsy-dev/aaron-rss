@@ -334,6 +334,21 @@ body.distraction-free
   font-weight: 600;
 }
 
+/*
+  Clickable feed name in the Timeline view: clicking a blog name jumps
+  to that feed's block in the grouped Feeds view (openFeedsViewAtFeed).
+*/
+.rss-article-feed-name.rss-feed-name-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.rss-article-feed-name.rss-feed-name-link:hover {
+  color: var(--foreground-color);
+}
+
 .rss-empty-state {
   text-align: center;
   padding: 3rem 1rem;
@@ -961,6 +976,15 @@ body.distraction-free
 .rss-article-viewer-error {
   color: var(--error-color);
   margin-bottom: 1rem;
+}
+
+/* Notice above a cached article body shown when the live fetch failed. */
+.rss-article-viewer-cached-notice {
+  color: color-mix(in srgb, var(--foreground-color) 60%, transparent);
+  font-style: italic;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+  word-break: break-word;
 }
 
 .rss-article-viewer-frame {
@@ -1773,4 +1797,78 @@ body.distraction-free
   background: var(--secondary-color);
   border: 1px solid var(--quaternary-color);
   border-radius: 4px;
+}
+
+/*
+ * Article font size
+ *
+ * Cmd/Ctrl+Plus / Cmd/Ctrl+Minus / Cmd/Ctrl+0 adjust article text size.
+ * The component sets a data-article-font-step attribute (step-3 … step5);
+ * each rule below bumps the scale factor. Scoping the factor to the
+ * article viewer keeps the feed lists, headers, and chrome at their
+ * normal sizes while reading text scales.
+ */
+rss-feed-component {
+  --article-font-scale: 1;
+}
+
+rss-feed-component[data-article-font-step="step-3"] {
+  --article-font-scale: 0.7;
+}
+
+rss-feed-component[data-article-font-step="step-2"] {
+  --article-font-scale: 0.8;
+}
+
+rss-feed-component[data-article-font-step="step-1"] {
+  --article-font-scale: 0.9;
+}
+
+rss-feed-component[data-article-font-step="step0"] {
+  --article-font-scale: 1;
+}
+
+rss-feed-component[data-article-font-step="step1"] {
+  --article-font-scale: 1.15;
+}
+
+rss-feed-component[data-article-font-step="step2"] {
+  --article-font-scale: 1.3;
+}
+
+rss-feed-component[data-article-font-step="step3"] {
+  --article-font-scale: 1.5;
+}
+
+rss-feed-component[data-article-font-step="step4"] {
+  --article-font-scale: 1.75;
+}
+
+rss-feed-component[data-article-font-step="step5"] {
+  --article-font-scale: 2;
+}
+
+/* Reader body: multiply the theme sizes instead of replacing them so the
+   hierarchy between body text and headings is preserved while scaling. */
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content {
+  font-size: calc(var(--article-font-scale) * var(--font-size-body));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h1 {
+  font-size: calc(var(--article-font-scale) * var(--font-size-h1));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h2 {
+  font-size: calc(var(--article-font-scale) * var(--font-size-h2));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h3 {
+  font-size: calc(var(--article-font-scale) * var(--font-size-h3));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h4,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h5,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-markdown-content h6 {
+  font-size: calc(var(--article-font-scale) * var(--font-size-body));
+  font-weight: 600;
 }

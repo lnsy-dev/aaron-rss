@@ -750,6 +750,16 @@ export async function saveArticles(feedID, articles) {
  * Delete articles for a feed that are no longer in the merged set and are
  * not starred.
  *
+ * Read, unstarred articles being dropped are first recorded in the
+ * cleared_articles memory. Feeds that keep their entire publishing
+ * history in the feed body (e.g. static-site Atom feeds) would otherwise
+ * resurrect these articles as brand-new unread items on the next
+ * refresh: the merge cap drops the article, the delete removes it, and
+ * the still-listed item is re-added unread — forever. The memory feeds
+ * back into the merge via listClearedUniqueIDs. Unread dropped articles
+ * are deliberately not remembered: the user has not read them yet, so
+ * they may legitimately return.
+ *
  * @param {string} feedID
  * @param {Array<string>} articleIDs
  * @returns {Promise<void>}
@@ -760,6 +770,22 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
   }
 
   const placeholders = articleIDs.map(() => '?').join(', ');
+
+  // Remember the identity of the read articles about to be deleted, using
+  // the database's own read flags (not the refresh's loaded snapshot, which
+  // can already be stale) so a read state change mid-refresh is respected.
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO cleared_articles (feed_id, article_id, unique_id, url, title, cleared_at)
+      SELECT feed_id, article_id, unique_id, url, title, ?
+      FROM articles
+      WHERE feed_id = ?
+        AND article_id NOT IN (${placeholders})
+        AND read = 1
+        AND starred = 0
+        AND unique_id IS NOT NULL`,
+    params: [new Date().toISOString(), feedID, ...articleIDs],
+  });
+
   await callWorker('exec', {
     sql: `DELETE FROM articles
       WHERE feed_id = ?
@@ -911,6 +937,29 @@ export function loadAllFeeds() {
       LEFT JOIN downloaded_videos v ON v.feed_id = a.feed_id AND v.article_id = a.article_id
       ORDER BY f.name`,
   }).then(rowsToFeeds);
+}
+
+/**
+ * List every feed's identity columns for a refresh cycle.
+ *
+ * The refresh orchestrator only needs each feed's id (plus name/url for
+ * progress labels), so unlike loadAllFeeds this never selects article
+ * rows: pulling every article's full content through the worker would
+ * serialize megabytes on the sqlite worker and the renderer main thread
+ * at the exact moment the user is interacting with the app.
+ *
+ * @returns {Promise<Array<{feedID: string, url: string, name: string}>>}
+ */
+export function listFeedsForRefresh() {
+  return callWorker('query', {
+    sql: 'SELECT feed_id, url AS feed_url, name FROM feeds ORDER BY name',
+  }).then((rows) =>
+    rows.map((row) => ({
+      feedID: row.feed_id,
+      url: row.feed_url,
+      name: row.name,
+    }))
+  );
 }
 
 /**
@@ -1448,12 +1497,13 @@ export async function loadSettings() {
     showUnreadOnly: false,
     viewMode: 'timeline',
     theme: '',
+    articleFontStep: 0,
   };
 
   for (const row of rows) {
     const key = row.key;
     const value = row.value;
-    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval' || key === 'refreshConcurrency') {
+    if (key === 'maxArticlesPerFeed' || key === 'refreshInterval' || key === 'refreshConcurrency' || key === 'articleFontStep') {
       settings[key] = parseInt(value, 10);
     } else if (key === 'showUnreadOnly') {
       settings[key] = value === 'true';

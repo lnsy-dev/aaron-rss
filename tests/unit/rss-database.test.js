@@ -1122,6 +1122,33 @@ describe('rss database helpers', () => {
     expect(message.params.sql).toContain('COALESCE(v.file_path, a.download_path)');
   });
 
+  it('listFeedsForRefresh selects only feed identity columns with no article join', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [
+        { feed_id: 'feed-a', feed_url: 'https://alpha.example.com/feed', name: 'Alpha' },
+        { feed_id: 'feed-b', feed_url: 'https://beta.example.com/feed', name: 'Beta' },
+      ],
+    });
+
+    const db = await importDatabaseModule();
+    const feeds = await db.listFeedsForRefresh();
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.params).toBeUndefined();
+    expect(message.params.sql).toBe('SELECT feed_id, url AS feed_url, name FROM feeds ORDER BY name');
+
+    // The refresh loop only needs ids plus name/url for progress labels;
+    // mapped records must not carry articles or content columns.
+    expect(feeds).toEqual([
+      { feedID: 'feed-a', url: 'https://alpha.example.com/feed', name: 'Alpha' },
+      { feedID: 'feed-b', url: 'https://beta.example.com/feed', name: 'Beta' },
+    ]);
+    expect(Object.keys(feeds[0]).sort()).toEqual(['feedID', 'name', 'url']);
+  });
+
   it('loadArticleContent returns only the content columns for one article', async () => {
     FakeWorker.onMessage = (m) => ({
       id: m.id,
@@ -1142,13 +1169,21 @@ describe('rss database helpers', () => {
     const db = await importDatabaseModule();
     await db.deleteArticlesNotInSet('feed123', ['art1', 'art2']);
 
-    const message = FakeWorker.instance.messages[0];
-    expect(message.action).toBe('exec');
-    expect(message.params.sql).toContain('DELETE FROM articles');
-    expect(message.params.sql).toContain('feed_id = ?');
-    expect(message.params.sql).toContain('article_id NOT IN (?, ?)');
-    expect(message.params.sql).toContain('starred = 0');
-    expect(message.params.params).toEqual(['feed123', 'art1', 'art2']);
+    // First message: remember the read articles about to be dropped.
+    const [rememberMessage, deleteMessage] = FakeWorker.instance.messages;
+    expect(rememberMessage.action).toBe('exec');
+    expect(rememberMessage.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+    expect(rememberMessage.params.sql).toContain('read = 1');
+    expect(rememberMessage.params.sql).toContain('starred = 0');
+    expect(rememberMessage.params.sql).toContain('article_id NOT IN (?, ?)');
+    expect(rememberMessage.params.params[1]).toBe('feed123');
+    // Second message: delete them.
+    expect(deleteMessage.action).toBe('exec');
+    expect(deleteMessage.params.sql).toContain('DELETE FROM articles');
+    expect(deleteMessage.params.sql).toContain('feed_id = ?');
+    expect(deleteMessage.params.sql).toContain('article_id NOT IN (?, ?)');
+    expect(deleteMessage.params.sql).toContain('starred = 0');
+    expect(deleteMessage.params.params).toEqual(['feed123', 'art1', 'art2']);
   });
 
   it('deleteArticlesNotInSet is a no-op for an empty kept set', async () => {

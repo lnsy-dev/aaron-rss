@@ -16,6 +16,7 @@ import {
   runDatabaseMaintenance as dbRunDatabaseMaintenance,
   loadAllFeeds as dbLoadAllFeeds,
   loadFeedsForDisplay as dbLoadFeedsForDisplay,
+  listFeedsForRefresh as dbListFeedsForRefresh,
   loadFeed as dbLoadFeed,
   loadFeedForRefresh as dbLoadFeedForRefresh,
   deleteFeed as dbDeleteFeed,
@@ -205,8 +206,10 @@ export async function addSnapshotFeed(url, name) {
 /**
  * Fetch a feed's source text/HTML and mark it failed when the fetch fails.
  *
- * This stays on the main thread because the Electron preload fetch bridge
- * is only available there.
+ * Regular feeds fetch inside the feed-refresh worker through the relay
+ * (see refreshFeed); this main-thread helper remains only for Bluesky
+ * feeds, whose per-item enrichment needs the main thread and therefore
+ * fetches there too.
  *
  * @param {object} existingFeed
  * @returns {Promise<{ok: boolean, feedText?: string, htmlText?: string}>}
@@ -291,9 +294,12 @@ async function parseAndEnrichBlueskyFeed(feedURL, feedText) {
 /**
  * Refresh a single feed.
  *
- * Network fetching happens on the main thread (it needs the Electron
- * preload bridge), then parsing and article merging are offloaded to the
- * feed-refresh worker so the UI thread stays responsive.
+ * The whole per-feed refresh — network fetch, parsing, and article
+ * merging — runs in the feed-refresh worker thread: the worker fetches
+ * through the bridge relay and the main thread only persists the result.
+ * Bluesky feeds are the one exception: their per-item enrichment needs
+ * the main thread, so they fetch and parse there (as before) and hand a
+ * pre-parsed feed to the worker for merging.
  *
  * @param {string} feedID
  * @param {number} maxArticles
@@ -311,30 +317,24 @@ export async function refreshFeed(feedID, maxArticles = 50) {
     // snapshot instead of parsing RSS/HTML article structure.
     const snapshot = await dbLoadPageSnapshot(feedID);
 
-    const source = await fetchFeedSource(existingFeed);
-    if (!source.ok) {
-      existingFeed.lastFetchWasSuccessful = false;
-      existingFeed.lastFetchEndTime = new Date();
-      await dbSaveFeedMetadata(existingFeed);
-      return existingFeed;
-    }
-
     let workerParams;
-    if (snapshot && source.htmlText !== undefined) {
-      workerParams = {
-        feedText: undefined,
-        htmlText: source.htmlText,
-        snapshotLinks: snapshot.links,
-        existingFeed,
-        maxArticles,
-      };
-    } else if (source.feedText && isBlueskyFeedURL(existingFeed.url)) {
+    if (!existingFeed.synthetic && isBlueskyFeedURL(existingFeed.url)) {
+      const source = await fetchFeedSource(existingFeed);
+      if (!source.ok) {
+        existingFeed.lastFetchWasSuccessful = false;
+        existingFeed.lastFetchEndTime = new Date();
+        await dbSaveFeedMetadata(existingFeed);
+        return existingFeed;
+      }
       const parsedFeed = await parseAndEnrichBlueskyFeed(existingFeed.url, source.feedText);
       workerParams = { parsedFeed, existingFeed, maxArticles };
     } else {
+      // The worker fetches the source itself through the relay; watched-
+      // page feeds hand it the stored snapshot so the fetched HTML is
+      // link-diffed against it.
       workerParams = {
-        feedText: source.feedText,
-        htmlText: source.htmlText,
+        fetchFromURL: existingFeed.url,
+        snapshotLinks: snapshot ? snapshot.links : undefined,
         existingFeed,
         maxArticles,
       };
@@ -786,6 +786,12 @@ export const REFRESH_CONCURRENCY = 4;
  * several feeds are in flight at once; `results` preserves the feed list
  * order regardless of completion order.
  *
+ * The feed list is loaded metadata-only (see listFeedsForRefresh): the
+ * loop only needs each feed's id, so pulling every article's full content
+ * through the sqlite worker at refresh start — exactly when the user just
+ * clicked Refresh and expects the UI to stay responsive — would stall the
+ * renderer for large subscriptions.
+ *
  * @param {number} maxArticles
  * @param {Function} [onProgress] - Called before each feed is fetched with
  *   `{ feed, index, total }` so the UI can show a progress bar.
@@ -801,7 +807,7 @@ export async function refreshAllFeeds(
   onFeedUpdated = null,
   concurrency = REFRESH_CONCURRENCY
 ) {
-  const feeds = await dbLoadAllFeeds();
+  const feeds = await dbListFeedsForRefresh();
   const results = new Array(feeds.length);
   let nextIndex = 0;
 

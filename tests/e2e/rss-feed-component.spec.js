@@ -1618,15 +1618,19 @@ test.describe('Aaron RSS', () => {
 
     // The toast must not be occluded by the article viewer overlay it was
     // triggered from (regression guard: toast z-index must sit above overlays).
-    const toastOnTop = await toast.evaluate((el) => {
-      const rect = el.getBoundingClientRect();
-      const hit = document.elementFromPoint(
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2
-      );
-      return el === hit || el.contains(hit);
+    // Toasts are pointer-transparent (status output must never swallow
+    // clicks), so stacking is asserted via z-order rather than hit-testing.
+    const toastAboveOverlay = await page.evaluate(() => {
+      const toast = document.querySelector('.app-toast');
+      const overlay = document.querySelector('.rss-article-viewer-overlay');
+      if (!toast || !overlay) return false;
+      // The stacking context lives on the toast container, not the toast.
+      const container = toast.closest('.app-toast-container') || toast;
+      const toastZ = Number(getComputedStyle(container).zIndex) || 0;
+      const overlayZ = Number(getComputedStyle(overlay).zIndex) || 0;
+      return toastZ > overlayZ;
     });
-    expect(toastOnTop).toBe(true);
+    expect(toastAboveOverlay).toBe(true);
   });
 
   test('original viewer Share button copies the original URL to clipboard', async ({ page }) => {

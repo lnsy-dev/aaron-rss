@@ -207,6 +207,17 @@ export default {
   },
   resolve: {
     /**
+     * unpdf's Node-only branch statically resolves the pdfjs-dist
+     * package path (import.meta.resolve) to locate optional font/cmap
+     * folders. pdfjs-dist is not installed — unpdf bundles its own
+     * serverless pdf.js for the browser and the branch is guarded by
+     * an isNode check that is always false here — but webpack still
+     * refuses to build the bundle unless the specifier resolves.
+     */
+    alias: {
+      'pdfjs-dist/package.json': false,
+    },
+    /**
      * Include .wasm in resolve.extensions so that imports like:
      *   import('./module.wasm')
      * are resolved without requiring the full extension.

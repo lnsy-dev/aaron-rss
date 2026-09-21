@@ -239,6 +239,27 @@ describe('database client', () => {
     expect(second.params.params).toEqual(['theme', ':root { --x: 1; }']);
   });
 
+  it('loadSettings parses articleFontStep as a number with 0 default', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ key: 'articleFontStep', value: '2' }],
+    });
+
+    const db = await importDatabaseModule();
+    const settings = await db.loadSettings();
+
+    // Numeric type matters: the component clamps on it, and a string
+    // '2' would still parse but '0' === false comparisons elsewhere in
+    // the settings flow rely on consistent typing.
+    expect(settings.articleFontStep).toBe(2);
+
+    // No stored row falls back to the theme-default step.
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const fresh = await db.loadSettings();
+    expect(fresh.articleFontStep).toBe(0);
+  });
+
   it('correlates concurrent responses by message id', async () => {
     FakeWorker.onMessage = (m) => {
       // Answer slower-acting requests first, out of order

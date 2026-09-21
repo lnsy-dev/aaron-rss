@@ -1,16 +1,22 @@
 /**
  * Feed Refresh Worker
  *
- * Runs feed parsing and article merging in a dedicated module worker so
- * refresh operations do not block the main UI thread. The main thread
- * remains responsible for network fetching (it has the Electron preload
- * bridge) and database persistence (it owns the sqlite worker), while this
- * worker handles the CPU-heavy parse/merge work.
+ * Runs feed fetching, parsing, and article merging in a dedicated module
+ * worker so refresh operations do not block the main UI thread. The main
+ * thread remains responsible for database persistence (it owns the sqlite
+ * worker) and for relaying network fetches to the Electron preload bridge
+ * over a MessagePort (see setFetchPort below).
  *
  * Message protocol (main thread -> worker):
  *   { id: number, action: string, params: object }
+ *   { id: 0, action: 'setFetchPort' } — transfers the fetch relay MessagePort
  * Response (worker -> main thread):
  *   { id: number, ok: true, result: any } | { id: number, ok: false, error: string }
+ *
+ * Fetch relay protocol (worker -> port):
+ *   { id: number, url: string }
+ * Response (port -> worker):
+ *   { id: number, ok: true, result: {ok, status, text} } | { id: number, ok: false, error: string }
  *
  * For LLMs: this is a webpack 5 native module worker; it must be spawned
  * with `new Worker(new URL('./feed-refresh-worker.js', import.meta.url), { type: 'module' })`.
@@ -25,6 +31,67 @@ import {
   mergeArticles,
   skipPersist,
 } from './lib/article-processor.js';
+
+/**
+ * The fetch relay port installed via the 'setFetchPort' action.
+ *
+ * Workers cannot use the Electron preload bridge (it only exists on the
+ * main thread) and a worker's own fetch() is subject to CORS from the
+ * app:// origin, so network fetching is relayed to the main thread over
+ * this port. The main-thread side forwards requests to the preload
+ * bridge (or plain fetch outside Electron), keeping every refresh-stage
+ * orchestration decision inside this worker thread.
+ *
+ * @type {MessagePort|null}
+ */
+let fetchPort = null;
+
+/** @type {number} Monotonic id for relayed fetch requests */
+let nextFetchId = 1;
+
+/** @type {Map<number, {resolve: Function, reject: Function}>} In-flight relayed fetches */
+const pendingFetches = new Map();
+
+/**
+ * Install the fetch relay port. Must be sent as the first message after
+ * the worker is created so every later refresh can fetch.
+ *
+ * @param {MessagePort} port - Port paired with the main-thread relay
+ * @returns {void}
+ */
+function setFetchPort(port) {
+  fetchPort = port;
+  port.onmessage = (event) => {
+    const { id, ok, result, error } = event.data;
+    const pending = pendingFetches.get(id);
+    if (!pending) {
+      return;
+    }
+    pendingFetches.delete(id);
+    if (ok) {
+      pending.resolve(result);
+    } else {
+      pending.reject(new Error(error));
+    }
+  };
+}
+
+/**
+ * Fetch a URL's text through the main-thread relay.
+ *
+ * @param {string} url - Absolute URL to fetch
+ * @returns {Promise<{ok: boolean, status: number, text: string}>}
+ */
+function relayFetchText(url) {
+  if (!fetchPort) {
+    return Promise.reject(new Error('Fetch relay port is not installed'));
+  }
+  return new Promise((resolve, reject) => {
+    const id = nextFetchId++;
+    pendingFetches.set(id, { resolve, reject });
+    fetchPort.postMessage({ id, url });
+  });
+}
 
 /**
  * Build a failure record for an existing feed when fetching or parsing fails.
@@ -48,7 +115,16 @@ function buildFailedFeed(existingFeed) {
 /**
  * Refresh a single feed from fetched text/HTML.
  *
+ * When `params.fetchFromURL` is set the worker performs the network fetch
+ * itself through the relay port, so the whole refresh (fetch + parse +
+ * merge) runs in this worker thread and the main thread only relays the
+ * request to the Electron preload bridge. Otherwise the already-fetched
+ * `feedText`/`htmlText`/`parsedFeed` is used (Bluesky feeds, whose
+ * per-item enrichment needs the main thread, still take that path).
+ *
  * @param {object} params
+ * @param {string} [params.fetchFromURL] - Fetch the feed source from this
+ *   URL through the relay before parsing
  * @param {string} [params.feedText] - Raw RSS/Atom/JSON feed body
  * @param {string} [params.htmlText] - Raw HTML body for synthetic feeds
  * @param {Array<string>} [params.snapshotLinks] - Previously snapshotted
@@ -69,16 +145,31 @@ async function refreshFeed(params) {
     : null;
   const snapshotMode = Array.isArray(params.snapshotLinks);
 
+  let sourceFeedText = feedText;
+  let sourceHTMLText = htmlText;
+
+  if (params.fetchFromURL !== undefined) {
+    const response = await relayFetchText(params.fetchFromURL);
+    if (!response.ok) {
+      return buildFailedFeed(existingFeed);
+    }
+    if (existingFeed.synthetic) {
+      sourceHTMLText = response.text;
+    } else {
+      sourceFeedText = response.text;
+    }
+  }
+
   let parsedFeed;
   let snapshotLinks;
-  if (snapshotMode && htmlText !== undefined) {
-    ({ parsedFeed, snapshotLinks } = buildSnapshotParsedFeed(htmlText, existingFeed.url, params.snapshotLinks));
+  if (snapshotMode && sourceHTMLText !== undefined) {
+    ({ parsedFeed, snapshotLinks } = buildSnapshotParsedFeed(sourceHTMLText, existingFeed.url, params.snapshotLinks));
   } else if (preParsedFeed) {
     parsedFeed = preParsedFeed;
-  } else if (htmlText !== undefined) {
-    parsedFeed = generateRSSFromHTMLText(existingFeed.url, htmlText);
+  } else if (sourceHTMLText !== undefined) {
+    parsedFeed = generateRSSFromHTMLText(existingFeed.url, sourceHTMLText);
   } else {
-    parsedFeed = await parseFeedText(feedText, existingFeed.url);
+    parsedFeed = await parseFeedText(sourceFeedText, existingFeed.url);
   }
 
   if (!parsedFeed) {
@@ -118,7 +209,8 @@ async function refreshFeed(params) {
 /**
  * Message handler. Dispatches to the action handlers above and always
  * answers with the matching message id so the main thread can correlate
- * requests and responses.
+ * requests and responses. The 'setFetchPort' action takes the fetch
+ * relay MessagePort from `event.ports[0]` and never posts a reply.
  *
  * @param {MessageEvent} event - { id, action, params }
  * @returns {Promise<void>}
@@ -127,6 +219,15 @@ self.onmessage = async (event) => {
   const { id, action, params = {} } = event.data;
 
   try {
+    if (action === 'setFetchPort') {
+      const port = event.ports && event.ports[0];
+      if (!port) {
+        throw new Error('setFetchPort requires a transferred MessagePort');
+      }
+      setFetchPort(port);
+      return;
+    }
+
     if (action !== 'refreshFeed') {
       throw new Error(`Unknown feed-refresh-worker action: ${action}`);
     }

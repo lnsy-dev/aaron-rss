@@ -48,6 +48,18 @@ describe('markdown-renderer', () => {
     expect(result).toBe(html);
   });
 
+  it('repairs broken empty entities before parsing', () => {
+    renderMarkdown('Unlike Chromebooks, they&amp;;re not cheap');
+
+    expect(mockParse).toHaveBeenCalledWith('Unlike Chromebooks, they&#8217;re not cheap');
+  });
+
+  it('repairs bare broken empty entities before parsing', () => {
+    renderMarkdown('they&;re not cheap');
+
+    expect(mockParse).toHaveBeenCalledWith('they&#8217;re not cheap');
+  });
+
   it('expands :shortcode: emoji aliases before parsing', () => {
     const result = renderMarkdown('Great news :smile: :rocket:');
 

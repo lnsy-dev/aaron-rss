@@ -1317,6 +1317,131 @@ describe('sqlite worker init watchdog', () => {
     expect(FakeWorker.instance.terminateCalls).toBe(1);
   });
 
+  it('loadDownloadedPodcastArticles joins downloaded episodes with their feeds', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: 'feed123',
+        feed_url: 'https://example.com/podcast.xml',
+        name: 'Example Podcast',
+        home_page_url: 'https://example.com',
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: 1,
+        last_fetch_end_time: null,
+        synthetic: 0,
+        open_original_by_default: 0,
+        auto_download_youtube: 0,
+        article_id: 'ep1',
+        article_url: 'https://example.com/episodes/1',
+        unique_id: 'u1',
+        title: 'Episode 1',
+        content_html: null,
+        content_text: null,
+        external_url: null,
+        summary: null,
+        image_url: null,
+        banner_image_url: null,
+        date_published: '2026-01-02T00:00:00.000Z',
+        date_modified: null,
+        authors: '[]',
+        tags: '[]',
+        read: 1,
+        starred: 0,
+        download_path: '/podcasts/Episode 1.mp3',
+        enclosure_url: 'https://cdn.example.com/ep1.mp3',
+        enclosure_type: 'audio/mpeg',
+        enclosure_length: 1024,
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedPodcastArticles();
+
+    const sql = FakeWorker.instance.messages[0].params.sql;
+    expect(sql).toContain('FROM articles a');
+    expect(sql).toContain('LEFT JOIN feeds f ON f.feed_id = a.feed_id');
+    // Downloaded means a persisted download_path on an audio-enclosure
+    // article; read episodes stay in the library.
+    expect(sql).toContain("a.download_path IS NOT NULL AND a.download_path != ''");
+    expect(sql).toContain("a.enclosure_url IS NOT NULL AND a.enclosure_url != ''");
+    expect(sql).not.toContain('read = 0');
+    expect(sql).toContain('ORDER BY COALESCE(a.date_published, a.date_arrived) DESC');
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed.feedID).toBe('feed123');
+    expect(items[0].feed.name).toBe('Example Podcast');
+    expect(items[0].article.articleID).toBe('ep1');
+    expect(items[0].article.downloadPath).toBe('/podcasts/Episode 1.mp3');
+    expect(items[0].article.enclosureURL).toBe('https://cdn.example.com/ep1.mp3');
+    expect(items[0].article.enclosureType).toBe('audio/mpeg');
+    // Read episodes remain listed (listening-library semantics).
+    expect(items[0].article.read).toBe(true);
+  });
+
+  it('loadDownloadedPodcastArticles keeps dangling episodes playable without their feed', async () => {
+    // The feed row is gone but the downloaded episode remains: feed is
+    // null and the article keeps its own IDs so the view can still list
+    // and play it.
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: null,
+        feed_url: null,
+        name: null,
+        home_page_url: null,
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: null,
+        last_fetch_end_time: null,
+        synthetic: null,
+        open_original_by_default: null,
+        auto_download_youtube: null,
+        article_id: 'ep-dangling',
+        article_url: 'https://example.com/episodes/9',
+        unique_id: 'u9',
+        title: 'Dangling Episode',
+        content_html: null,
+        content_text: null,
+        external_url: null,
+        summary: null,
+        image_url: null,
+        banner_image_url: null,
+        date_published: null,
+        date_modified: null,
+        authors: '[]',
+        tags: '[]',
+        read: 0,
+        starred: 0,
+        download_path: '/podcasts/Dangling.mp3',
+        enclosure_url: 'https://cdn.example.com/dangling.mp3',
+        enclosure_type: 'audio/mpeg',
+        enclosure_length: null,
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedPodcastArticles();
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed).toBeNull();
+    expect(items[0].article.articleID).toBe('ep-dangling');
+    expect(items[0].article.feedID).toBeNull();
+    expect(items[0].article.title).toBe('Dangling Episode');
+    expect(items[0].article.downloadPath).toBe('/podcasts/Dangling.mp3');
+  });
+
+  it('loadDownloadedPodcastArticles returns an empty list when nothing is downloaded', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    const items = await db.loadDownloadedPodcastArticles();
+    expect(items).toEqual([]);
+  });
+
   it('gives the next request a fresh worker after the watchdog fires', async () => {
     vi.useFakeTimers();
     FakeWorker.onMessage = () => null;

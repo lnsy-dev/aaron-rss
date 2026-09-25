@@ -326,6 +326,7 @@ test.describe('Aaron RSS', () => {
       'Refresh All Feeds',
       'Mark All Read',
       'Videos',
+      'Play All Videos',
       'Download Youtube Video',
       'Settings',
       'Export OPML',
@@ -2012,6 +2013,99 @@ test.describe('Aaron RSS', () => {
     await expect(embed).toContainText('Bob');
     await expect(embed).toContainText('The quoted post text');
     await expect(embed.locator('img[src="https://cdn.example/quoted.jpg"]')).toHaveCount(1);
+  });
+
+  test('a Bluesky post with a native video embed shows a playable video', async ({ page }) => {
+    await page.evaluate(() => {
+      const handleResponse = JSON.stringify({ did: 'did:plc:alice' });
+      const threadResponse = JSON.stringify({
+        thread: {
+          post: {
+            uri: 'at://did:plc:alice/app.bsky.feed.post/3vid',
+            author: { handle: 'alice', displayName: 'Alice' },
+            indexedAt: '2026-08-20T12:00:00.000Z',
+            record: { text: 'Watch this' },
+            embed: {
+              $type: 'app.bsky.embed.video#view',
+              playlist: 'https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/playlist.m3u8',
+              thumbnail: 'https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/thumbnail.jpg',
+              aspectRatio: { height: 576, width: 682 },
+              record: {
+                did: 'did:plc:alice',
+                video: { ref: { $link: 'bafkvideo' }, mimeType: 'video/mp4', size: 12345 },
+              },
+            },
+          },
+          replies: [],
+        },
+      });
+
+      const originalFetch = window.fetch;
+      window.fetch = function (url, options) {
+        if (typeof url !== 'string' || !url.startsWith('https://public.api.bsky.app')) {
+          return originalFetch(url, options);
+        }
+        if (url.includes('resolveHandle?handle=alice')) {
+          return Promise.resolve(new Response(handleResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        if (url.includes('getPostThread')) {
+          return Promise.resolve(new Response(threadResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        return originalFetch(url, options);
+      };
+    });
+
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await component.evaluate((el) => {
+      el.feeds = [
+        {
+          feedID: 'feed-bsky-video',
+          url: 'https://bsky.app/profile/alice/rss',
+          name: 'Alice',
+          homePageURL: 'https://bsky.app/profile/alice',
+          articles: [
+            {
+              articleID: 'bsky-video-1',
+              title: 'Video post',
+              url: 'https://bsky.app/profile/alice/post/3vid',
+              contentText: 'Watch this',
+              summary: 'Watch this',
+              datePublished: new Date('2026-08-20T12:00:00Z'),
+              read: false,
+              starred: false,
+            },
+          ],
+        },
+      ];
+      el.settings = { maxArticlesPerFeed: 50 };
+      el.renderFeeds();
+    });
+
+    await page.locator('.rss-article-title strong').click();
+
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+    await expect(viewer.locator('.rss-article-viewer-body')).toContainText('Watch this');
+
+    // The native video embed renders as an inline player pointed at the
+    // original MP4 blob (not the unplayable HLS playlist), with the view's
+    // thumbnail as its poster.
+    const video = viewer.locator('.rss-social-post > .rss-social-media video');
+    await expect(video).toHaveCount(1, { timeout: 15000 });
+    await expect(video).toHaveAttribute(
+      'src',
+      'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aalice&cid=bafkvideo'
+    );
+    await expect(video).toHaveAttribute('poster', 'https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/thumbnail.jpg');
+    await expect(video).toHaveJSProperty('controls', true);
   });
 
   test('Bluesky replies with attached photos show them in the comments', async ({ page }) => {
@@ -3974,11 +4068,13 @@ test.describe('Aaron RSS', () => {
       await page.locator('.rss-article-viewer-close').click();
       await expect(viewer).toBeHidden();
 
-      // Run the Videos command from the command panel.
+      // Run the Videos command from the command panel. The name is
+      // matched exactly: a loose hasText match also catches the
+      // separate "Play All Videos" command.
       await page.locator('.rss-hamburger').click();
       const dialog = page.locator('command-panel dialog');
       await expect(dialog).toBeVisible();
-      await page.locator('command-panel .command-item', { hasText: 'Videos' }).click();
+      await page.locator('command-panel .command-item .command-name', { hasText: /^Videos$/ }).click();
 
       // The command enters the Videos view and lists the download.
       await expect(dialog).toBeHidden();

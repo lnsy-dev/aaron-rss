@@ -16,6 +16,31 @@ import { stripHTML } from './html-utils.js';
 const BLUESKY_EMBED_PLACEHOLDER = '[contains quote post or other embedded content]';
 
 /**
+ * AppView serving com.atproto.sync.getBlob. The blob CID from a video
+ * embed's record streams the original MP4 through here (with CORS `*`),
+ * which <video> elements can play directly — unlike the HLS playlist on
+ * the view, which needs hls.js. The 302 to the user's PDS is followed
+ * transparently by fetch, the network bridge, and <video> itself.
+ *
+ * @type {string}
+ */
+const BLUESKY_BLOB_BASE = 'https://bsky.social/xrpc/com.atproto.sync.getBlob';
+
+/**
+ * Build a streamable URL for an ATProto blob from a video embed's record.
+ *
+ * @param {object} embedView An app.bsky.embed.video#view object
+ * @returns {string} The blob URL, or '' when the embed carries no record
+ */
+function buildBlueskyVideoBlobURL(embedView) {
+  const ref = embedView?.record?.video?.ref;
+  const cid = ref?.$link || ref?.link || ref;
+  const did = embedView?.record?.did;
+  if (typeof cid !== 'string' || !cid || typeof did !== 'string' || !did) return '';
+  return `${BLUESKY_BLOB_BASE}?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cid)}`;
+}
+
+/**
  * Recognize a Bluesky or Mastodon post URL.
  *
  * @param {string} url
@@ -241,7 +266,7 @@ export function renderBlueskyPlainText(text, facets) {
 }
 
 /**
- * Extract media (images, external link cards) from a Bluesky embed view.
+ * Extract media (videos, images, external link cards) from a Bluesky embed view.
  *
  * @param {object} embedView
  * @returns {Array<object>}
@@ -278,6 +303,22 @@ function extractBlueskyMedia(embedView) {
       description: embedView.external.description,
       thumb: embedView.external.thumb,
     });
+  }
+
+  // Native video embeds. The view only exposes an HLS playlist, which
+  // browsers cannot play without hls.js; the post's record still carries
+  // the original blob (with did + CID), whose URL streams a plain MP4.
+  if (embedView.$type === 'app.bsky.embed.video#view') {
+    const fullsize = buildBlueskyVideoBlobURL(embedView);
+    if (fullsize) {
+      media.push({
+        type: 'video',
+        thumb: embedView.thumbnail,
+        fullsize,
+        alt: '',
+        aspectRatio: embedView.aspectRatio,
+      });
+    }
   }
 
   // recordWithMedia nests media under `embed.media`.
@@ -583,9 +624,10 @@ async function buildBlueskyItemURIs(feedURL, items) {
 /**
  * Build an HTML string for a list of Bluesky media items.
  *
- * Images become plain <img> elements; external link cards (website previews)
- * become clickable anchors so the linked site can be opened from the feed
- * list. Clicks on these anchors are routed to the system browser by the
+ * Images become plain <img> elements; native video embeds become <video>
+ * elements playing the original MP4 blob; external link cards (website
+ * previews) become clickable anchors so the linked site can be opened from
+ * the feed list. Clicks on these anchors are routed to the system browser by the
  * component's delegated content-click handling (or will-navigate in Electron).
  *
  * @param {Array<object>} media
@@ -599,6 +641,14 @@ function buildBlueskyMediaHTML(media) {
     if (item.type === 'image' && item.thumb) {
       const alt = escapeHTML(item.alt || '');
       items.push(`<img src="${escapeHTML(item.thumb)}" alt="${alt}" loading="lazy">`);
+    } else if (item.type === 'video' && item.fullsize) {
+      const alt = escapeHTML(item.alt || '');
+      items.push(
+        `<video src="${escapeHTML(item.fullsize)}" controls preload="metadata" loading="lazy"` +
+        (item.thumb ? ` poster="${escapeHTML(item.thumb)}"` : '') +
+        (alt ? ` aria-label="${alt}"` : '') +
+        `></video>`
+      );
     } else if (item.type === 'external' && item.uri) {
       const title = escapeHTML(item.title || item.uri);
       const thumb = item.thumb

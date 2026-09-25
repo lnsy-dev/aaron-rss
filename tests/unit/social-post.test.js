@@ -120,6 +120,20 @@ describe('social-post', () => {
       expect(html).toContain('<img src="https://cdn.example.com/thumb.jpg"');
     });
 
+    it('renders video attachments as playable video elements', () => {
+      const html = buildBlueskyMediaHTML([
+        {
+          type: 'video',
+          thumb: 'https://video.bsky.app/watch/thumb.jpg',
+          fullsize: 'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aalice&cid=bafkvideo',
+        },
+      ]);
+
+      expect(html).toContain('<video src="https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aalice&amp;cid=bafkvideo"');
+      expect(html).toContain('poster="https://video.bsky.app/watch/thumb.jpg"');
+      expect(html).toContain('controls');
+    });
+
     it('escapes HTML in external card fields', () => {
       const html = buildBlueskyMediaHTML([
         {
@@ -263,6 +277,112 @@ describe('social-post', () => {
 
       expect(post.comments).toHaveLength(1);
       expect(post.comments[0].media).toEqual([]);
+    });
+
+    it('maps native video embeds to a playable MP4 blob URL', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('resolveHandle?handle=alice.bsky.social')) {
+          return { ok: true, status: 200, text: JSON.stringify({ did: 'did:plc:alice' }) };
+        }
+        if (url.includes('getPostThread')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              thread: {
+                post: {
+                  uri: 'at://did:plc:alice/app.bsky.feed.post/3vid',
+                  author: { handle: 'alice.bsky.social', displayName: 'Alice' },
+                  indexedAt: '2026-08-20T12:00:00.000Z',
+                  record: { text: 'Watch this' },
+                  embed: {
+                    $type: 'app.bsky.embed.video#view',
+                    playlist: 'https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/playlist.m3u8',
+                    thumbnail: 'https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/thumbnail.jpg',
+                    aspectRatio: { height: 576, width: 682 },
+                    record: {
+                      did: 'did:plc:alice',
+                      video: { ref: { $link: 'bafkvideo' }, mimeType: 'video/mp4' },
+                    },
+                  },
+                },
+                replies: [
+                  {
+                    post: {
+                      author: { handle: 'bob.bsky.social' },
+                      indexedAt: '2026-08-20T13:00:00.000Z',
+                      record: { text: 'Video reply' },
+                      embed: {
+                        $type: 'app.bsky.embed.video#view',
+                        playlist: 'https://video.bsky.app/watch/did%3Aplc%3Abob/bafkreply/playlist.m3u8',
+                        thumbnail: 'https://video.bsky.app/watch/did%3Aplc%3Abob/bafkreply/thumbnail.jpg',
+                        record: {
+                          did: 'did:plc:bob',
+                          video: { ref: { $link: 'bafkreply' }, mimeType: 'video/mp4' },
+                        },
+                      },
+                    },
+                    replies: [],
+                  },
+                ],
+              },
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://bsky.app/profile/alice.bsky.social/post/3vid');
+
+      // The HLS playlist is not directly playable; the original MP4 blob
+      // from the record streams through com.atproto.sync.getBlob instead.
+      expect(post.media).toHaveLength(1);
+      expect(post.media[0].type).toBe('video');
+      expect(post.media[0].fullsize).toBe(
+        'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aalice&cid=bafkvideo'
+      );
+      expect(post.media[0].thumb).toBe('https://video.bsky.app/watch/did%3Aplc%3Aalice/bafkvideo/thumbnail.jpg');
+
+      // Replies carrying native videos expose them the same way.
+      expect(post.comments).toHaveLength(1);
+      expect(post.comments[0].media).toHaveLength(1);
+      expect(post.comments[0].media[0].type).toBe('video');
+      expect(post.comments[0].media[0].fullsize).toBe(
+        'https://bsky.social/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Abob&cid=bafkreply'
+      );
+    });
+
+    it('skips video embeds whose record lacks a resolvable blob', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url.includes('resolveHandle?handle=alice.bsky.social')) {
+          return { ok: true, status: 200, text: JSON.stringify({ did: 'did:plc:alice' }) };
+        }
+        if (url.includes('getPostThread')) {
+          return {
+            ok: true,
+            status: 200,
+            text: JSON.stringify({
+              thread: {
+                post: {
+                  uri: 'at://did:plc:alice/app.bsky.feed.post/3vid',
+                  author: { handle: 'alice.bsky.social' },
+                  record: { text: 'Watch this' },
+                  embed: {
+                    $type: 'app.bsky.embed.video#view',
+                    playlist: 'https://video.bsky.app/watch/playlist.m3u8',
+                  },
+                },
+                replies: [],
+              },
+            }),
+          };
+        }
+        return { ok: false, status: 404, text: 'Not found' };
+      });
+
+      const post = await fetchSocialPost('https://bsky.app/profile/alice.bsky.social/post/3vid');
+
+      expect(post.media).toEqual([]);
     });
 
     it('shows every post in a quote chain, including quotes with media', async () => {

@@ -208,6 +208,10 @@ class RSSFeedComponent extends DataroomElement {
     // Ready (downloaded, unwatched) video count for the footer badge.
     this._videosReadyCount = 0;
     this._videosReadyBadgeEl = null;
+    // "Play All" chain state (see _startPlayAll): the videos still to
+    // open and whether the chain is currently running.
+    this._playAllQueue = [];
+    this._playAllActive = false;
     this._scrollLockCount = 0;
     this._previousBodyOverflow = '';
     this._previousHtmlOverflow = '';
@@ -933,6 +937,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Refresh All Feeds', action: () => this.handleRefreshAll() },
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
       { name: 'Videos', action: () => this._handleVideosViewButton() },
+      { name: 'Play All Videos', action: () => this._startPlayAll() },
       { name: 'Download Youtube Video', action: () => this.openDownloadYouTubeModal() },
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
@@ -1781,12 +1786,25 @@ class RSSFeedComponent extends DataroomElement {
     // untouched (no image reloads, no hover/scroll loss), changed entries
     // are rebuilt, and entries that vanished are dropped.
     const reusable = new Map();
+    let header = null;
     for (const node of Array.from(container.children)) {
       if (node.classList.contains('rss-videos-view-item')) {
         reusable.set(node.getAttribute('data-entry-key'), node);
+      } else if (node.classList.contains('rss-videos-view-header')) {
+        // The header (count + Play All button) survives entry-only
+        // updates; only its count label is refreshed below.
+        header = node;
       } else {
         // Stale status message from an earlier empty/error state.
         node.remove();
+      }
+    }
+    if (!header) {
+      header = this._createVideosViewHeader(items.length);
+    } else {
+      const countLabel = header.querySelector('.rss-videos-view-count');
+      if (countLabel) {
+        countLabel.textContent = this._videosViewCountLabel(items.length);
       }
     }
 
@@ -1830,9 +1848,179 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     // Swap the reconciled children in one pass; nodes that disappeared
-    // (e.g. a deleted video) are dropped here.
+    // (e.g. a deleted video) are dropped here. The header (count +
+    // Play All button) always leads the list.
     container.innerHTML = '';
+    container.appendChild(header);
     container.appendChild(fragment);
+  }
+
+  /**
+   * Build the header row shown above the Videos view entries: the total
+   * video count and the "Play All" button, which plays every downloaded
+   * video one after the other (see _startPlayAll).
+   *
+   * @param {number} count - Number of downloaded videos in the view
+   * @returns {HTMLElement} The .rss-videos-view-header element
+   */
+  _createVideosViewHeader(count) {
+    const header = document.createElement('div');
+    header.className = 'rss-videos-view-header';
+
+    const countLabel = document.createElement('span');
+    countLabel.className = 'rss-videos-view-count';
+    countLabel.textContent = this._videosViewCountLabel(count);
+    header.appendChild(countLabel);
+
+    const playAllButton = document.createElement('button');
+    playAllButton.className = 'rss-action-button rss-videos-play-all-button';
+    playAllButton.textContent = '▶ Play All';
+    playAllButton.title = 'Play every downloaded video one after the other';
+    playAllButton.addEventListener('click', () => this._startPlayAll());
+    header.appendChild(playAllButton);
+
+    return header;
+  }
+
+  /**
+   * Human-readable count label for the Videos view header.
+   *
+   * @param {number} count - Number of downloaded videos
+   * @returns {string} Label like "3 videos"
+   */
+  _videosViewCountLabel(count) {
+    return count === 1 ? '1 video' : `${count} videos`;
+  }
+
+  /**
+   * Play every downloaded video one after the other ("Play All").
+   *
+   * The queue is the Videos view's list — newest download first, the
+   * order the user sees. Videos open in the normal article viewer (the
+   * embedded downloaded copy in Electron), and when a video ends the
+   * next one opens automatically (see _armPlayAllChain). Closing the
+   * viewer stops the chain; finishing the queue closes the viewer.
+   *
+   * Outside the Videos view (e.g. from the command panel) the list is
+   * loaded fresh from the database. Entries that cannot play inline —
+   * no downloaded file, or no Electron media:// protocol — are skipped.
+   *
+   * @returns {Promise<void>}
+   */
+  async _startPlayAll() {
+    let entries = this._videosEntries;
+    if (!entries || entries.length === 0) {
+      try {
+        entries = (await loadDownloadedArticles()) || [];
+      } catch (error) {
+        console.error('Failed to load downloaded videos:', error);
+        this.showToast('Could not load downloaded videos', 'error');
+        return;
+      }
+    }
+
+    const playable = entries.filter(
+      (entry) => entry.article?.downloadPath && isElectronAvailable()
+    );
+    if (playable.length === 0) {
+      this.showToast('No playable downloaded videos', 'error');
+      return;
+    }
+
+    // Start from a clean slate; this also stops any running chain.
+    this.closeModal();
+    this._playAllQueue = playable.slice(1);
+    this._playAllActive = true;
+    await this._openPlayAllEntry(playable[0]);
+  }
+
+  /**
+   * Open one Play All entry and arm the ended-advances chain on its
+   * embedded player. Entries that fail to produce an embedded player
+   * are skipped and the next queued entry is tried instead.
+   *
+   * @param {object} entry - A {feed, article} pair from the queue
+   * @returns {Promise<void>}
+   */
+  async _openPlayAllEntry(entry) {
+    let opened = false;
+    try {
+      await this.openArticleViewer(entry.article, entry.feed);
+      opened = Boolean(this.activeModal?.querySelector('.rss-youtube-external-video'));
+    } catch (error) {
+      console.error('Play All: failed to open video:', error);
+    }
+
+    if (!opened) {
+      // Unplayable entry: drop it and move on to the next one, or give
+      // up when the queue is exhausted.
+      this.closeModal();
+      const [next, ...rest] = this._playAllQueue;
+      if (!next) {
+        this._stopPlayAll();
+        return;
+      }
+      this._playAllQueue = rest;
+      await this._openPlayAllEntry(next);
+      return;
+    }
+
+    this._armPlayAllChain();
+  }
+
+  /**
+   * Arm the Play All chain on the currently open embedded video: when
+   * the video ends, the next queued video opens automatically.
+   *
+   * @returns {void}
+   */
+  _armPlayAllChain() {
+    const video = this.activeModal?.querySelector('.rss-youtube-external-video');
+    if (!video || !this._playAllActive) {
+      return;
+    }
+
+    video.addEventListener('ended', () => {
+      // The chain may have been stopped (viewer closed) between arming
+      // and the event firing; only advance while it is still active.
+      if (this._playAllActive) {
+        this._advancePlayAll();
+      }
+    });
+  }
+
+  /**
+   * Advance the Play All chain to the next downloaded video.
+   *
+   * Reads and reserves the next entry before closing the current
+   * viewer, because closing a video viewer stops the chain state; the
+   * remaining queue is restored right after for the next video. An
+   * exhausted queue closes the viewer and returns to the list.
+   *
+   * @returns {Promise<void>}
+   */
+  async _advancePlayAll() {
+    const [next, ...rest] = this._playAllQueue;
+    if (!next) {
+      // Queue finished: return to the list.
+      this._stopPlayAll();
+      this.closeModal();
+      return;
+    }
+    this.closeModal();
+    this._playAllQueue = rest;
+    this._playAllActive = true;
+    await this._openPlayAllEntry(next);
+  }
+
+  /**
+   * Stop an active Play All chain and drop its remaining queue.
+   *
+   * @returns {void}
+   */
+  _stopPlayAll() {
+    this._playAllActive = false;
+    this._playAllQueue = [];
   }
 
   /**
@@ -4172,6 +4360,13 @@ class RSSFeedComponent extends DataroomElement {
       overlay._videoPositionFlush = null;
     }
 
+    // A Play All chain lives only as long as its video viewer: closing
+    // the viewer stops the chain. An auto-advance restores the state
+    // right after closing the outgoing video (see _advancePlayAll).
+    if (overlay.classList.contains('rss-article-viewer-overlay--video')) {
+      this._stopPlayAll();
+    }
+
     // Release the original-page iframe and extracted body so the renderer
     // can reclaim the browsing context and large article objects.
     if (overlay._originalFrame) {
@@ -6140,8 +6335,9 @@ class RSSFeedComponent extends DataroomElement {
         link.appendChild(image);
         wrapper.appendChild(link);
       } else if (item.type === 'video' && item.fullsize) {
-        // Mastodon video/gifv attachment played inline. GIFV files are
-        // muted looping clips, so they autoplay like the web player does.
+        // Mastodon video/gifv and Bluesky native video attachments played
+        // inline. GIFV files are muted looping clips, so they autoplay like
+        // the web player does.
         const video = document.createElement('video');
         video.className = 'rss-social-video';
         video.controls = true;

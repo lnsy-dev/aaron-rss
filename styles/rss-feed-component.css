@@ -1552,6 +1552,27 @@ body.distraction-free
   padding: 0.5rem 0.75rem;
 }
 
+/* Videos view header: total count plus the "Play All" button that
+   plays every downloaded video one after the other. */
+.rss-videos-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0.25rem 0.5rem;
+}
+
+.rss-videos-view-count {
+  font-size: 0.85rem;
+  color: var(--quaternary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.rss-videos-play-all-button {
+  white-space: nowrap;
+}
+
 .rss-videos-view-item .rss-article {
   border-bottom: 1px solid var(--quaternary-color);
 }

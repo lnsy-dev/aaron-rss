@@ -85,7 +85,7 @@ test.describe('Aaron RSS', () => {
     await expect(addButton).toHaveAttribute('title', 'Add RSS feed');
   });
 
-  test('renders a view radio menu with all three views at the bottom left', async ({ page }) => {
+  test('renders a view radio menu with all four views at the bottom left', async ({ page }) => {
     // Reload so we observe the untouched default state; the suite-wide
     // beforeEach opts other tests out of the timeline default.
     await page.goto('/');
@@ -95,14 +95,15 @@ test.describe('Aaron RSS', () => {
     await expect(toggle).toBeVisible();
     await expect(toggle).toHaveAttribute('role', 'radiogroup');
 
-    // All three view options are present; timeline is checked by default.
-    await expect(toggle.locator('.rss-view-toggle-input')).toHaveCount(3);
+    // All four view options are present; timeline is checked by default.
+    await expect(toggle.locator('.rss-view-toggle-input')).toHaveCount(4);
     await expect(toggle.locator('.rss-view-toggle-input[value="timeline"]')).toBeChecked();
     await expect(toggle.locator('.rss-view-toggle-input[value="feeds"]')).not.toBeChecked();
     await expect(toggle.locator('.rss-view-toggle-input[value="videos"]')).not.toBeChecked();
+    await expect(toggle.locator('.rss-view-toggle-input[value="podcasts"]')).not.toBeChecked();
 
     // Each option exposes an icon and a labeled affordance.
-    for (const mode of ['timeline', 'feeds', 'videos']) {
+    for (const mode of ['timeline', 'feeds', 'videos', 'podcasts']) {
       const option = toggle.locator(`.rss-view-toggle-option--${mode}`);
       await expect(option.locator('.rss-view-toggle-icon')).toBeVisible();
       await expect(option.locator('.rss-view-toggle-option-label')).toHaveAttribute('title', `${mode[0].toUpperCase()}${mode.slice(1)} view`);
@@ -327,6 +328,8 @@ test.describe('Aaron RSS', () => {
       'Mark All Read',
       'Videos',
       'Play All Videos',
+      'Podcasts',
+      'Play All Podcasts',
       'Download Youtube Video',
       'Settings',
       'Export OPML',

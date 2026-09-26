@@ -1269,11 +1269,16 @@ body.distraction-free
   border-color: var(--notification-color);
 }
 
+/* The thumbnail shares the row with the headline instead of eating the
+   whole card: `width: 100%` + `flex-shrink: 0` clamped the text body to
+   zero width, so Bluesky link cards showed only the splash image with no
+   clickable headline. */
 .rss-social-link-card img {
-  width: 100%;
+  width: 6rem;
+  flex: 0 0 6rem;
   min-height: 100%;
   object-fit: cover;
-  flex-shrink: 0;
+  align-self: stretch;
 }
 
 .rss-social-link-card-body {
@@ -1282,6 +1287,10 @@ body.distraction-free
   gap: 0.25rem;
   padding: 0.5rem 0.75rem;
   min-width: 0;
+  /* Zero basis + grow fills the row space left of the fixed-width
+     thumbnail exactly (a percentage width overflows once the row gap
+     joins the math), and the title inside ellipsizes. */
+  flex: 1 1 0;
 }
 
 .rss-social-link-card-title {

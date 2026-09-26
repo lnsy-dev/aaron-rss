@@ -306,6 +306,11 @@ body.distraction-free
   mask-image: url('../assets/solid/video.svg');
 }
 
+.rss-view-toggle-icon--podcasts {
+  -webkit-mask-image: url('../assets/solid/headphones.svg');
+  mask-image: url('../assets/solid/headphones.svg');
+}
+
 /* Active view: --secondary highlight. */
 .rss-view-toggle-input:checked + .rss-view-toggle-option-label {
   background: var(--secondary-color);
@@ -1574,6 +1579,38 @@ body.distraction-free
 }
 
 .rss-videos-view-item .rss-article {
+  border-bottom: 1px solid var(--quaternary-color);
+}
+
+/* Podcasts view: the listening library for downloaded podcast episodes,
+   laid out like the Videos view. */
+.rss-podcasts-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.rss-podcasts-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0.25rem 0.5rem;
+}
+
+.rss-podcasts-view-count {
+  font-size: 0.85rem;
+  color: var(--quaternary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.rss-podcasts-play-all-button {
+  white-space: nowrap;
+}
+
+.rss-podcasts-view-item .rss-article {
   border-bottom: 1px solid var(--quaternary-color);
 }
 

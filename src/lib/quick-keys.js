@@ -51,6 +51,7 @@ const QUICK_KEY_GROUPS = [
       { combo: 'Shift+ArrowUp', description: 'Select the previous feed' },
       { combo: 'Enter', description: 'Open the selected article' },
       { combo: 'M', description: 'Mark the selected article as read' },
+      { combo: 'Mod+Z', description: 'Undo the last mark-as-read' },
       {
         combo: 'Escape',
         description: 'Close the article viewer, dialog, find bar, or context menu; on the main list, jump to the top',

@@ -8,6 +8,7 @@ Releases are published at <https://github.com/lnsy-dev/aaron-rss/releases>.
 
 - **RSS/Atom feed reader** — subscribe to feeds, fetch articles, and read them in a clean built-in reader with defuddle extraction and markdown rendering.
 - **Auto-download YouTube videos** — when a feed item links to a YouTube video, the app can automatically download it in the background (via yt-dlp in the Electron main process), with a live progress toast and built-in playback of the downloaded file.
+- **Subscribe from a downloaded video** — downloaded videos remember their channel, and the viewer offers a one-click "Subscribe to RSS Feed" when that channel's feed is not already in the app.
 - **Bluesky integration** — paste a `bsky.app` profile URL and the app discovers the profile's RSS feed automatically; post links are opened through Bluesky's public API so original posts, embedded quote posts, and replies render natively (no iframes).
 - **Mastodon integration** — the same works for Mastodon: profile URLs resolve to their Atom feeds, and post links are fetched through instance public APIs and rendered as native posts, including reply threads.
 - **Local-first storage** — feeds, articles, and settings persist in SQLite (compiled to WebAssembly) in OPFS, entirely on your own machine. No accounts, no cloud.

@@ -54,6 +54,7 @@ import {
   loadReadLaterArticles,
   setArticleReadLater,
   deleteArticle,
+  loadDownloadedPodcastArticles,
   ensureFeedSubscribed,
   clearResearchTopicArticles,
 } from './lib/feed-manager.js';
@@ -193,6 +194,7 @@ class RSSFeedComponent extends DataroomElement {
     this._readLaterRenderGeneration = 0;
     this._readLaterUnreadCount = 0;
     this._readLaterBadgeEl = null;
+    this.podcastsButton = null;
     // Research Topic view state: which topic is open in the topic view.
     this._topicView = null;
     // Cached {feed, article} pairs for the topic view (see renderTopicView).
@@ -211,18 +213,27 @@ class RSSFeedComponent extends DataroomElement {
     // _maybeShowFFmpegInstallNotice).
     this._ffmpegInstallNoticeShown = false;
     this._articleViewerOverlay = null;
-    // Cached {feed, article} pairs for the Videos view (see renderVideosView).
-    this._videosEntries = null;
-    // Monotonic guard so superseded async Videos-view renders never draw
-    // (see renderVideosView).
-    this._videosRenderGeneration = 0;
-    // Ready (downloaded, unwatched) video count for the footer badge.
-    this._videosReadyCount = 0;
-    this._videosReadyBadgeEl = null;
-    // "Play All" chain state (see _startPlayAll): the videos still to
-    // open and whether the chain is currently running.
-    this._playAllQueue = [];
-    this._playAllActive = false;
+  // Cached {feed, article} pairs for the Videos view (see renderVideosView).
+  this._videosEntries = null;
+  // Monotonic guard so superseded async Videos-view renders never draw
+  // (see renderVideosView).
+  this._videosRenderGeneration = 0;
+  // Ready (downloaded, unwatched) video count for the footer badge.
+  this._videosReadyCount = 0;
+  this._videosReadyBadgeEl = null;
+  // Cached {feed, article} pairs for the Podcasts view (see
+  // renderPodcastsView).
+  this._podcastsEntries = null;
+  // Monotonic guard so superseded async Podcasts-view renders never
+  // draw (see renderPodcastsView).
+  this._podcastsRenderGeneration = 0;
+  // "Play All" chain state (see _startPlayAll): the entries still to
+  // open, whether the chain is currently running, and which media kind
+  // ('videos' or 'podcasts') it is playing. Podcasts open in the podcast
+  // viewer; the chain advances when their audio 'ended' event fires.
+  this._playAllQueue = [];
+  this._playAllActive = false;
+  this._playAllKind = 'videos';
     this._scrollLockCount = 0;
     this._previousBodyOverflow = '';
     this._previousHtmlOverflow = '';
@@ -471,24 +482,28 @@ class RSSFeedComponent extends DataroomElement {
     viewToggle.className = 'rss-view-toggle';
     viewToggle.setAttribute('role', 'radiogroup');
     viewToggle.setAttribute('aria-label', 'View');
-    viewToggle.title = 'Switch between the Timeline, Feeds, Videos, and Read Later views';
+    viewToggle.title = 'Switch between the Timeline, Feeds, Videos, Podcasts, and Read Later views';
 
     const options = [
       { mode: 'timeline', label: 'Timeline view' },
       { mode: 'feeds', label: 'Feeds view' },
       { mode: 'videos', label: 'Videos view' },
+      { mode: 'podcasts', label: 'Podcasts view' },
       { mode: 'read-later', label: 'Read Later view' },
     ];
 
     this.viewModeInputs = {};
     this.videosButton = null;
+    this.podcastsButton = null;
 
     for (const option of options) {
       const optionWrap = document.createElement('span');
-      // Keep the rss-videos-view-button class so the videos option can be
-      // targeted programmatically (command panel, tests) like before.
+      // Keep the rss-videos-view-button / rss-podcasts-view-button
+      // classes so the videos and podcasts options can be targeted
+      // programmatically (command panel, tests) like before.
       optionWrap.className = `rss-view-toggle-option rss-view-toggle-option--${option.mode}`
-        + (option.mode === 'videos' ? ' rss-videos-view-button' : '');
+        + (option.mode === 'videos' ? ' rss-videos-view-button' : '')
+        + (option.mode === 'podcasts' ? ' rss-podcasts-view-button' : '');
 
       const input = document.createElement('input');
       input.type = 'radio';
@@ -524,6 +539,10 @@ class RSSFeedComponent extends DataroomElement {
         optionWrap.appendChild(readyBadge);
         this._videosReadyBadgeEl = readyBadge;
       }
+      if (option.mode === 'podcasts') {
+        this.podcastsButton = optionWrap;
+      }
+
       if (option.mode === 'read-later') {
         // Unread badge: a count bubble shown while read-later articles
         // are still waiting to be read (see _refreshReadLaterBadge).
@@ -559,9 +578,9 @@ class RSSFeedComponent extends DataroomElement {
    * Handle a view-mode radio being selected in the footer.
    *
    * Persists timeline/feeds modes to the settings table and re-renders;
-   * videos remains a transient overlay (see _videosReturnMode).
+   * videos and podcasts remain transient overlays (see _videosReturnMode).
    *
-   * @param {string} mode - One of 'timeline', 'feeds', 'videos', 'read-later', 'delete-read-later'
+   * @param {string} mode - One of 'timeline', 'feeds', 'videos', 'podcasts', 'read-later', 'delete-read-later'
    * @returns {Promise<void>}
    */
   async _handleViewModeSelect(mode) {
@@ -569,9 +588,9 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
-    // Entering an overlay view (Videos/Read Later) records the mode to
-    // return to.
-    if ((mode === 'videos' || mode === 'read-later' || mode === 'delete-read-later') && this.viewMode !== mode) {
+    // Entering an overlay view (Videos/Podcasts/Read Later) records the
+    // mode to return to.
+    if ((mode === 'videos' || mode === 'podcasts' || mode === 'read-later' || mode === 'delete-read-later') && this.viewMode !== mode) {
       this._videosReturnMode = this.viewMode;
     }
 
@@ -585,7 +604,7 @@ class RSSFeedComponent extends DataroomElement {
       this._topicView = null;
     }
 
-    if (mode !== 'videos' && mode !== 'read-later' && mode !== 'delete-read-later') {
+    if (mode !== 'videos' && mode !== 'podcasts' && mode !== 'read-later' && mode !== 'delete-read-later') {
       try {
         await saveSettings({ viewMode: mode });
       } catch (error) {
@@ -613,6 +632,7 @@ class RSSFeedComponent extends DataroomElement {
       timeline: 'Timeline view',
       feeds: 'Feeds view',
       videos: 'Videos view',
+      podcasts: 'Podcasts view',
       'read-later': 'Read Later view',
       'delete-read-later': 'Delete Article view',
     };
@@ -623,6 +643,10 @@ class RSSFeedComponent extends DataroomElement {
     if (this.videosButton) {
       const isVideos = this.viewMode === 'videos';
       this.videosButton.classList.toggle('rss-videos-view-button--active', isVideos);
+    }
+    if (this.podcastsButton) {
+      const isPodcasts = this.viewMode === 'podcasts';
+      this.podcastsButton.classList.toggle('rss-podcasts-view-button--active', isPodcasts);
     }
   }
 
@@ -689,6 +713,37 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Enter or leave the Podcasts view programmatically.
+   *
+   * Mirrors _handleVideosViewButton: enters the Podcasts view from the
+   * current mode; calling again returns to the prior timeline/feeds
+   * mode. Used by the command panel; the footer radio menu itself
+   * switches views directly. The Podcasts mode is transient (not
+   * persisted) so a restart lands the user on their regular view.
+   *
+   * @returns {Promise<void>}
+   */
+  async _handlePodcastsViewButton() {
+    if (this.viewMode === 'podcasts') {
+      const mode = this._videosReturnMode || 'timeline';
+      this.viewMode = mode;
+      this.settings.viewMode = mode;
+      this._syncViewToggle();
+      try {
+        await saveSettings({ viewMode: mode });
+      } catch (error) {
+        console.error('Failed to save view mode:', error);
+      }
+      this.renderFeeds();
+      return;
+    }
+
+    this.viewMode = 'podcasts';
+    this._syncViewToggle();
+    this.renderFeeds();
+  }
+
+  /**
    * Switch to the grouped Feeds view and scroll to one feed's block.
    *
    * Backs the clickable feed name in the Timeline view: clicking a blog
@@ -709,7 +764,7 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     if (this.viewMode !== 'feeds') {
-      if (this.viewMode === 'videos' || this.viewMode === 'read-later' || this.viewMode === 'delete-read-later' || this.viewMode === 'topic') {
+      if (this.viewMode === 'videos' || this.viewMode === 'read-later' || this.viewMode === 'delete-read-later' || this.viewMode === 'podcasts' || this.viewMode === 'topic') {
         this._videosReturnMode = 'feeds';
       }
       this.viewMode = 'feeds';
@@ -994,6 +1049,8 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Videos', action: () => this._handleVideosViewButton() },
       { name: 'Play All Videos', action: () => this._startPlayAll() },
       { name: 'Read Later', action: () => this._handleReadLaterViewButton() },
+      { name: 'Podcasts', action: () => this._handlePodcastsViewButton() },
+      { name: 'Play All Podcasts', action: () => this._startPlayAllPodcasts() },
       { name: 'Download Youtube Video', action: () => this.openDownloadYouTubeModal() },
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
@@ -1198,6 +1255,23 @@ class RSSFeedComponent extends DataroomElement {
       }
     } else if (event.target.closest('.rss-videos-view')) {
       const entry = (this._videosEntries || []).find((candidate) => {
+        if (candidate.article?.articleID !== articleID) {
+          return false;
+        }
+        // Empty data-feed-id marks a dangling entry whose feed is gone.
+        return !feedID || candidate.feed?.feedID === feedID;
+      });
+      feed = entry?.feed || null;
+      article = entry?.article;
+      if (!article) {
+        return;
+      }
+    } else if (event.target.closest('.rss-podcasts-view')) {
+      // The Podcasts view renders straight from the downloaded-episode
+      // query, so its entries may not be in this.feeds either (read
+      // episodes, deleted feeds). Resolve those clicks from the cached
+      // view data.
+      const entry = (this._podcastsEntries || []).find((candidate) => {
         if (candidate.article?.articleID !== articleID) {
           return false;
         }
@@ -1530,6 +1604,13 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
+      // The Podcasts view likewise re-queries downloaded podcast episodes
+      // in place (see renderPodcastsView).
+      if (this.viewMode === 'podcasts') {
+        await this.renderPodcastsView();
+        return;
+      }
+
       // The Read Later view (and its Delete Article variant) likewise
       // re-queries the archive in place (see renderReadLaterView).
       if (this.viewMode === 'read-later' || this.viewMode === 'delete-read-later') {
@@ -1579,9 +1660,12 @@ class RSSFeedComponent extends DataroomElement {
   renderFeeds() {
     this._updateUnreadCount();
 
-    // Leaving the Videos view invalidates its cached entries.
+    // Leaving the Videos/Podcasts views invalidates their cached entries.
     if (this.viewMode !== 'videos') {
       this._videosEntries = null;
+    }
+    if (this.viewMode !== 'podcasts') {
+      this._podcastsEntries = null;
     }
     if (this.viewMode !== 'read-later') {
       this._readLaterEntries = null;
@@ -1608,6 +1692,12 @@ class RSSFeedComponent extends DataroomElement {
     // The Videos view lists every article with a downloaded video.
     if (this.viewMode === 'videos') {
       this.renderVideosView();
+      return;
+    }
+
+    // The Podcasts view lists every podcast episode with downloaded audio.
+    if (this.viewMode === 'podcasts') {
+      this.renderPodcastsView();
       return;
     }
 
@@ -2134,6 +2224,120 @@ class RSSFeedComponent extends DataroomElement {
     return count === 1 ? '1 article' : `${count} articles`;
   }
 
+
+  /**
+   * Render the Podcasts view: every podcast episode with downloaded
+   * audio, newest first, regardless of read state (listening-library
+   * semantics).
+   *
+   * Data comes straight from the downloaded-episode query joined with
+   * the feeds table, so the list is independent of the unread filtering
+   * that drives the timeline and feeds views. Opening an entry plays it
+   * in the podcast viewer (inline from the downloaded copy in Electron).
+   *
+   * @returns {Promise<void>}
+   */
+  async renderPodcastsView() {
+    // Monotonic generation guard: concurrent calls (bursty incremental
+    // refresh renders are fire-and-forget) must not interleave DOM writes
+    // or let stale data overwrite a newer render. Only the latest call
+    // survives its database await and draws.
+    const generation = (this._podcastsRenderGeneration += 1);
+
+    let items = [];
+    try {
+      items = (await loadDownloadedPodcastArticles()) || [];
+    } catch (error) {
+      if (generation !== this._podcastsRenderGeneration) {
+        return;
+      }
+      console.error('Failed to load downloaded podcasts:', error);
+      this._podcastsEntries = [];
+      this.contentArea.innerHTML = '';
+      const errorState = document.createElement('div');
+      errorState.className = 'rss-no-articles';
+      errorState.textContent = 'Could not load downloaded podcasts';
+      this.contentArea.appendChild(errorState);
+      return;
+    }
+
+    // A newer render was started while this one waited on the database;
+    // abandon this one so the fresh data always wins.
+    if (generation !== this._podcastsRenderGeneration) {
+      return;
+    }
+
+    // Cache the resolved {feed, article} pairs so the delegated click
+    // handler can act on entries that are not in this.feeds (read
+    // episodes, deleted feeds).
+    this._podcastsEntries = items;
+
+    this.contentArea.innerHTML = '';
+    const container = document.createElement('div');
+    container.className = 'rss-podcasts-view';
+    this.contentArea.appendChild(container);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'rss-no-articles';
+      empty.textContent = 'No downloaded podcasts';
+      container.appendChild(empty);
+      return;
+    }
+
+    container.appendChild(this._createPodcastsViewHeader(items.length));
+
+    for (const { feed, article } of items) {
+      const entry = document.createElement('div');
+      entry.className = 'rss-podcasts-view-item';
+      // The wrapper carries data-feed-id so selection, click delegation,
+      // and article actions keep working exactly as in the feeds view.
+      // An empty id marks a dangling entry whose feed row is gone.
+      entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
+      this.renderArticle(entry, article, feed, {
+        showFeedName: true,
+      });
+      container.appendChild(entry);
+    }
+  }
+
+  /**
+   * Build the header row shown above the Podcasts view entries: the
+   * total episode count and the "Play All" button, which plays every
+   * downloaded episode one after the other (see _startPlayAllPodcasts).
+   *
+   * @param {number} count - Number of downloaded episodes in the view
+   * @returns {HTMLElement} The .rss-podcasts-view-header element
+   */
+  _createPodcastsViewHeader(count) {
+    const header = document.createElement('div');
+    header.className = 'rss-podcasts-view-header';
+
+    const countLabel = document.createElement('span');
+    countLabel.className = 'rss-podcasts-view-count';
+    countLabel.textContent = this._podcastsViewCountLabel(count);
+    header.appendChild(countLabel);
+
+    const playAllButton = document.createElement('button');
+    playAllButton.className = 'rss-action-button rss-podcasts-play-all-button';
+    playAllButton.textContent = '▶ Play All';
+    playAllButton.title = 'Play every downloaded podcast episode one after the other';
+    playAllButton.addEventListener('click', () => this._startPlayAllPodcasts());
+    header.appendChild(playAllButton);
+
+    return header;
+  }
+
+  /**
+   * Human-readable count label for the Podcasts view header.
+   *
+   * @param {number} count - Number of downloaded podcast episodes
+   * @returns {string} Label like "3 episodes"
+   */
+  _podcastsViewCountLabel(count) {
+    return count === 1 ? '1 episode' : `${count} episodes`;
+  }
+
   /**
    * Play every downloaded video one after the other ("Play All").
    *
@@ -2150,27 +2354,78 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {Promise<void>}
    */
   async _startPlayAll() {
-    let entries = this._videosEntries;
-    if (!entries || entries.length === 0) {
-      try {
-        entries = (await loadDownloadedArticles()) || [];
-      } catch (error) {
-        console.error('Failed to load downloaded videos:', error);
-        this.showToast('Could not load downloaded videos', 'error');
-        return;
+    return this._startPlayAllKind('videos');
+  }
+
+  /**
+   * Play every downloaded podcast episode one after the other.
+   *
+   * Same chain as the videos' "Play All" but over the Podcasts view's
+   * list: episodes open in the podcast viewer (inline from the
+   * downloaded copy in Electron), and the chain advances when each
+   * episode's audio ends. The Podcasts view is required for inline
+   * playback (the browser fallback cannot address the downloaded file),
+   * so unplayable entries are skipped exactly like videos.
+   *
+   * @returns {Promise<void>}
+   */
+  async _startPlayAllPodcasts() {
+    return this._startPlayAllKind('podcasts');
+  }
+
+  /**
+   * Shared Play All chain for both media kinds.
+   *
+   * @param {'videos'|'podcasts'} kind - Which library to play through
+   * @returns {Promise<void>}
+   */
+  async _startPlayAllKind(kind) {
+    let entries;
+    if (kind === 'podcasts') {
+      entries = this._podcastsEntries;
+      if (!entries || entries.length === 0) {
+        try {
+          entries = (await loadDownloadedPodcastArticles()) || [];
+        } catch (error) {
+          console.error('Failed to load downloaded podcasts:', error);
+          this.showToast('Could not load downloaded podcasts', 'error');
+          return;
+        }
+      }
+    } else {
+      entries = this._videosEntries;
+      if (!entries || entries.length === 0) {
+        try {
+          entries = (await loadDownloadedArticles()) || [];
+        } catch (error) {
+          console.error('Failed to load downloaded videos:', error);
+          this.showToast('Could not load downloaded videos', 'error');
+          return;
+        }
       }
     }
 
-    const playable = entries.filter(
-      (entry) => entry.article?.downloadPath && isElectronAvailable()
-    );
+    const playable = entries.filter((entry) => {
+      if (!entry.article?.downloadPath || !isElectronAvailable()) {
+        return false;
+      }
+      // Podcasts additionally need their audio enclosure; videos are
+      // already restricted to the downloaded_videos queue.
+      return kind !== 'podcasts' || isPodcastEpisode(entry.article);
+    });
     if (playable.length === 0) {
-      this.showToast('No playable downloaded videos', 'error');
+      this.showToast(
+        kind === 'podcasts'
+          ? 'No playable downloaded podcasts'
+          : 'No playable downloaded videos',
+        'error'
+      );
       return;
     }
 
     // Start from a clean slate; this also stops any running chain.
     this.closeModal();
+    this._playAllKind = kind;
     this._playAllQueue = playable.slice(1);
     this._playAllActive = true;
     await this._openPlayAllEntry(playable[0]);
@@ -2187,10 +2442,15 @@ class RSSFeedComponent extends DataroomElement {
   async _openPlayAllEntry(entry) {
     let opened = false;
     try {
-      await this.openArticleViewer(entry.article, entry.feed);
-      opened = Boolean(this.activeModal?.querySelector('.rss-youtube-external-video'));
+      if (this._playAllKind === 'podcasts') {
+        await this.openPodcastViewer(entry.article, entry.feed);
+        opened = Boolean(this.activeModal?.querySelector('.rss-podcast-audio'));
+      } else {
+        await this.openArticleViewer(entry.article, entry.feed);
+        opened = Boolean(this.activeModal?.querySelector('.rss-youtube-external-video'));
+      }
     } catch (error) {
-      console.error('Play All: failed to open video:', error);
+      console.error('Play All: failed to open entry:', error);
     }
 
     if (!opened) {
@@ -2217,18 +2477,32 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {void}
    */
   _armPlayAllChain() {
-    const video = this.activeModal?.querySelector('.rss-youtube-external-video');
-    if (!video || !this._playAllActive) {
+    const selector = this._playAllKind === 'podcasts'
+      ? '.rss-podcast-audio'
+      : '.rss-youtube-external-video';
+    const media = this.activeModal?.querySelector(selector);
+    if (!media || !this._playAllActive) {
       return;
     }
 
-    video.addEventListener('ended', () => {
+    media.addEventListener('ended', () => {
       // The chain may have been stopped (viewer closed) between arming
       // and the event firing; only advance while it is still active.
       if (this._playAllActive) {
         this._advancePlayAll();
       }
     });
+
+    // The viewer only arms the chain — actually start playback here.
+    // Autoplay is intentionally attempted: a Play All click is a user
+    // gesture, but the chain must also keep going across viewer
+    // re-opens, where Chromium still allows .play() for media the user
+    // has interacted with (and a refusal simply leaves the episode
+    // paused at the head of the chain).
+    const playAttempt = media.play?.();
+    if (playAttempt && typeof playAttempt.catch === 'function') {
+      playAttempt.catch(() => {});
+    }
   }
 
   /**

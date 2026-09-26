@@ -31,6 +31,7 @@ import {
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
   loadReadLaterArticles as dbLoadReadLaterArticles,
+  loadDownloadedPodcastArticles as dbLoadDownloadedPodcastArticles,
   listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
   saveArticleMarkdown as dbSaveArticleMarkdown,
   listClearedUniqueIDs as dbListClearedUniqueIDs,
@@ -881,6 +882,16 @@ export function loadFeedsForDisplay() {
  */
 export function loadDownloadedArticles() {
   return dbLoadDownloadedArticles();
+}
+
+/**
+ * Load every podcast episode that has a downloaded audio file, for the
+ * Podcasts view.
+ *
+ * @returns {Promise<Array<{feed: object|null, article: object}>>} Newest episode first
+ */
+export function loadDownloadedPodcastArticles() {
+  return dbLoadDownloadedPodcastArticles();
 }
 
 /**

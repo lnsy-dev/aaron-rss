@@ -8214,6 +8214,17 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
+    // F11 toggles full screen. Linux and Windows builds run without an
+    // application menu, so Electron's `togglefullscreen` role is
+    // unreachable there; F11 is the standard key users expect. Also
+    // before the typing/modal guard so the toggle works from anywhere,
+    // matching browser behavior.
+    if (event.key === 'F11') {
+      event.preventDefault();
+      this.toggleFullScreen();
+      return;
+    }
+
     // Article font size: Cmd/Ctrl+Plus, Cmd/Ctrl+Minus, Cmd/Ctrl+0 reset.
     // Also before the typing/modal guard so the shortcut adjusts the open
     // article viewer regardless of focus, matching browser zoom.

@@ -36,8 +36,27 @@ function buildBlueskyVideoBlobURL(embedView) {
   const ref = embedView?.record?.video?.ref;
   const cid = ref?.$link || ref?.link || ref;
   const did = embedView?.record?.did;
-  if (typeof cid !== 'string' || !cid || typeof did !== 'string' || !did) return '';
-  return `${BLUESKY_BLOB_BASE}?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cid)}`;
+  if (typeof cid === 'string' && cid && typeof did === 'string' && did) {
+    return `${BLUESKY_BLOB_BASE}?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cid)}`;
+  }
+
+  // The AppView stopped including the blob record on video embed views:
+  // only the HLS playlist and thumbnail come back. Both URLs name the
+  // blob in their path (`.../watch/<url-encoded did>/<cid>/...`), and the
+  // blob endpoint still streams the original MP4 for that did+cid pair,
+  // so recover the stream address from the playlist instead of dropping
+  // the video entirely.
+  const playlist = embedView?.playlist;
+  if (typeof playlist === 'string' && playlist) {
+    const match = playlist.match(/\/watch\/([^/]+)\/([^/]+)\/playlist\.m3u8/i);
+    if (match) {
+      const did = decodeURIComponent(match[1]);
+      const cid = decodeURIComponent(match[2]);
+      return `${BLUESKY_BLOB_BASE}?did=${encodeURIComponent(did)}&cid=${encodeURIComponent(cid)}`;
+    }
+  }
+
+  return '';
 }
 
 /**
@@ -306,8 +325,9 @@ function extractBlueskyMedia(embedView) {
   }
 
   // Native video embeds. The view only exposes an HLS playlist, which
-  // browsers cannot play without hls.js; the post's record still carries
-  // the original blob (with did + CID), whose URL streams a plain MP4.
+  // browsers cannot play without hls.js; the streamable MP4 is rebuilt
+  // from the did+CID named in the playlist (or from the blob record when
+  // the AppView still includes it). See buildBlueskyVideoBlobURL.
   if (embedView.$type === 'app.bsky.embed.video#view') {
     const fullsize = buildBlueskyVideoBlobURL(embedView);
     if (fullsize) {

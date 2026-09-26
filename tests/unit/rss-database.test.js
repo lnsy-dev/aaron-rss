@@ -67,7 +67,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -93,12 +93,14 @@ describe('rss database helpers', () => {
     expect(tables[17]).toContain('PRAGMA table_info(downloaded_videos)');
     expect(tables[18]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
     expect(tables[19]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
-    expect(tables[20]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[20]).toContain('FROM articles');
-    expect(tables[20]).toContain('download_path IS NOT NULL');
-    expect(tables[21]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[22]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[23]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    expect(tables[20]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_id');
+    expect(tables[21]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_name');
+    expect(tables[22]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[22]).toContain('FROM articles');
+    expect(tables[22]).toContain('download_path IS NOT NULL');
+    expect(tables[23]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[24]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[25]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -139,6 +141,8 @@ describe('rss database helpers', () => {
             { name: 'file_path' },
             { name: 'seen' },
             { name: 'playback_position_seconds' },
+            { name: 'channel_id' },
+            { name: 'channel_name' },
           ],
         };
       }
@@ -412,6 +416,8 @@ describe('rss database helpers', () => {
       youtubeURL: 'https://www.youtube.com/watch?v=abc',
       filePath: '/downloads/Aaron-RSS-YouTube/abc.mp4',
       title: 'My Video',
+      channelID: 'UCabc123def456',
+      channelName: 'Example Channel',
       downloadedAt: new Date('2026-01-01T00:00:00.000Z'),
       fileSizeBytes: 12345,
     });
@@ -419,9 +425,9 @@ describe('rss database helpers', () => {
     const message = FakeWorker.instance.messages[0];
     expect(message.action).toBe('exec');
     expect(message.params.sql).toContain('INSERT OR REPLACE INTO downloaded_videos');
-    expect(message.params.sql).toContain('(video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen)');
+    expect(message.params.sql).toContain('(video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen, channel_id, channel_name)');
     // A fresh download record is always ready (unwatched).
-    expect(message.params.sql).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)');
+    expect(message.params.sql).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)');
     expect(message.params.params[0]).toEqual(expect.any(String));
     expect(message.params.params.slice(1)).toEqual([
       'feed123',
@@ -431,6 +437,8 @@ describe('rss database helpers', () => {
       'My Video',
       '2026-01-01T00:00:00.000Z',
       12345,
+      'UCabc123def456',
+      'Example Channel',
     ]);
   });
 
@@ -480,6 +488,8 @@ describe('rss database helpers', () => {
           downloaded_at: '2026-01-01T00:00:00.000Z',
           file_size_bytes: 42,
           playback_position_seconds: 137.5,
+          channel_id: 'UCabc123def456',
+          channel_name: 'Example Channel',
         },
       ],
     });
@@ -499,6 +509,8 @@ describe('rss database helpers', () => {
       downloadedAt: '2026-01-01T00:00:00.000Z',
       fileSizeBytes: 42,
       playbackPositionSeconds: 137.5,
+      channelID: 'UCabc123def456',
+      channelName: 'Example Channel',
     });
   });
 

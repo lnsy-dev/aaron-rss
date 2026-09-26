@@ -1268,6 +1268,80 @@ describe('feed manager', () => {
     });
   });
 
+  describe('YouTube channel feed subscription', () => {
+    it('isYouTubeChannelFeedSubscribed matches stored feeds by channel id', async () => {
+      loadAllFeeds.mockResolvedValue([
+        { feedID: 'feed-a', url: 'https://example.com/feed.xml' },
+        {
+          feedID: 'feed-yt',
+          url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456',
+        },
+      ]);
+
+      const { isYouTubeChannelFeedSubscribed } = await importFeedManager();
+
+      await expect(isYouTubeChannelFeedSubscribed('UCabc123def456')).resolves.toBe(true);
+      await expect(isYouTubeChannelFeedSubscribed('UCother987654321')).resolves.toBe(false);
+      // No channel known: never "subscribed".
+      await expect(isYouTubeChannelFeedSubscribed(null)).resolves.toBe(false);
+      expect(loadAllFeeds).toHaveBeenCalled();
+    });
+
+    it('isYouTubeChannelFeedSubscribed accepts a preloaded feed list', async () => {
+      const { isYouTubeChannelFeedSubscribed } = await importFeedManager();
+      const feeds = [
+        { url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456' },
+      ];
+
+      await expect(isYouTubeChannelFeedSubscribed('UCabc123def456', feeds)).resolves.toBe(true);
+      expect(loadAllFeeds).not.toHaveBeenCalled();
+    });
+
+    it('subscribeToYouTubeChannelFeed adds the channel feed and labels it', async () => {
+      loadFeed.mockResolvedValue(null);
+      parseFeedText.mockResolvedValue({
+        title: 'Rss: Example Channel',
+        homePageURL: 'https://www.youtube.com/channel/UCabc123def456',
+        items: [],
+      });
+
+      const { subscribeToYouTubeChannelFeed } = await importFeedManager();
+      const result = await subscribeToYouTubeChannelFeed('UCabc123def456', 'Example Channel');
+
+      expect(result).toEqual({ subscribed: true, name: 'Example Channel' });
+      const savedFeed = saveFeed.mock.calls[0][0];
+      expect(savedFeed.url).toBe(
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456'
+      );
+      expect(savedFeed.name).toBe('Example Channel');
+    });
+
+    it('subscribeToYouTubeChannelFeed reports an existing subscription', async () => {
+      loadFeed.mockResolvedValue({
+        feedID: 'feed-yt',
+        url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456',
+        name: 'Already There',
+        articles: [],
+      });
+
+      const { subscribeToYouTubeChannelFeed } = await importFeedManager();
+      const result = await subscribeToYouTubeChannelFeed('UCabc123def456', 'Example Channel');
+
+      expect(result).toEqual({ subscribed: true, name: 'Already There' });
+      expect(saveFeed).not.toHaveBeenCalled();
+    });
+
+    it('subscribeToYouTubeChannelFeed throws when the feed cannot be fetched', async () => {
+      loadFeed.mockResolvedValue(null);
+      fetchText.mockResolvedValue({ ok: false, status: 500, text: '' });
+
+      const { subscribeToYouTubeChannelFeed } = await importFeedManager();
+      await expect(subscribeToYouTubeChannelFeed('UCabc123def456')).rejects.toThrow(
+        /Could not fetch the channel feed/
+      );
+    });
+  });
+
   describe('scrapeNewArticleMarkdown (research topics)', () => {
     beforeEach(() => {
       listFeedIDsInResearchTopics.mockResolvedValue(['feed-topic']);

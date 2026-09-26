@@ -230,11 +230,14 @@ describe('youtube cookie configuration', () => {
       const result = await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc123');
 
       // The mock environment has no ffmpeg and its provisioning fails,
-      // so the result carries the renderer's install-dialog flag.
+      // so the result carries the renderer's install-dialog flag. The
+      // mock metadata has no channel, so those fields are null.
       expect(result).toEqual({
         filePath: '/mock/downloads/Aaron-RSS-YouTube/abc123.mp4',
         videoID: 'abc123',
         title: 'Test Video',
+        channelID: null,
+        channelName: null,
         ffmpegMissing: true,
       });
       expect(execCalls).toHaveLength(2);

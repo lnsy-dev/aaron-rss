@@ -449,6 +449,20 @@ export async function initRSSSchema() {
     });
   }
 
+  // Migration: channel metadata on downloaded videos. yt-dlp reports the
+  // uploading channel's ID (UC...) and name; the Videos view offers a
+  // "subscribe to rss feed" action keyed on them.
+  if (!videoColumns.some((col) => col.name === 'channel_id')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE downloaded_videos ADD COLUMN channel_id TEXT',
+    });
+  }
+  if (!videoColumns.some((col) => col.name === 'channel_name')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE downloaded_videos ADD COLUMN channel_name TEXT',
+    });
+  }
+
   // One-time backfill migration: queue rows for videos downloaded before
   // the downloaded_videos table existed. The UNIQUE constraints make this
   // idempotent — paths/records already in the table are skipped, so it can
@@ -520,7 +534,6 @@ export async function initRSSSchema() {
     )`,
   });
 }
-
 /**
  * Serialize a feed object into values for an INSERT/UPDATE.
  *
@@ -1285,7 +1298,7 @@ export function getReadLaterScrollPosition(feedID, articleID) {
  * Map a downloaded_videos row to a camelCase object.
  *
  * @param {object} row - Raw row from the downloaded_videos table
- * @returns {{videoID: string, feedID: string|null, articleID: string, youtubeURL: string, filePath: string, title: string|null, downloadedAt: string, fileSizeBytes: number|null}}
+ * @returns {{videoID: string, feedID: string|null, articleID: string, youtubeURL: string, filePath: string, title: string|null, downloadedAt: string, fileSizeBytes: number|null, channelID: string|null, channelName: string|null}}
  */
 function downloadedVideoFromRow(row) {
   return {
@@ -1298,6 +1311,8 @@ function downloadedVideoFromRow(row) {
     downloadedAt: row.downloaded_at,
     fileSizeBytes: row.file_size_bytes,
     playbackPositionSeconds: row.playback_position_seconds,
+    channelID: row.channel_id || null,
+    channelName: row.channel_name || null,
   };
 }
 
@@ -1326,6 +1341,8 @@ function generateDownloadedVideoID() {
  * @param {string} video.youtubeURL
  * @param {string} video.filePath
  * @param {string|null} video.title
+ * @param {string|null} [video.channelID] - yt-dlp's channel_id (UC...)
+ * @param {string|null} [video.channelName] - yt-dlp's channel/uploader name
  * @param {Date} [video.downloadedAt] - Defaults to now
  * @param {number|null} [video.fileSizeBytes]
  * @returns {Promise<void>}
@@ -1338,8 +1355,8 @@ export async function recordDownloadedVideo(video) {
   // REPLACE resets it to NULL — a fresh file starts from the beginning.
   await callWorker('exec', {
     sql: `INSERT OR REPLACE INTO downloaded_videos
-      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes, seen, channel_id, channel_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     params: [
       generateDownloadedVideoID(),
       video.feedID || null,
@@ -1349,6 +1366,8 @@ export async function recordDownloadedVideo(video) {
       video.title || null,
       downloadedAt.toISOString(),
       video.fileSizeBytes ?? null,
+      video.channelID || null,
+      video.channelName || null,
     ],
   });
 }

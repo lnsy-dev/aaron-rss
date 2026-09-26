@@ -1222,7 +1222,7 @@ const BOT_CHECK_ERROR_MESSAGE =
  * @param {Function|null} [onProgress] - Optional progress callback; receives
  *   { stage, percent?, totalSize?, currentSpeed?, eta? } updates where
  *   stage is 'starting' | 'downloading' | 'processing'
- * @returns {Promise<{filePath?: string, videoID?: string, title?: string|null, error?: string}>}
+ * @returns {Promise<{filePath?: string, videoID?: string, title?: string|null, channelID?: string|null, channelName?: string|null, error?: string}>}
  */
 export async function downloadYouTubeVideo(url, onProgress = null) {
   if (isYouTubeStream(url)) {
@@ -1306,11 +1306,18 @@ export async function downloadYouTubeVideo(url, onProgress = null) {
       );
     }
 
-    // The metadata lookup already ran for the video ID, so its title rides
-    // along for free; callers recording the download in the video library
-    // use it as the display name.
+    // The metadata lookup already ran for the video ID, so its title and
+    // channel ride along for free; callers recording the download in the
+    // video library use the title as the display name and the channel
+    // fields to offer subscribing to the channel's RSS feed.
     return annotateFFmpegMissing(
-      { filePath, videoID, title: info?.title || null },
+      {
+        filePath,
+        videoID,
+        title: info?.title || null,
+        channelID: info?.channel_id || null,
+        channelName: info?.channel || info?.uploader || null,
+      },
       ffmpegUnavailable
     );
   } catch (error) {

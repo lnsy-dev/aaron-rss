@@ -22,6 +22,8 @@ import {
   markDownloadedVideoSeen,
   saveDownloadedVideoPosition,
   getDownloadedVideoPlaybackPosition,
+  getDownloadedVideoForArticle,
+  getDownloadedVideoForURL,
   createResearchTopic,
   deleteResearchTopic,
   updateResearchTopic,
@@ -49,6 +51,8 @@ import {
   downloadArticleYouTubeVideo,
   downloadYouTubeVideoFromURL,
   deleteArticleYouTubeVideo,
+  isYouTubeChannelFeedSubscribed,
+  subscribeToYouTubeChannelFeed,
   downloadArticlePodcast,
   deleteArticlePodcast,
   loadDownloadedArticles,
@@ -6206,6 +6210,11 @@ class RSSFeedComponent extends DataroomElement {
         }
       });
       wrapper.insertBefore(deleteButton, viewButton);
+
+      // A downloaded video knows its channel (yt-dlp's channel_id, stored
+      // on the queue record at download time); when that channel's RSS
+      // feed is not subscribed, offer to subscribe right from the viewer.
+      this._attachSubscribeToChannelButton(article, feed, wrapper, viewButton);
     }
 
     body.appendChild(wrapper);
@@ -6222,6 +6231,88 @@ class RSSFeedComponent extends DataroomElement {
     // cannot be marked read at all.
     if (!hasDownload && feed?.feedID) {
       await this.markAsRead(feed.feedID, article.articleID);
+    }
+  }
+
+  /**
+   * Offer "Subscribe to RSS Feed" inside a downloaded video's viewer.
+   *
+   * The video's channel is looked up on its downloaded_videos queue row
+   * (yt-dlp's channel_id recorded at download time); the button renders
+   * only when the channel is known and its feed is not already
+   * subscribed. Clicking it adds the canonical
+   * https://www.youtube.com/feeds/videos.xml?channel_id=... feed and the
+   * button becomes a plain "Subscribed ✓" confirmation.
+   *
+   * @param {object} article - The viewed article
+   * @param {object|null} feed - The article's feed (unused for the check)
+   * @param {HTMLElement} wrapper - The .rss-youtube-external container
+   * @param {HTMLElement} viewButton - The "View on YouTube" button to anchor before
+   * @returns {Promise<void>}
+   */
+  async _attachSubscribeToChannelButton(article, feed, wrapper, viewButton) {
+    if (!article?.articleID || !article.url) {
+      return;
+    }
+
+    let queueRecord = null;
+    if (isElectronAvailable()) {
+      try {
+        // Feed-sourced downloads (auto-download, Download Video in the
+        // viewer) are keyed by feed+article; manual command-menu
+        // downloads have no feed row and are keyed by their video URL.
+        queueRecord =
+          (await getDownloadedVideoForArticle(
+            feed?.feedID || article?.feedID || null,
+            article.articleID
+          )) || (await getDownloadedVideoForURL(article.url));
+      } catch (error) {
+        console.error('Failed to look up downloaded video record:', error);
+      }
+    }
+
+    const channelID = queueRecord?.channelID || null;
+    if (!channelID) {
+      return;
+    }
+
+    let subscribed = false;
+    try {
+      subscribed = await isYouTubeChannelFeedSubscribed(channelID);
+    } catch (error) {
+      console.error('Failed to check channel subscription:', error);
+    }
+    if (subscribed) {
+      return;
+    }
+
+    const subscribeButton = document.createElement('button');
+    subscribeButton.className = 'rss-action-button rss-youtube-external-button rss-youtube-subscribe-button';
+    subscribeButton.textContent = 'Subscribe to RSS Feed';
+    subscribeButton.title = `Subscribe to ${queueRecord.channelName || 'this channel'}'s RSS feed`;
+    subscribeButton.addEventListener('click', async () => {
+      subscribeButton.disabled = true;
+      try {
+        await subscribeToYouTubeChannelFeed(channelID, queueRecord.channelName || null);
+        subscribeButton.textContent = 'Subscribed ✓';
+        this.showToast('Channel feed subscribed');
+        await this.refreshFeeds();
+      } catch (error) {
+        console.error('Failed to subscribe to channel feed:', error);
+        subscribeButton.disabled = false;
+        this.showToast(`Could not subscribe: ${error.message}`, 'error');
+      }
+    });
+    wrapper.insertBefore(subscribeButton, viewButton);
+
+    // In full-window playback mode the body wrapper is hidden
+    // (display:none); move the button into the floating action row so it
+    // stays reachable over the video — the same treatment Delete Video
+    // gets in _enterVideoPlaybackMode.
+    const overlay = wrapper.closest?.('.rss-article-viewer-overlay');
+    const actions = overlay?.querySelector('.rss-article-viewer-actions');
+    if (overlay?.classList.contains('rss-article-viewer-overlay--video') && actions) {
+      actions.appendChild(subscribeButton);
     }
   }
 
@@ -6389,6 +6480,13 @@ class RSSFeedComponent extends DataroomElement {
     const embedded = this._embeddedDownloadedVideo(article, feed, wrapper);
     if (embedded) {
       this._enterVideoPlaybackMode(viewer);
+      // A download that just finished inside an open viewer should offer
+      // the channel subscription too (the button anchors before the
+      // View on YouTube action the wrapper carries).
+      const viewButton = viewer.querySelector('.rss-youtube-external-button:not(.rss-youtube-delete-button):not(.rss-youtube-subscribe-button)');
+      if (viewButton) {
+        this._attachSubscribeToChannelButton(article, feed, wrapper, viewButton);
+      }
     }
   }
 
@@ -6425,6 +6523,14 @@ class RSSFeedComponent extends DataroomElement {
     const deleteButton = overlay.querySelector('.rss-youtube-external .rss-youtube-delete-button');
     if (actions && deleteButton) {
       actions.appendChild(deleteButton);
+    }
+    // A channel-subscribe button rendered before playback mode was
+    // entered gets the same treatment (it is normally created after the
+    // queue-record lookup resolves, so it usually moves itself — this is
+    // the belt-and-braces sweep for the other ordering).
+    const subscribeButton = overlay.querySelector('.rss-youtube-external .rss-youtube-subscribe-button');
+    if (actions && subscribeButton) {
+      actions.appendChild(subscribeButton);
     }
 
     // Gather the chrome rows into one floating bar so CSS can pin the

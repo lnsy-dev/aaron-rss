@@ -6,7 +6,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isYouTubeURL, isYouTubeHostURL, isYouTubeStream, extractYouTubeVideoID, getYouTubeEmbedURL } from '../../src/lib/youtube.js';
+import {
+  isYouTubeURL,
+  isYouTubeHostURL,
+  isYouTubeStream,
+  extractYouTubeVideoID,
+  getYouTubeEmbedURL,
+  buildYouTubeChannelFeedURL,
+  extractYouTubeChannelFeedID,
+} from '../../src/lib/youtube.js';
 
 describe('youtube helpers', () => {
   describe('isYouTubeURL', () => {
@@ -126,6 +134,53 @@ describe('youtube helpers', () => {
     it('throws for invalid video IDs', () => {
       expect(() => getYouTubeEmbedURL('short')).toThrow('Invalid YouTube video ID');
       expect(() => getYouTubeEmbedURL('')).toThrow('Invalid YouTube video ID');
+    });
+  });
+
+  describe('channel feed URLs', () => {
+    it('builds the canonical channel RSS feed URL', () => {
+      expect(buildYouTubeChannelFeedURL('UCabc123def456')).toBe(
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456'
+      );
+    });
+
+    it('extracts the channel id from a channel feed URL', () => {
+      expect(
+        extractYouTubeChannelFeedID(
+          'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456'
+        )
+      ).toBe('UCabc123def456');
+      expect(
+        extractYouTubeChannelFeedID(
+          'http://m.youtube.com/feeds/videos.xml?channel_id=UCabc123def456'
+        )
+      ).toBe('UCabc123def456');
+    });
+
+    it('rejects URLs that are not channel feeds', () => {
+      expect(extractYouTubeChannelFeedID('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
+      expect(extractYouTubeChannelFeedID('https://example.com/feeds/videos.xml?channel_id=UCabc123def456')).toBeNull();
+      expect(extractYouTubeChannelFeedID('')).toBeNull();
+      expect(extractYouTubeChannelFeedID(null)).toBeNull();
+    });
+
+    it('rejects playlist and user feeds that key on other ids', () => {
+      expect(
+        extractYouTubeChannelFeedID(
+          'https://www.youtube.com/feeds/videos.xml?playlist_id=PL123'
+        )
+      ).toBeNull();
+      expect(
+        extractYouTubeChannelFeedID(
+          'https://www.youtube.com/feeds/videos.xml?user=someuser'
+        )
+      ).toBeNull();
+    });
+
+    it('rejects malformed channel ids', () => {
+      expect(
+        extractYouTubeChannelFeedID('https://www.youtube.com/feeds/videos.xml?channel_id=short')
+      ).toBeNull();
     });
   });
 });

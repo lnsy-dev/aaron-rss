@@ -1509,6 +1509,81 @@ export function countUnreadReadLaterArticles() {
 }
 
 /**
+ * Load every podcast episode that has a downloaded audio file
+ * (Podcasts view data).
+ *
+ * Podcast downloads are not queued in downloaded_videos (they stay in the
+ * feed list); a "downloaded podcast" is an article whose audio enclosure
+ * has a persisted download_path. The query joins feeds and articles so
+ * each result is a display-ready {feed, article} pair, mirroring
+ * loadDownloadedArticles(). Read episodes are included on purpose — the
+ * view is a listening library, not an inbox. Unread episodes appear too,
+ * so a freshly downloaded episode is listed immediately. Dangling rows
+ * (their feed was deleted) surface as entries with feed === null so the
+ * view can still show their titles.
+ *
+ * @returns {Promise<Array<{feed: object|null, article: object}>>} Newest episode first
+ */
+export function loadDownloadedPodcastArticles() {
+  return callWorker('query', {
+    sql: `SELECT
+        f.feed_id, f.url AS feed_url, f.name, f.home_page_url, f.icon_url, f.favicon_url,
+        f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
+        a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
+        a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.download_path, a.date_arrived
+      FROM articles a
+      LEFT JOIN feeds f ON f.feed_id = a.feed_id
+      WHERE a.download_path IS NOT NULL AND a.download_path != ''
+        AND a.enclosure_url IS NOT NULL AND a.enclosure_url != ''
+      ORDER BY COALESCE(a.date_published, a.date_arrived) DESC`,
+  }).then((rows) => (rows || []).map((row) => {
+    // Reuse rowsToFeeds for one row to get consistent feed/article mapping.
+    // rowsToFeeds always builds a shell feed, so normalize a NULL feed_id
+    // (LEFT JOIN missed) back to a null feed.
+    const feeds = rowsToFeeds([row]);
+    const feed = feeds.length > 0 && feeds[0].feedID ? feeds[0] : null;
+    const article = feed && feed.articles.length > 0 ? feed.articles[0] : null;
+    if (article) {
+      return { feed, article };
+    }
+    // Dangling entry: the feed row is gone but the episode remains. The
+    // article keeps its own IDs so it can still be played from the view.
+    return {
+      feed,
+      article: {
+        articleID: row.article_id ?? null,
+        feedID: row.feed_id ?? null,
+        feedURL: row.feed_url,
+        uniqueID: row.unique_id,
+        title: row.title,
+        contentHTML: row.content_html,
+        contentText: row.content_text,
+        url: row.article_url,
+        externalURL: row.external_url,
+        summary: row.summary,
+        imageURL: row.image_url,
+        bannerImageURL: row.banner_image_url,
+        datePublished: row.date_published ? new Date(row.date_published) : undefined,
+        dateModified: row.date_modified ? new Date(row.date_modified) : undefined,
+        authors: row.authors ? JSON.parse(row.authors) : [],
+        tags: row.tags ? JSON.parse(row.tags) : [],
+        read: Boolean(row.read),
+        starred: Boolean(row.starred),
+        downloadPath: row.download_path || undefined,
+        enclosureURL: row.enclosure_url || undefined,
+        enclosureType: row.enclosure_type || undefined,
+        enclosureLength: row.enclosure_length ?? undefined,
+        dateArrived: new Date(row.date_arrived),
+      },
+    };
+  }));
+}
+
+/**
+
  * Fetch the newest downloaded_videos record for a YouTube URL.
  *
  * Used to dedupe manual downloads started from the command menu: the

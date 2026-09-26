@@ -378,6 +378,14 @@ export async function initRSSSchema() {
     });
   }
 
+  // Migration: Read Later scroll memory. Where the user stopped reading
+  // a saved article is persisted so reopening it restores that point.
+  if (!articleColumns.some((col) => col.name === 'read_later_scroll')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN read_later_scroll REAL',
+    });
+  }
+
   // Index for per-feed article queries. Without it every refresh-time
   // operation (load, delete-not-in-set, purge, status updates) full-scans
   // the articles table — including multi-kilobyte content columns — which
@@ -1229,6 +1237,10 @@ export async function updateArticleStatus(feedID, articleID, updates) {
     fields.push('read_later = ?');
     params.push(updates.readLater ? 1 : 0);
   }
+  if ('readLaterScroll' in updates) {
+    fields.push('read_later_scroll = ?');
+    params.push(updates.readLaterScroll ?? null);
+  }
   if ('downloadPath' in updates) {
     fields.push('download_path = ?');
     params.push(updates.downloadPath || null);
@@ -1242,6 +1254,30 @@ export async function updateArticleStatus(feedID, articleID, updates) {
   await callWorker('exec', {
     sql: `UPDATE articles SET ${fields.join(', ')} WHERE feed_id = ? AND article_id = ?`,
     params,
+  });
+}
+
+/**
+ * Read the saved Read Later scroll position for an article.
+ *
+ * The viewer reads the position fresh from the database when the
+ * article opens, so restoring works even for stale in-memory copies
+ * (read articles live only in the archive's own query).
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<number|null>} Saved scroll offset, or null when none
+ */
+export function getReadLaterScrollPosition(feedID, articleID) {
+  return callWorker('query', {
+    sql: 'SELECT read_later_scroll FROM articles WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  }).then((rows) => {
+    if (!rows || rows.length === 0) {
+      return null;
+    }
+    const value = rows[0].read_later_scroll;
+    return typeof value === 'number' && !Number.isNaN(value) ? value : null;
   });
 }
 

@@ -1068,6 +1068,20 @@ export async function setArticleReadLater(feedID, articleID, readLater) {
 }
 
 /**
+ * Persist (or clear) a saved article's Read Later scroll position.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {number|null} scrollPosition - Pixel offset, or null to clear
+ * @returns {Promise<void>}
+ */
+export function setArticleReadLaterScroll(feedID, articleID, scrollPosition) {
+  return dbUpdateArticleStatus(feedID, articleID, {
+    readLaterScroll: scrollPosition,
+  });
+}
+
+/**
  * Load every article flagged for the Read Later archive, for the
  * Read Later view.
  *

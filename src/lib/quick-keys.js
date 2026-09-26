@@ -72,6 +72,7 @@ const QUICK_KEY_GROUPS = [
       { combo: 'Mod+P', description: 'Open the command panel (or Ctrl+Shift+P)' },
       { combo: 'Mod+D', description: 'Toggle Distraction Free Mode' },
       { combo: 'Mod+?', description: 'Show this quick keys reference' },
+      { combo: 'F11', description: 'Toggle full screen' },
       { combo: 'Mod+Plus', description: 'Larger article text' },
       { combo: 'Mod+Minus', description: 'Smaller article text' },
       { combo: 'Mod+0', description: 'Reset article text size' },

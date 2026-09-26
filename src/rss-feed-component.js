@@ -1070,6 +1070,9 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
       { name: 'Toggle Distraction Free Mode', action: () => this.toggleDistractionFreeMode() },
       { name: 'Toggle Full Screen', action: () => this.toggleFullScreen() },
+      { name: 'Increase Font Size', action: () => this._handleArticleFontAction('increase') },
+      { name: 'Decrease Font Size', action: () => this._handleArticleFontAction('decrease') },
+      { name: 'Reset Font Size', action: () => this._handleArticleFontAction('reset') },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 
@@ -8250,6 +8253,17 @@ class RSSFeedComponent extends DataroomElement {
     if (isQuickKeysEvent(event)) {
       event.preventDefault();
       this.showQuickKeysModal();
+      return;
+    }
+
+    // F11 toggles full screen. Linux and Windows builds run without an
+    // application menu, so Electron's `togglefullscreen` role is
+    // unreachable there; F11 is the standard key users expect. Also
+    // before the typing/modal guard so the toggle works from anywhere,
+    // matching browser behavior.
+    if (event.key === 'F11') {
+      event.preventDefault();
+      this.toggleFullScreen();
       return;
     }
 

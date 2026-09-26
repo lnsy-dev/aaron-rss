@@ -134,6 +134,14 @@ describe('getQuickKeyGroups', () => {
     expect(combos).toContain('Mod+0');
   });
 
+  it('includes the F11 full screen shortcut', () => {
+    const combos = groups.flatMap((group) => group.items.map((item) => item.combo));
+    expect(combos).toContain('F11');
+    // Rendered verbatim as a key cap on both platforms.
+    expect(formatKeyCombo('F11', 'pc')).toEqual(['F11']);
+    expect(formatKeyCombo('F11', 'mac')).toEqual(['F11']);
+  });
+
   it('formats the Plus and Minus tokens into key caps', () => {
     expect(formatKeyCombo('Mod+Plus', 'mac')).toEqual(['⌘', '+']);
     expect(formatKeyCombo('Mod+Plus', 'pc')).toEqual(['Ctrl', '+']);

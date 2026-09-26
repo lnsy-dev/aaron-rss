@@ -30,6 +30,7 @@ import {
   addFeedToResearchTopic,
   removeFeedFromResearchTopic,
   countUnreadReadLaterArticles,
+  deleteArticle as dbDeleteArticle,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -52,6 +53,7 @@ import {
   loadDownloadedArticles,
   loadReadLaterArticles,
   setArticleReadLater,
+  deleteArticle,
   loadDownloadedPodcastArticles,
   ensureFeedSubscribed,
   clearResearchTopicArticles,
@@ -578,7 +580,7 @@ class RSSFeedComponent extends DataroomElement {
    * Persists timeline/feeds modes to the settings table and re-renders;
    * videos and podcasts remain transient overlays (see _videosReturnMode).
    *
-   * @param {string} mode - One of 'timeline', 'feeds', 'videos', 'podcasts', 'read-later'
+   * @param {string} mode - One of 'timeline', 'feeds', 'videos', 'podcasts', 'read-later', 'delete-read-later'
    * @returns {Promise<void>}
    */
   async _handleViewModeSelect(mode) {
@@ -588,7 +590,7 @@ class RSSFeedComponent extends DataroomElement {
 
     // Entering an overlay view (Videos/Podcasts/Read Later) records the
     // mode to return to.
-    if ((mode === 'videos' || mode === 'podcasts' || mode === 'read-later') && this.viewMode !== mode) {
+    if ((mode === 'videos' || mode === 'podcasts' || mode === 'read-later' || mode === 'delete-read-later') && this.viewMode !== mode) {
       this._videosReturnMode = this.viewMode;
     }
 
@@ -602,7 +604,7 @@ class RSSFeedComponent extends DataroomElement {
       this._topicView = null;
     }
 
-    if (mode !== 'videos' && mode !== 'podcasts' && mode !== 'read-later') {
+    if (mode !== 'videos' && mode !== 'podcasts' && mode !== 'read-later' && mode !== 'delete-read-later') {
       try {
         await saveSettings({ viewMode: mode });
       } catch (error) {
@@ -632,6 +634,7 @@ class RSSFeedComponent extends DataroomElement {
       videos: 'Videos view',
       podcasts: 'Podcasts view',
       'read-later': 'Read Later view',
+      'delete-read-later': 'Delete Article view',
     };
     for (const [mode, input] of Object.entries(this.viewModeInputs)) {
       input.checked = this.viewMode === mode;
@@ -761,7 +764,7 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     if (this.viewMode !== 'feeds') {
-      if (this.viewMode === 'videos' || this.viewMode === 'read-later' || this.viewMode === 'podcasts' || this.viewMode === 'topic') {
+      if (this.viewMode === 'videos' || this.viewMode === 'read-later' || this.viewMode === 'delete-read-later' || this.viewMode === 'podcasts' || this.viewMode === 'topic') {
         this._videosReturnMode = 'feeds';
       }
       this.viewMode = 'feeds';
@@ -1371,6 +1374,9 @@ class RSSFeedComponent extends DataroomElement {
       case 'delete-podcast':
         this._deletePodcastFromList(article, feed, actionEl);
         break;
+      case 'delete-article':
+        this._confirmDeleteArticle(article, feed);
+        break;
       default:
         // Clicks on non-action parts of the article do nothing.
         break;
@@ -1605,9 +1611,9 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
-      // The Read Later view likewise re-queries its archive in place
-      // (see renderReadLaterView).
-      if (this.viewMode === 'read-later') {
+      // The Read Later view (and its Delete Article variant) likewise
+      // re-queries the archive in place (see renderReadLaterView).
+      if (this.viewMode === 'read-later' || this.viewMode === 'delete-read-later') {
         await this.renderReadLaterView();
         await this._refreshReadLaterBadge();
         return;
@@ -1696,7 +1702,7 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     // The Read Later view lists every article flagged for the archive.
-    if (this.viewMode === 'read-later') {
+    if (this.viewMode === 'read-later' || this.viewMode === 'delete-read-later') {
       this.renderReadLaterView();
       return;
     }
@@ -2155,6 +2161,37 @@ class RSSFeedComponent extends DataroomElement {
     container.className = 'rss-read-later-view';
     this.contentArea.appendChild(container);
 
+    // The header always renders — including over the empty state — so
+    // the "Delete Article" entry point exists whether or not the
+    // archive currently holds anything.
+    const header = document.createElement('div');
+    header.className = 'rss-read-later-view-header';
+    const countLabel = document.createElement('span');
+    countLabel.className = 'rss-read-later-view-count';
+    countLabel.textContent = this._readLaterViewCountLabel(items.length);
+    header.appendChild(countLabel);
+
+    // The "Delete Article" view: the same archive rendered with a
+    // destructive action on every row, for pruning the archive. The
+    // regular view offers the switch; the delete view offers "Done" to
+    // go back.
+    if (this.viewMode === 'delete-read-later') {
+      const deleteViewButton = document.createElement('button');
+      deleteViewButton.className = 'rss-action-button rss-read-later-delete-view-button';
+      deleteViewButton.textContent = 'Done';
+      deleteViewButton.title = 'Back to the Read Later view';
+      deleteViewButton.addEventListener('click', () => this._handleViewModeSelect('read-later'));
+      header.appendChild(deleteViewButton);
+    } else {
+      const deleteModeButton = document.createElement('button');
+      deleteModeButton.className = 'rss-action-button rss-read-later-delete-mode-button';
+      deleteModeButton.textContent = 'Delete Article';
+      deleteModeButton.title = 'Remove archived articles for good';
+      deleteModeButton.addEventListener('click', () => this._handleViewModeSelect('delete-read-later'));
+      header.appendChild(deleteModeButton);
+    }
+    container.appendChild(header);
+
     if (items.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'rss-no-articles';
@@ -2162,14 +2199,6 @@ class RSSFeedComponent extends DataroomElement {
       container.appendChild(empty);
       return;
     }
-
-    const header = document.createElement('div');
-    header.className = 'rss-read-later-view-header';
-    const countLabel = document.createElement('span');
-    countLabel.className = 'rss-read-later-view-count';
-    countLabel.textContent = this._readLaterViewCountLabel(items.length);
-    header.appendChild(countLabel);
-    container.appendChild(header);
 
     for (const { feed, article } of items) {
       const entry = document.createElement('div');
@@ -2179,6 +2208,7 @@ class RSSFeedComponent extends DataroomElement {
       entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
       this.renderArticle(entry, article, feed, {
         showFeedName: true,
+        showDeleteArticle: this.viewMode === 'delete-read-later',
       });
       container.appendChild(entry);
     }
@@ -3248,12 +3278,12 @@ class RSSFeedComponent extends DataroomElement {
    *
    * @param {HTMLElement} container
    * @param {object} article
-   * @param {object} feed
-   * @param {object} [options]    * @param {boolean} [options.showFeedName=false] - Prefix the meta line with the feed name (used by the timeline view).
+   * @param {object} feed   * @param {object} [options]    * @param {boolean} [options.showFeedName=false] - Prefix the meta line with the feed name (used by the timeline view).
     * @param {boolean} [options.clickableFeedName=false] - Make the feed name clickable to jump to that feed in the Feeds view (timeline only).
-   * @returns {void}
-   */
-  renderArticle(container, article, feed, options = {}) {
+    * @param {boolean} [options.showDeleteArticle=false] - Add the destructive "Delete Article" action (Read Later Delete Article view).
+    * @returns {void}
+    */
+   renderArticle(container, article, feed, options = {}) {
     const articleDiv = document.createElement('div');
     articleDiv.className = 'rss-article';
     articleDiv.setAttribute('data-article-id', article.articleID);
@@ -3437,6 +3467,17 @@ class RSSFeedComponent extends DataroomElement {
       readButton.textContent = article.read ? 'Mark Unread' : 'Mark Read';
       readButton.setAttribute('data-action', 'mark-read');
       actionsDiv.appendChild(readButton);
+    }
+
+    // The Read Later "Delete Article" view offers the destructive
+    // pruning action on every archived row. The row-level Mark Read
+    // toggle stays out of the way while pruning.
+    if (options.showDeleteArticle) {
+      const deleteArticleButton = document.createElement('button');
+      deleteArticleButton.className = 'rss-action-button rss-button-danger rss-delete-article-button';
+      deleteArticleButton.textContent = 'Delete Article';
+      deleteArticleButton.setAttribute('data-action', 'delete-article');
+      actionsDiv.appendChild(deleteArticleButton);
     }
 
     articleDiv.appendChild(actionsDiv);
@@ -5391,6 +5432,88 @@ class RSSFeedComponent extends DataroomElement {
       buttonElement.textContent = nextState ? 'Saved ✓' : 'Read Later';
     }
     this.showToast(nextState ? 'Saved for later' : 'Removed from Read Later');
+    this._refreshReadLaterBadge();
+  }
+
+  /**
+   * Confirm and delete an archived article for good.
+   *
+   * The Read Later archive's "Delete Article" action. Unlike removing
+   * an article from the archive (which only clears the read_later
+   * flag), this deletes the article row; the cleared_articles memory is
+   * written first so the next refresh does not re-add it as new.
+   *
+   * @param {object} article - The archived article
+   * @param {object} feed - The article's feed
+   * @returns {void}
+   */
+  _confirmDeleteArticle(article, feed) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID) {
+      return;
+    }
+
+    const title = article.title || 'Untitled article';
+    const modal = this.createModal('Delete Article');
+
+    const message = document.createElement('p');
+    message.textContent = `Delete "${title}" for good? The article and its saved content are removed; the feed may not offer it again.`;
+    modal.body.appendChild(message);
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'rss-modal-buttons';
+
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = 'Cancel';
+    cancelButton.addEventListener('click', () => this.closeModal());
+    buttonContainer.appendChild(cancelButton);
+
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'rss-button-danger';
+    deleteButton.textContent = 'Delete';
+    deleteButton.addEventListener('click', () => {
+      this.closeModal();
+      this._deleteArticleFromList(article, feed);
+    });
+    buttonContainer.appendChild(deleteButton);
+
+    modal.body.appendChild(buttonContainer);
+  }
+
+  /**
+   * Delete an archived article row and refresh the Read Later view.
+   *
+   * Runs after the confirm dialog; the entry is always rendered from the
+   * archive query (the article may not be in this.feeds), so the view is
+   * simply re-rendered from the database after the delete.
+   *
+   * @param {object} article - The archived article
+   * @param {object} feed - The article's feed
+   * @returns {Promise<void>}
+   */
+  async _deleteArticleFromList(article, feed) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID) {
+      return;
+    }
+
+    try {
+      // A downloaded video must not be orphaned on disk by deleting its
+      // article row (the queue record alone cannot play it back).
+      if (article.downloadPath) {
+        await deleteArticleYouTubeVideo(feedID, article.articleID, article.downloadPath);
+      }
+      await deleteArticle(feedID, article.articleID);
+      this.showToast('Article deleted');
+    } catch (error) {
+      console.error('Failed to delete article:', error);
+      this.showToast(`Could not delete the article: ${error.message}`, 'error');
+      return;
+    }
+
+    // The Delete Article view re-queries the archive, so the deleted row
+    // disappears and the count updates in one render.
+    await this.renderReadLaterView();
     this._refreshReadLaterBadge();
   }
 

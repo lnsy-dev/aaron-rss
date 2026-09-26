@@ -11,6 +11,7 @@ import {
   saveFeedMetadata as dbSaveFeedMetadata,
   saveArticles as dbSaveArticles,
   deleteArticlesNotInSet as dbDeleteArticlesNotInSet,
+  deleteArticle as dbDeleteArticle,
   purgeOldReadArticles as dbPurgeOldReadArticles,
   listPrunableDownloadedVideos as dbListPrunableDownloadedVideos,
   runDatabaseMaintenance as dbRunDatabaseMaintenance,
@@ -940,6 +941,23 @@ export async function deleteArticleYouTubeVideo(feedID, articleID, filePath) {
   } catch (error) {
     console.error('Failed to clean up downloaded video record:', error);
   }
+}
+
+/**
+ * Delete one article row for good (Read Later archive's "Delete
+ * Article" action).
+ *
+ * The row is remembered in cleared_articles before deletion, so a feed
+ * whose source still lists the article does not resurrect it on the
+ * next refresh. Callers delete any downloaded file and its queue record
+ * first (see deleteArticleYouTubeVideo) so nothing is orphaned on disk.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteArticle(feedID, articleID) {
+  await dbDeleteArticle(feedID, articleID);
 }
 
 /**

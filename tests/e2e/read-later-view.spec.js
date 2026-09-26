@@ -198,4 +198,68 @@ test.describe('read later view', () => {
     const view = await openReadLaterView(page);
     await expect(view.locator('.rss-no-articles')).toHaveText('Nothing saved for later');
   });
+
+  test('the Delete Article view prunes an archived article for good', async ({ page }) => {
+    test.setTimeout(60000);
+    const component = await seedFeed(page);
+
+    // Archive both articles, then enter the Delete Article view.
+    for (const title of ['Later Article One', 'Later Article Two']) {
+      await page
+        .locator('.rss-article', { hasText: title })
+        .locator('[data-action="toggle-read-later"]')
+        .click();
+    }
+    const view = await openReadLaterView(page);
+    await expect(view.locator('.rss-read-later-view-count')).toHaveText('2 articles');
+    await view.locator('.rss-read-later-delete-mode-button').click();
+    await expect(view.locator('.rss-read-later-delete-view-button')).toHaveText('Done');
+
+    // Every row carries the destructive action; the cancel path keeps
+    // the article.
+    const row = view.locator('.rss-read-later-view-item', { hasText: 'Later Article Two' });
+    await row.locator('.rss-delete-article-button').click();
+    const modal = page.locator('.rss-modal-dialog');
+    await expect(modal.locator('h2')).toHaveText('Delete Article');
+    await modal.locator('.rss-modal-buttons button', { hasText: 'Cancel' }).click();
+    await expect(modal).not.toBeVisible();
+    await expect(view.locator('.rss-read-later-view-count')).toHaveText('2 articles');
+
+    // Confirming deletes: the row goes, the count updates.
+    await row.locator('.rss-delete-article-button').click();
+    await modal.locator('.rss-modal-buttons button', { hasText: 'Delete' }).click();
+    await expect(view.locator('.rss-read-later-view-item', { hasText: 'Later Article Two' }))
+      .toHaveCount(0);
+    await expect(view.locator('.rss-read-later-view-count')).toHaveText('1 article');
+
+    // Done returns to the regular Read Later view (count preserved).
+    await view.locator('.rss-read-later-delete-view-button').click();
+    await expect(page.locator('.rss-read-later-delete-mode-button')).toHaveText('Delete Article');
+    await expect(view.locator('.rss-read-later-view-count')).toHaveText('1 article');
+
+    // The deletion is permanent: a background refresh (the feed source
+    // still lists the article) must not resurrect it as new — nor does
+    // it come back in the feeds view or the archive.
+    await component.evaluate((el) => el.handleRefreshAll());
+    await expect.poll(async () => component.evaluate((el) => el.feeds[0].articles.length), {
+      timeout: 15000,
+    }).toBe(1);
+    await expect(view.locator('.rss-read-later-view-item', { hasText: 'Later Article Two' }))
+      .toHaveCount(0);
+  });
+
+  test('the Delete Article view is offered in the archive, not elsewhere', async ({ page }) => {
+    await seedFeed(page);
+
+    // The regular Read Later view offers the mode switch...
+    const view = await openReadLaterView(page);
+    await expect(view.locator('.rss-read-later-delete-mode-button')).toHaveText('Delete Article');
+    await expect(view.locator('.rss-delete-article-button')).toHaveCount(0);
+
+    // ...but main feed rows never do.
+    await page.locator('.rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
+    await expect(
+      page.locator('.rss-article', { hasText: 'Later Article One' }).locator('.rss-delete-article-button')
+    ).toHaveCount(0);
+  });
 });

@@ -124,6 +124,7 @@ describe('getQuickKeyGroups', () => {
     expect(combos).toContain('Mod+P');
     expect(combos).toContain('Mod+D');
     expect(combos).toContain('Escape');
+    expect(combos).toContain('Mod+Z');
   });
 
   it('includes the article font size shortcuts', () => {

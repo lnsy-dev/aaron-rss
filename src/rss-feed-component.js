@@ -256,6 +256,9 @@ class RSSFeedComponent extends DataroomElement {
     this._selectedArticle = null;
     this._lastViewedArticle = null;
     this._nextArticleAfterViewed = null;
+    // Most recent "mark as read" that can be undone with Ctrl/Cmd+Z
+    // (see undoMarkAsRead). Only the last action is undoable.
+    this._lastMarkRead = null;
     // Windowed rendering state (see src/lib/windowed-list.js). The flat
     // session drives the timeline/topic views; the grouped session tracks
     // which feeds have rendered article rows in the grouped feeds view.
@@ -5399,10 +5402,15 @@ class RSSFeedComponent extends DataroomElement {
    */
   async markAsRead(feedID, articleID) {
     try {
-      await markArticleAsRead(feedID, articleID);
       const article = this.findArticle(feedID, articleID);
+      const wasRead = Boolean(article?.read);
+      await markArticleAsRead(feedID, articleID);
       if (article) {
         article.read = true;
+      }
+      // Record the action so Ctrl/Cmd+Z can undo the most recent one.
+      if (article && !wasRead) {
+        this._lastMarkRead = { feedID, articleID };
       }
       this.renderFeeds();
       // Reading an article may empty the archive's unread badge.
@@ -5681,6 +5689,40 @@ class RSSFeedComponent extends DataroomElement {
    * @param {string} articleID
    * @returns {Promise<void>}
    */
+  /**
+   * Undo the most recent "mark as read" (Ctrl/Cmd+Z).
+   *
+   * Marks the article unread again, re-renders so it shows in the list,
+   * selects it, and scrolls it into view. A no-op with a hint toast when
+   * there is nothing to undo.
+   *
+   * @returns {Promise<void>}
+   */
+  async undoMarkAsRead() {
+    const last = this._lastMarkRead;
+    if (!last) {
+      this.showToast('Nothing to undo');
+      return;
+    }
+    this._lastMarkRead = null;
+    try {
+      await this.markAsUnread(last.feedID, last.articleID);
+    } catch (error) {
+      console.error('Failed to undo mark as read:', error);
+      this.showToast('Could not undo', 'error');
+      return;
+    }
+    // Re-show the article: select it (also scrolls into view) when its
+    // row exists in the current view; otherwise just surface a toast.
+    const restored = this.querySelector(
+      `[data-feed-id="${CSS.escape(last.feedID)}"] .rss-article[data-article-id="${CSS.escape(last.articleID)}"]`
+    );
+    if (restored) {
+      this._selectArticle(last.feedID, last.articleID);
+    }
+    this.showToast('Undid mark as read');
+  }
+
   async markAsUnread(feedID, articleID) {
     try {
       await markArticleAsUnread(feedID, articleID);
@@ -8232,6 +8274,15 @@ class RSSFeedComponent extends DataroomElement {
     if (fontAction) {
       event.preventDefault();
       this._handleArticleFontAction(fontAction);
+      return;
+    }
+
+    // Undo the last "mark as read": Ctrl+Z on Linux/Windows, Cmd+Z on
+    // macOS. Before the typing/modal guard so the undo works while the
+    // article viewer is open, which is where most read marks happen.
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      this.undoMarkAsRead();
       return;
     }
 

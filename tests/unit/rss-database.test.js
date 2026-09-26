@@ -67,7 +67,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -83,21 +83,22 @@ describe('rss database helpers', () => {
     expect(tables[9]).toContain('ALTER TABLE articles ADD COLUMN enclosure_type');
     expect(tables[10]).toContain('ALTER TABLE articles ADD COLUMN enclosure_length');
     expect(tables[11]).toContain('ALTER TABLE articles ADD COLUMN read_later');
-    expect(tables[12]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
-    expect(tables[13]).toContain('CREATE TABLE IF NOT EXISTS settings');
-    expect(tables[14]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
-    expect(tables[15]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
-    expect(tables[15]).toContain('seen INTEGER NOT NULL DEFAULT 0');
-    expect(tables[15]).toContain('UNIQUE (feed_id, article_id)');
-    expect(tables[16]).toContain('PRAGMA table_info(downloaded_videos)');
-    expect(tables[17]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
-    expect(tables[18]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
-    expect(tables[19]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[19]).toContain('FROM articles');
-    expect(tables[19]).toContain('download_path IS NOT NULL');
-    expect(tables[20]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[21]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[22]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    expect(tables[12]).toContain('ALTER TABLE articles ADD COLUMN read_later_scroll');
+    expect(tables[13]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
+    expect(tables[14]).toContain('CREATE TABLE IF NOT EXISTS settings');
+    expect(tables[15]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
+    expect(tables[16]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[16]).toContain('seen INTEGER NOT NULL DEFAULT 0');
+    expect(tables[16]).toContain('UNIQUE (feed_id, article_id)');
+    expect(tables[17]).toContain('PRAGMA table_info(downloaded_videos)');
+    expect(tables[18]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
+    expect(tables[19]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
+    expect(tables[20]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[20]).toContain('FROM articles');
+    expect(tables[20]).toContain('download_path IS NOT NULL');
+    expect(tables[21]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[22]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[23]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -125,6 +126,7 @@ describe('rss database helpers', () => {
             { name: 'enclosure_type' },
             { name: 'enclosure_length' },
             { name: 'read_later' },
+            { name: 'read_later_scroll' },
           ],
         };
       }
@@ -1576,6 +1578,49 @@ describe('sqlite worker init watchdog', () => {
     );
     expect(flagMessage.params.params).toEqual([1, 'feed123', 'art1']);
     expect(unflagMessage.params.params).toEqual([0, 'feed123', 'art1']);
+  });
+
+  it('updateArticleStatus writes and clears the read_later scroll position', async () => {
+    const db = await importDatabaseModule();
+    await db.updateArticleStatus('feed123', 'art1', { readLaterScroll: 412.5 });
+    await db.updateArticleStatus('feed123', 'art1', { readLaterScroll: null });
+
+    const [saveMessage, clearMessage] = FakeWorker.instance.messages;
+    expect(saveMessage.params.sql).toBe(
+      'UPDATE articles SET read_later_scroll = ? WHERE feed_id = ? AND article_id = ?'
+    );
+    expect(saveMessage.params.params).toEqual([412.5, 'feed123', 'art1']);
+    // Clearing stores NULL, not 0 — 0 is a real (top-of-article) position.
+    expect(clearMessage.params.params).toEqual([null, 'feed123', 'art1']);
+  });
+
+  it('getReadLaterScrollPosition returns the saved offset', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ read_later_scroll: 412.5 }],
+    });
+
+    const db = await importDatabaseModule();
+    const position = await db.getReadLaterScrollPosition('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain('SELECT read_later_scroll FROM articles');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+    expect(position).toBe(412.5);
+  });
+
+  it('getReadLaterScrollPosition returns null when nothing is saved', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ read_later_scroll: null }],
+    });
+
+    const db = await importDatabaseModule();
+    const position = await db.getReadLaterScrollPosition('feed123', 'art1');
+    expect(position).toBeNull();
   });
 
   it('purgeOldReadArticles and deleteArticlesNotInSet keep read-later articles', async () => {

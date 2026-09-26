@@ -31,6 +31,7 @@ import {
   removeFeedFromResearchTopic,
   countUnreadReadLaterArticles,
   deleteArticle as dbDeleteArticle,
+  getReadLaterScrollPosition,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -53,6 +54,7 @@ import {
   loadDownloadedArticles,
   loadReadLaterArticles,
   setArticleReadLater,
+  setArticleReadLaterScroll,
   deleteArticle,
   loadDownloadedPodcastArticles,
   ensureFeedSubscribed,
@@ -154,6 +156,9 @@ const REFRESH_MERGE_RENDER_INTERVAL_MS = 1000;
 
 /** How long the floating video chrome stays visible without mouse movement. */
 const VIDEO_CHROME_HIDE_DELAY_MS = 10000;
+
+/** How often a Read Later article's scroll offset is written while scrolling. */
+const READ_LATER_SCROLL_SAVE_INTERVAL_MS = 2000;
 
 /** @type {string} */
 const THEME_STYLE_ID = 'user-theme-style';
@@ -4871,6 +4876,16 @@ class RSSFeedComponent extends DataroomElement {
     const overlay = this.activeModal;
     const wasArticleViewer = this._isArticleViewerModal(overlay);
 
+    // Write the final Read Later scroll position before the body goes
+    // away (the removal itself fires no last scroll event).
+    if (overlay._readLaterScrollFlush) {
+      overlay._readLaterScrollFlush();
+      overlay._readLaterScrollFlush = null;
+    }
+    if (overlay._readLaterScrollCleanup) {
+      overlay._readLaterScrollCleanup();
+    }
+
     // Release any embedded YouTube player before removing the overlay.
     if (overlay._youtubePlayer && typeof overlay._youtubePlayer.destroy === 'function') {
       try {
@@ -5414,6 +5429,9 @@ class RSSFeedComponent extends DataroomElement {
     try {
       await setArticleReadLater(feedID, article.articleID, nextState);
       article.readLater = nextState;
+      // Unflagging erases the reading memory along with the archive
+      // membership; flagging starts fresh from the top.
+      await setArticleReadLaterScroll(feedID, article.articleID, null);
     } catch (error) {
       console.error('Failed to update Read Later flag:', error);
       this.showToast(`Could not update Read Later: ${error.message}`, 'error');
@@ -5515,6 +5533,103 @@ class RSSFeedComponent extends DataroomElement {
     // disappears and the count updates in one render.
     await this.renderReadLaterView();
     this._refreshReadLaterBadge();
+  }
+
+  /**
+   * Remember where the user stopped reading a saved article.
+   *
+   * While a Read Later article's viewer body scrolls, the offset is
+   * throttled to the database (articles.read_later_scroll) and flushed
+   * once more when the viewer closes, so the position survives even if
+   * the app quits right after. Unflagged articles are ignored — regular
+   * reading needs no memory.
+   *
+   * @param {HTMLElement} overlay - The article viewer overlay
+   * @param {HTMLElement} body - The .rss-article-viewer-body element
+   * @param {object} article - The article shown in the viewer
+   * @param {object|null} feed - The article's feed
+   * @returns {void}
+   */
+  _attachReadLaterScrollMemory(overlay, body, article, feed) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID || !article.readLater) {
+      return;
+    }
+
+    let lastSavedAt = 0;
+    let saveTimer = null;
+    const savePosition = () => {
+      lastSavedAt = Date.now();
+      setArticleReadLaterScroll(feedID, article.articleID, body.scrollTop).catch((error) => {
+        console.error('Failed to save Read Later scroll position:', error);
+      });
+    };
+    const maybeSave = () => {
+      if (Date.now() - lastSavedAt >= READ_LATER_SCROLL_SAVE_INTERVAL_MS) {
+        savePosition();
+      } else if (!saveTimer) {
+        saveTimer = setTimeout(() => {
+          saveTimer = null;
+          savePosition();
+        }, READ_LATER_SCROLL_SAVE_INTERVAL_MS);
+      }
+    };
+
+    body.addEventListener('scroll', maybeSave);
+    // Deterministic flush on close (viewer removal fires no final scroll
+    // event; the app may quit straight after).
+    overlay._readLaterScrollFlush = savePosition;
+    overlay._readLaterScrollCleanup = () => {
+      body.removeEventListener('scroll', maybeSave);
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      overlay._readLaterScrollFlush = null;
+      overlay._readLaterScrollCleanup = null;
+    };
+  }
+
+  /**
+   * Restore a saved Read Later scroll position after the viewer body
+   * has rendered.
+   *
+   * The position is read fresh from the database (in-memory article
+   * copies in the archive view can be stale). A rAF hop lets the browser
+   * lay the rendered content out first; without content taller than the
+   * window there is nothing to scroll to.
+   *
+   * @param {HTMLElement} overlay - The article viewer overlay
+   * @param {HTMLElement} body - The .rss-article-viewer-body element
+   * @param {object} article - The article shown in the viewer
+   * @param {object|null} feed - The article's feed
+   * @returns {Promise<void>}
+   */
+  async _maybeRestoreReadLaterScroll(overlay, body, article, feed) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID || !article.readLater) {
+      return;
+    }
+
+    try {
+      const saved = await getReadLaterScrollPosition(feedID, article.articleID);
+      if (!overlay.isConnected) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        if (!overlay.isConnected) {
+          return;
+        }
+        if (saved !== null) {
+          body.scrollTop = saved;
+        }
+        // Recording starts on the first open too — otherwise a freshly
+        // saved article never builds up a position to restore.
+        this._attachReadLaterScrollMemory(overlay, body, article, feed);
+      });
+    } catch (error) {
+      console.error('Failed to restore Read Later scroll position:', error);
+    }
   }
 
   /**
@@ -5728,6 +5843,7 @@ class RSSFeedComponent extends DataroomElement {
       const extracted = await extractArticle(article.url);
 
       this.renderArticleViewerContent(body, article, feed, extracted);
+      this._maybeRestoreReadLaterScroll(overlay, body, article, feed);
       // Dangling Videos-view entries (feed row gone) cannot be marked read.
       if (feed?.feedID) {
         await this.markAsRead(feed.feedID, article.articleID);
@@ -5738,6 +5854,7 @@ class RSSFeedComponent extends DataroomElement {
         body, article, feed, error, 'article'
       );
       if (renderedCached) {
+        this._maybeRestoreReadLaterScroll(overlay, body, article, feed);
         return;
       }
 

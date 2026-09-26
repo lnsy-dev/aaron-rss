@@ -29,6 +29,7 @@ import {
   listResearchTopicArticles,
   addFeedToResearchTopic,
   removeFeedFromResearchTopic,
+  countUnreadReadLaterArticles,
 } from './lib/database.js';
 import {
   discoverAndAddFeed,
@@ -49,6 +50,8 @@ import {
   downloadArticlePodcast,
   deleteArticlePodcast,
   loadDownloadedArticles,
+  loadReadLaterArticles,
+  setArticleReadLater,
   ensureFeedSubscribed,
   clearResearchTopicArticles,
 } from './lib/feed-manager.js';
@@ -182,6 +185,12 @@ class RSSFeedComponent extends DataroomElement {
     // Radio group of view-mode icons in the footer (timeline / feeds / videos).
     this.viewModeInputs = {};
     this.videosButton = null;
+    // Read Later view state: cached {feed, article} pairs, a render
+    // generation guard, and the unread count for the footer badge.
+    this._readLaterEntries = null;
+    this._readLaterRenderGeneration = 0;
+    this._readLaterUnreadCount = 0;
+    this._readLaterBadgeEl = null;
     // Research Topic view state: which topic is open in the topic view.
     this._topicView = null;
     // Cached {feed, article} pairs for the topic view (see renderTopicView).
@@ -267,9 +276,9 @@ class RSSFeedComponent extends DataroomElement {
       this.settings.articleFontStep = parseArticleFontStep(this.settings.articleFontStep);
       this._applyArticleFontStep();
       const savedMode = this.settings.viewMode;
-      if (savedMode === 'videos' || savedMode === 'topic') {
-        // Videos and the Research Topic view are transient overlays; land
-        // on the return mode instead.
+      if (savedMode === 'videos' || savedMode === 'read-later' || savedMode === 'topic') {
+        // Videos, Read Later, and the Research Topic view are transient
+        // overlays; land on the return mode instead.
         this.viewMode = this._videosReturnMode;
         this.settings.viewMode = this.viewMode;
       } else {
@@ -460,12 +469,13 @@ class RSSFeedComponent extends DataroomElement {
     viewToggle.className = 'rss-view-toggle';
     viewToggle.setAttribute('role', 'radiogroup');
     viewToggle.setAttribute('aria-label', 'View');
-    viewToggle.title = 'Switch between the Timeline, Feeds, and Videos views';
+    viewToggle.title = 'Switch between the Timeline, Feeds, Videos, and Read Later views';
 
     const options = [
       { mode: 'timeline', label: 'Timeline view' },
       { mode: 'feeds', label: 'Feeds view' },
       { mode: 'videos', label: 'Videos view' },
+      { mode: 'read-later', label: 'Read Later view' },
     ];
 
     this.viewModeInputs = {};
@@ -512,6 +522,15 @@ class RSSFeedComponent extends DataroomElement {
         optionWrap.appendChild(readyBadge);
         this._videosReadyBadgeEl = readyBadge;
       }
+      if (option.mode === 'read-later') {
+        // Unread badge: a count bubble shown while read-later articles
+        // are still waiting to be read (see _refreshReadLaterBadge).
+        const unreadBadge = document.createElement('span');
+        unreadBadge.className = 'rss-read-later-badge';
+        unreadBadge.hidden = true;
+        optionWrap.appendChild(unreadBadge);
+        this._readLaterBadgeEl = unreadBadge;
+      }
     }
 
     footer.appendChild(viewToggle);
@@ -540,7 +559,7 @@ class RSSFeedComponent extends DataroomElement {
    * Persists timeline/feeds modes to the settings table and re-renders;
    * videos remains a transient overlay (see _videosReturnMode).
    *
-   * @param {string} mode - One of 'timeline', 'feeds', 'videos'
+   * @param {string} mode - One of 'timeline', 'feeds', 'videos', 'read-later'
    * @returns {Promise<void>}
    */
   async _handleViewModeSelect(mode) {
@@ -548,8 +567,9 @@ class RSSFeedComponent extends DataroomElement {
       return;
     }
 
-    // Entering the Videos view records the mode to return to.
-    if (mode === 'videos' && this.viewMode !== 'videos') {
+    // Entering an overlay view (Videos/Read Later) records the mode to
+    // return to.
+    if ((mode === 'videos' || mode === 'read-later') && this.viewMode !== mode) {
       this._videosReturnMode = this.viewMode;
     }
 
@@ -563,7 +583,7 @@ class RSSFeedComponent extends DataroomElement {
       this._topicView = null;
     }
 
-    if (mode !== 'videos') {
+    if (mode !== 'videos' && mode !== 'read-later') {
       try {
         await saveSettings({ viewMode: mode });
       } catch (error) {
@@ -591,6 +611,7 @@ class RSSFeedComponent extends DataroomElement {
       timeline: 'Timeline view',
       feeds: 'Feeds view',
       videos: 'Videos view',
+      'read-later': 'Read Later view',
     };
     for (const [mode, input] of Object.entries(this.viewModeInputs)) {
       input.checked = this.viewMode === mode;
@@ -634,6 +655,37 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
+   * Enter or leave the Read Later view programmatically.
+   *
+   * Mirrors _handleVideosViewButton: enters the Read Later view from
+   * the current mode; calling again returns to the prior timeline/feeds
+   * mode. Used by the command panel; the footer radio menu itself
+   * switches views directly. The Read Later mode is transient (not
+   * persisted) so a restart lands the user on their regular view.
+   *
+   * @returns {Promise<void>}
+   */
+  async _handleReadLaterViewButton() {
+    if (this.viewMode === 'read-later') {
+      const mode = this._videosReturnMode || 'timeline';
+      this.viewMode = mode;
+      this.settings.viewMode = mode;
+      this._syncViewToggle();
+      try {
+        await saveSettings({ viewMode: mode });
+      } catch (error) {
+        console.error('Failed to save view mode:', error);
+      }
+      this.renderFeeds();
+      return;
+    }
+
+    this.viewMode = 'read-later';
+    this._syncViewToggle();
+    this.renderFeeds();
+  }
+
+  /**
    * Switch to the grouped Feeds view and scroll to one feed's block.
    *
    * Backs the clickable feed name in the Timeline view: clicking a blog
@@ -654,7 +706,7 @@ class RSSFeedComponent extends DataroomElement {
     }
 
     if (this.viewMode !== 'feeds') {
-      if (this.viewMode === 'videos' || this.viewMode === 'topic') {
+      if (this.viewMode === 'videos' || this.viewMode === 'read-later' || this.viewMode === 'topic') {
         this._videosReturnMode = 'feeds';
       }
       this.viewMode = 'feeds';
@@ -938,6 +990,7 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Mark All Read', action: () => this.handleMarkAllRead() },
       { name: 'Videos', action: () => this._handleVideosViewButton() },
       { name: 'Play All Videos', action: () => this._startPlayAll() },
+      { name: 'Read Later', action: () => this._handleReadLaterViewButton() },
       { name: 'Download Youtube Video', action: () => this.openDownloadYouTubeModal() },
       { name: 'Settings', action: () => this.openSettingsModal() },
       { name: 'Export OPML', action: () => this.handleExportOPML() },
@@ -1153,6 +1206,21 @@ class RSSFeedComponent extends DataroomElement {
       if (!article) {
         return;
       }
+    } else if (event.target.closest('.rss-read-later-view')) {
+      // The Read Later view renders straight from its archive query, so
+      // its entries may not be in this.feeds either (read articles).
+      // Resolve those clicks from the cached view data.
+      const entry = (this._readLaterEntries || []).find((candidate) => {
+        if (candidate.article?.articleID !== articleID) {
+          return false;
+        }
+        return !feedID || candidate.feed?.feedID === feedID;
+      });
+      feed = entry?.feed || null;
+      article = entry?.article;
+      if (!article) {
+        return;
+      }
     } else {
       feed = this.feeds.find((f) => f.feedID === feedID);
       if (!feed) {
@@ -1207,6 +1275,9 @@ class RSSFeedComponent extends DataroomElement {
         break;
       case 'toggle-star':
         this.toggleStar(feedID, articleID);
+        break;
+      case 'toggle-read-later':
+        this._toggleReadLater(article, feed, actionEl);
         break;
       case 'export-markdown':
         this.exportArticleMarkdown(article, feed);
@@ -1453,11 +1524,20 @@ class RSSFeedComponent extends DataroomElement {
         return;
       }
 
+      // The Read Later view likewise re-queries its archive in place
+      // (see renderReadLaterView).
+      if (this.viewMode === 'read-later') {
+        await this.renderReadLaterView();
+        await this._refreshReadLaterBadge();
+        return;
+      }
+
       // Only unread articles are needed for the main list, so avoid loading
       // potentially large read-article bodies into the renderer.
       this.feeds = sortFeedsByUnreadCount(await loadFeedsForDisplay());
       this.renderFeeds();
       await this._refreshVideosReadyBadge();
+      this._refreshReadLaterBadge();
     } catch (error) {
       console.error('Failed to load feeds:', error);
       this.showToast(`Failed to load feeds: ${error.message}`, 'error');
@@ -1497,6 +1577,9 @@ class RSSFeedComponent extends DataroomElement {
     if (this.viewMode !== 'videos') {
       this._videosEntries = null;
     }
+    if (this.viewMode !== 'read-later') {
+      this._readLaterEntries = null;
+    }
 
     // Windowed-render sessions are rebuilt per view render; drop the
     // stale ones so scroll/toggle handlers never touch removed DOM. The
@@ -1519,6 +1602,12 @@ class RSSFeedComponent extends DataroomElement {
     // The Videos view lists every article with a downloaded video.
     if (this.viewMode === 'videos') {
       this.renderVideosView();
+      return;
+    }
+
+    // The Read Later view lists every article flagged for the archive.
+    if (this.viewMode === 'read-later') {
+      this.renderReadLaterView();
       return;
     }
 
@@ -1890,6 +1979,129 @@ class RSSFeedComponent extends DataroomElement {
    */
   _videosViewCountLabel(count) {
     return count === 1 ? '1 video' : `${count} videos`;
+  }
+
+  /**
+   * Refresh the unread badge on the footer Read Later button.
+   *
+   * The archive includes read articles, so the badge highlights only
+   * the ones still waiting to be read. A count of zero hides it.
+   *
+   * @returns {Promise<void>}
+   */
+  async _refreshReadLaterBadge() {
+    if (!this._readLaterBadgeEl) {
+      return;
+    }
+    let count = 0;
+    try {
+      count = await countUnreadReadLaterArticles();
+    } catch (error) {
+      console.error('Failed to count read-later articles:', error);
+      return;
+    }
+    this._readLaterUnreadCount = count;
+    const badge = this._readLaterBadgeEl;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.setAttribute(
+        'aria-label',
+        `${count} read-later article${count === 1 ? '' : 's'} left to read`
+      );
+      badge.hidden = false;
+    } else {
+      badge.textContent = '';
+      badge.removeAttribute('aria-label');
+      badge.hidden = true;
+    }
+  }
+
+  /**
+   * Render the Read Later view: every article the user flagged for the
+   * archive, newest first, regardless of read state (get-back-to-it
+   * semantics).
+   *
+   * Data comes straight from the read-later query joined with the feeds
+   * table, so the list is independent of the unread filtering that
+   * drives the timeline and feeds views. Opening an entry reads it like
+   * anywhere else; the Remove from Read Later action pulls it from the
+   * archive without touching its read state.
+   *
+   * @returns {Promise<void>}
+   */
+  async renderReadLaterView() {
+    // Monotonic generation guard: concurrent calls must not interleave
+    // DOM writes or let stale data overwrite a newer render.
+    const generation = (this._readLaterRenderGeneration += 1);
+
+    let items = [];
+    try {
+      items = (await loadReadLaterArticles()) || [];
+    } catch (error) {
+      if (generation !== this._readLaterRenderGeneration) {
+        return;
+      }
+      console.error('Failed to load read-later articles:', error);
+      this._readLaterEntries = [];
+      this.contentArea.innerHTML = '';
+      const errorState = document.createElement('div');
+      errorState.className = 'rss-no-articles';
+      errorState.textContent = 'Could not load the Read Later archive';
+      this.contentArea.appendChild(errorState);
+      return;
+    }
+
+    if (generation !== this._readLaterRenderGeneration) {
+      return;
+    }
+
+    // Cache the resolved {feed, article} pairs so the delegated click
+    // handler can act on entries that are not in this.feeds (read
+    // articles live only in the archive).
+    this._readLaterEntries = items;
+
+    this.contentArea.innerHTML = '';
+    const container = document.createElement('div');
+    container.className = 'rss-read-later-view';
+    this.contentArea.appendChild(container);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'rss-no-articles';
+      empty.textContent = 'Nothing saved for later';
+      container.appendChild(empty);
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'rss-read-later-view-header';
+    const countLabel = document.createElement('span');
+    countLabel.className = 'rss-read-later-view-count';
+    countLabel.textContent = this._readLaterViewCountLabel(items.length);
+    header.appendChild(countLabel);
+    container.appendChild(header);
+
+    for (const { feed, article } of items) {
+      const entry = document.createElement('div');
+      entry.className = 'rss-read-later-view-item';
+      // The wrapper carries data-feed-id so selection, click delegation,
+      // and article actions keep working exactly as in the feeds view.
+      entry.setAttribute('data-feed-id', feed ? feed.feedID : '');
+      this.renderArticle(entry, article, feed, {
+        showFeedName: true,
+      });
+      container.appendChild(entry);
+    }
+  }
+
+  /**
+   * Human-readable count label for the Read Later view header.
+   *
+   * @param {number} count - Number of archived articles
+   * @returns {string} Label like "3 articles"
+   */
+  _readLaterViewCountLabel(count) {
+    return count === 1 ? '1 article' : `${count} articles`;
   }
 
   /**
@@ -2904,6 +3116,14 @@ class RSSFeedComponent extends DataroomElement {
     starButton.textContent = article.starred ? 'Unstar' : 'Star';
     starButton.setAttribute('data-action', 'toggle-star');
     actionsDiv.appendChild(starButton);
+
+    // The Read Later archive button: visible on every article, labeled
+    // by the article's current flag state.
+    const readLaterButton = document.createElement('button');
+    readLaterButton.className = 'rss-action-button rss-read-later-button';
+    readLaterButton.textContent = article.readLater ? 'Saved ✓' : 'Read Later';
+    readLaterButton.setAttribute('data-action', 'toggle-read-later');
+    actionsDiv.appendChild(readLaterButton);
 
     const exportButton = document.createElement('button');
     exportButton.className = 'rss-action-button';
@@ -4848,9 +5068,56 @@ class RSSFeedComponent extends DataroomElement {
         article.read = true;
       }
       this.renderFeeds();
+      // Reading an article may empty the archive's unread badge.
+      this._refreshReadLaterBadge();
     } catch (error) {
       console.error('Failed to mark article as read:', error);
     }
+  }
+
+  /**
+   * Toggle an article's Read Later flag and update the UI.
+   *
+   * The flag is independent of read state: archiving an unread article
+   * leaves it unread (it keeps counting in the main list and in the
+   * archive's badge), and removing it never touches read state. The
+   * clicked button's label follows the article's new state; in the Read
+   * Later view removal simply drops the row via the re-render.
+   *
+   * @param {object} article - The article to flag
+   * @param {object|null} feed - The article's feed (null for dangling rows)
+   * @param {HTMLElement} [buttonElement] - The clicked button, if any
+   * @returns {Promise<void>}
+   */
+  async _toggleReadLater(article, feed, buttonElement) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID) {
+      return;
+    }
+
+    const nextState = !article.readLater;
+    try {
+      await setArticleReadLater(feedID, article.articleID, nextState);
+      article.readLater = nextState;
+    } catch (error) {
+      console.error('Failed to update Read Later flag:', error);
+      this.showToast(`Could not update Read Later: ${error.message}`, 'error');
+      return;
+    }
+
+    if (this.viewMode === 'read-later') {
+      // Removal drops the row; the entry's cached copy is stale, so
+      // re-query the archive rather than patching a single node.
+      await this.renderReadLaterView();
+      this._refreshReadLaterBadge();
+      return;
+    }
+
+    if (buttonElement) {
+      buttonElement.textContent = nextState ? 'Saved ✓' : 'Read Later';
+    }
+    this.showToast(nextState ? 'Saved for later' : 'Removed from Read Later');
+    this._refreshReadLaterBadge();
   }
 
   /**
@@ -6654,6 +6921,17 @@ class RSSFeedComponent extends DataroomElement {
     shareButton.textContent = 'Share';
     shareButton.addEventListener('click', () => this.shareArticle(article));
     actions.appendChild(shareButton);
+
+    // The Read Later archive button, shown in the article header view:
+    // flags the open article so it lands in the Read Later view.
+    const readLaterViewerButton = document.createElement('button');
+    readLaterViewerButton.className = 'rss-action-button rss-read-later-viewer-button';
+    readLaterViewerButton.setAttribute('data-action', 'toggle-read-later');
+    readLaterViewerButton.textContent = article.readLater ? 'Saved ✓' : 'Read Later';
+    readLaterViewerButton.addEventListener('click', () => {
+      this._toggleReadLater(article, feed, readLaterViewerButton);
+    });
+    actions.appendChild(readLaterViewerButton);
 
     dialog.appendChild(actions);
 

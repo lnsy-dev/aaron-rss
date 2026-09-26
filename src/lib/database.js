@@ -811,6 +811,41 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
 }
 
 /**
+ * Delete one article row by feed and article id, remembering its
+ * identity in cleared_articles first so the next feed refresh does not
+ * re-add it as new (the same memory the retention purge and the
+ * research-topic clear write).
+ *
+ * Used by the Read Later archive's "Delete Article" action, where the
+ * row must stay gone even though the feed source still lists it —
+ * unlike the retention purge, a read-later article's cleared memory is
+ * written regardless of its read state.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteArticle(feedID, articleID) {
+  await callWorker('exec', {
+    sql: `INSERT OR REPLACE INTO cleared_articles (feed_id, article_id, unique_id, url, title, cleared_at)
+      SELECT feed_id, article_id, unique_id, url, title, ?
+      FROM articles
+      WHERE feed_id = ? AND article_id = ? AND unique_id IS NOT NULL`,
+    params: [new Date().toISOString(), feedID, articleID],
+  });
+
+  await callWorker('exec', {
+    sql: 'DELETE FROM article_markdown WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  });
+
+  await callWorker('exec', {
+    sql: 'DELETE FROM articles WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  });
+}
+
+/**
  * Purge read, unstarred articles older than the retention window.
  *
  * Read-later articles are never purged: flagging an article for the

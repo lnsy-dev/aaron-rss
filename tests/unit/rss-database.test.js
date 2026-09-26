@@ -1482,6 +1482,28 @@ describe('sqlite worker init watchdog', () => {
     }
   });
 
+  it('deleteArticle remembers the row in cleared_articles, then deletes it', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: null });
+    const db = await importDatabaseModule();
+
+    await db.deleteArticle('feed123', 'art1');
+
+    const [memory, markdown, remove] = FakeWorker.instance.messages;
+    expect(memory.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+    // [cleared_at, feedID, articleID] — the timestamp marks when the row
+    // was deleted.
+    expect(memory.params.params).toHaveLength(3);
+    expect(memory.params.params.slice(1)).toEqual(['feed123', 'art1']);
+    // Unlike the retention purge, the cleared memory is written for the
+    // row regardless of its read state: the article is being deleted for
+    // good, not recycled.
+    expect(memory.params.sql).not.toContain('read = 1');
+    expect(markdown.params.sql).toContain('DELETE FROM article_markdown');
+    expect(markdown.params.params).toEqual(['feed123', 'art1']);
+    expect(remove.params.sql).toContain('DELETE FROM articles WHERE feed_id = ? AND article_id = ?');
+    expect(remove.params.params).toEqual(['feed123', 'art1']);
+  });
+
   it('saveArticles persists the read_later flag', async () => {
     const db = await importDatabaseModule();
     await db.saveArticles('feed123', [

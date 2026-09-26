@@ -29,6 +29,15 @@ const EXCLUDED_HOSTS = ['gaming.youtube.com'];
 const VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
 
 /**
+ * Shape of a YouTube channel ID (internal handle): starts with UC
+ * followed by at least 10 URL-safe characters. yt-dlp reports it as
+ * channel_id; a channel's RSS feed is keyed by it.
+ *
+ * @type {RegExp}
+ */
+const CHANNEL_ID_REGEX = /^UC[A-Za-z0-9_-]{10,}$/;
+
+/**
  * Determine whether a URL points to a YouTube video page.
  *
  * Returns false for gaming.youtube.com, malformed URLs, and non-HTTP
@@ -191,6 +200,56 @@ export function extractYouTubeVideoID(url) {
   }
 
   return null;
+}
+
+/**
+ * Build the RSS feed URL for a YouTube channel.
+ *
+ * Every YouTube channel exposes a machine-readable RSS feed of its
+ * latest 15 uploads keyed by its channel ID; this is the feed
+ * subscribing to a channel means.
+ *
+ * @param {string} channelID - Channel ID as reported by yt-dlp (UC...)
+ * @returns {string} https://www.youtube.com/feeds/videos.xml?channel_id=...
+ */
+export function buildYouTubeChannelFeedURL(channelID) {
+  return `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelID)}`;
+}
+
+/**
+ * Extract a channel ID from a YouTube channel RSS feed URL.
+ *
+ * Inverse of buildYouTubeChannelFeedURL: lets the subscription check
+ * compare a stored feed URL against a video's channel without guessing
+ * about other URL shapes. Legacy user IDs and vanity handles have no
+ * stable feeds/videos.xml mapping here and yield null.
+ *
+ * @param {string} url - Candidate feed URL
+ * @returns {string|null} The channel ID, or null when the URL is not a
+ *   channel_id-keyed YouTube feeds/videos.xml URL
+ */
+export function extractYouTubeChannelFeedID(url) {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  let urlObj;
+  try {
+    urlObj = new URL(url);
+  } catch {
+    return null;
+  }
+
+  const hostname = urlObj.hostname.toLowerCase();
+  if (hostname !== 'www.youtube.com' && hostname !== 'youtube.com' && hostname !== 'm.youtube.com') {
+    return null;
+  }
+  if (urlObj.pathname !== '/feeds/videos.xml') {
+    return null;
+  }
+
+  const channelID = urlObj.searchParams.get('channel_id') || '';
+  return CHANNEL_ID_REGEX.test(channelID) ? channelID : null;
 }
 
 /**

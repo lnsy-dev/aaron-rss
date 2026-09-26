@@ -45,7 +45,7 @@ import { refreshFeedInWorker } from './feed-refresh-bridge.js';
 import { enrichBlueskyFeedItems } from './social-post.js';
 import { downloadYouTubeVideo, deleteDownloadedVideo } from './youtube-bridge.js';
 import { downloadPodcastFile, deleteDownloadedPodcast } from './podcast-bridge.js';
-import { isYouTubeURL, isYouTubeStream } from './youtube.js';
+import { isYouTubeURL, isYouTubeStream, buildYouTubeChannelFeedURL, extractYouTubeChannelFeedID } from './youtube.js';
 import { isPodcastEpisode, suggestPodcastFileName } from './podcast.js';
 import { extractArticle } from './article-extractor.js';
 
@@ -572,6 +572,8 @@ export async function downloadArticleYouTubeVideo(feed, article) {
       youtubeURL: article.url,
       filePath: result.filePath,
       title: article.title || null,
+      channelID: result.channelID || null,
+      channelName: result.channelName || null,
     });
     return result;
   } catch (error) {
@@ -681,6 +683,8 @@ export async function downloadYouTubeVideoFromURL(url) {
         youtubeURL: url,
         filePath: result.filePath,
         title: result.title || null,
+        channelID: result.channelID || null,
+        channelName: result.channelName || null,
       });
     } catch (error) {
       // The expensive part (the download) succeeded; losing the library
@@ -870,6 +874,51 @@ export function loadAllFeeds() {
  */
 export function loadFeedsForDisplay() {
   return dbLoadFeedsForDisplay();
+}
+
+/**
+ * Determine whether a YouTube channel's RSS feed is already subscribed.
+ *
+ * Compares stored feed URLs' channel IDs against the video's channel, so
+ * any subscription shape that resolves to the same channel counts —
+ * regardless of which feed URL the user originally added.
+ *
+ * @param {string|null} channelID - yt-dlp's channel_id (UC...) for the video
+ * @param {Array<{url?: string}>|null} [feeds] - Current subscriptions; loaded when omitted
+ * @returns {Promise<boolean>} True when the channel's feed is subscribed
+ */
+export async function isYouTubeChannelFeedSubscribed(channelID, feeds = null) {
+  if (!channelID) {
+    return false;
+  }
+  const subscriptions = feeds || (await dbLoadAllFeeds());
+  return (subscriptions || []).some(
+    (feed) => extractYouTubeChannelFeedID(feed?.url) === channelID
+  );
+}
+
+/**
+ * Subscribe to a YouTube channel's RSS feed by channel ID.
+ *
+ * The channel RSS URL is the canonical identity, so a straight lookup by
+ * generated feed ID covers both "not subscribed" and "already
+ * subscribed"; when present the channel name labels the feed.
+ *
+ * @param {string} channelID - yt-dlp's channel_id (UC...) for the channel
+ * @param {string|null} [channelName] - Display name when known
+ * @returns {Promise<{subscribed: boolean, name: string|null}>}
+ */
+export async function subscribeToYouTubeChannelFeed(channelID, channelName = null) {
+  const feedURL = buildYouTubeChannelFeedURL(channelID);
+  const existing = await dbLoadFeed(generateFeedID(feedURL));
+  if (existing) {
+    return { subscribed: true, name: existing.name };
+  }
+  const feed = await addFeed(feedURL, channelName || null);
+  if (!feed) {
+    throw new Error('Could not fetch the channel feed');
+  }
+  return { subscribed: true, name: feed.name };
 }
 
 /**

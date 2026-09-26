@@ -11,6 +11,7 @@ vi.mock('../../src/lib/database.js', () => ({
   saveFeedMetadata: vi.fn(),
   saveArticles: vi.fn(),
   deleteArticlesNotInSet: vi.fn(),
+  deleteArticle: vi.fn(),
   purgeOldReadArticles: vi.fn(),
   listPrunableDownloadedVideos: vi.fn(),
   runDatabaseMaintenance: vi.fn(),
@@ -694,6 +695,15 @@ describe('feed manager', () => {
       expect(deleteDownloadedVideo).toHaveBeenCalledWith('/downloads/Aaron-RSS-YouTube/dangling.mp4');
       expect(deleteDownloadedVideosForArticle).toHaveBeenCalledWith(null, 'art-dangling');
       expect(updateArticleStatus).not.toHaveBeenCalled();
+    });
+
+    it('deleteArticle removes the article row through the database helper', async () => {
+      const { deleteArticle: dbDeleteArticle } = await import('../../src/lib/database.js');
+      const { deleteArticle } = await importFeedManager();
+
+      await deleteArticle('feed-yt', 'art1');
+
+      expect(dbDeleteArticle).toHaveBeenCalledWith('feed-yt', 'art1');
     });
 
     describe('downloadYouTubeVideoFromURL (command menu downloads)', () => {

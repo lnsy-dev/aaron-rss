@@ -11,6 +11,7 @@ import {
   saveFeedMetadata as dbSaveFeedMetadata,
   saveArticles as dbSaveArticles,
   deleteArticlesNotInSet as dbDeleteArticlesNotInSet,
+  deleteArticle as dbDeleteArticle,
   purgeOldReadArticles as dbPurgeOldReadArticles,
   listPrunableDownloadedVideos as dbListPrunableDownloadedVideos,
   runDatabaseMaintenance as dbRunDatabaseMaintenance,
@@ -29,6 +30,7 @@ import {
   deleteDownloadedVideosForArticle as dbDeleteDownloadedVideosForArticle,
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
+  loadReadLaterArticles as dbLoadReadLaterArticles,
   loadDownloadedPodcastArticles as dbLoadDownloadedPodcastArticles,
   listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
   saveArticleMarkdown as dbSaveArticleMarkdown,
@@ -991,6 +993,23 @@ export async function deleteArticleYouTubeVideo(feedID, articleID, filePath) {
 }
 
 /**
+ * Delete one article row for good (Read Later archive's "Delete
+ * Article" action).
+ *
+ * The row is remembered in cleared_articles before deletion, so a feed
+ * whose source still lists the article does not resurrect it on the
+ * next refresh. Callers delete any downloaded file and its queue record
+ * first (see deleteArticleYouTubeVideo) so nothing is orphaned on disk.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteArticle(feedID, articleID) {
+  await dbDeleteArticle(feedID, articleID);
+}
+
+/**
  * Delete a feed and its articles, cleaning up any downloaded YouTube
  * video files and queue records so they do not linger on disk or in the
  * downloaded_videos table.
@@ -1090,4 +1109,44 @@ export async function toggleArticleStarred(feedID, articleID) {
   if (!article) return;
 
   await dbUpdateArticleStatus(feedID, articleID, { starred: !article.starred });
+}
+
+/**
+ * Set an article's Read Later flag on or off.
+ *
+ * Unlike the star toggle, the flag is passed explicitly: Read Later
+ * actions live in several surfaces (feed rows and the article viewer
+ * header), and each knows the target state.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {boolean} readLater
+ * @returns {Promise<void>}
+ */
+export async function setArticleReadLater(feedID, articleID, readLater) {
+  await dbUpdateArticleStatus(feedID, articleID, { readLater: Boolean(readLater) });
+}
+
+/**
+ * Persist (or clear) a saved article's Read Later scroll position.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {number|null} scrollPosition - Pixel offset, or null to clear
+ * @returns {Promise<void>}
+ */
+export function setArticleReadLaterScroll(feedID, articleID, scrollPosition) {
+  return dbUpdateArticleStatus(feedID, articleID, {
+    readLaterScroll: scrollPosition,
+  });
+}
+
+/**
+ * Load every article flagged for the Read Later archive, for the
+ * Read Later view.
+ *
+ * @returns {Promise<Array<{feed: object, article: object}>>} Newest first
+ */
+export function loadReadLaterArticles() {
+  return dbLoadReadLaterArticles();
 }

@@ -67,7 +67,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -82,23 +82,25 @@ describe('rss database helpers', () => {
     expect(tables[8]).toContain('ALTER TABLE articles ADD COLUMN enclosure_url');
     expect(tables[9]).toContain('ALTER TABLE articles ADD COLUMN enclosure_type');
     expect(tables[10]).toContain('ALTER TABLE articles ADD COLUMN enclosure_length');
-    expect(tables[11]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
-    expect(tables[12]).toContain('CREATE TABLE IF NOT EXISTS settings');
-    expect(tables[13]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
-    expect(tables[14]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
-    expect(tables[14]).toContain('seen INTEGER NOT NULL DEFAULT 0');
-    expect(tables[14]).toContain('UNIQUE (feed_id, article_id)');
-    expect(tables[15]).toContain('PRAGMA table_info(downloaded_videos)');
-    expect(tables[16]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
-    expect(tables[17]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
-    expect(tables[18]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_id');
-    expect(tables[19]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_name');
-    expect(tables[20]).toContain('INSERT OR IGNORE INTO downloaded_videos');
-    expect(tables[20]).toContain('FROM articles');
-    expect(tables[20]).toContain('download_path IS NOT NULL');
-    expect(tables[21]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[22]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[23]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    expect(tables[11]).toContain('ALTER TABLE articles ADD COLUMN read_later');
+    expect(tables[12]).toContain('ALTER TABLE articles ADD COLUMN read_later_scroll');
+    expect(tables[13]).toContain('CREATE INDEX IF NOT EXISTS idx_articles_feed_id');
+    expect(tables[14]).toContain('CREATE TABLE IF NOT EXISTS settings');
+    expect(tables[15]).toContain('CREATE TABLE IF NOT EXISTS page_snapshots');
+    expect(tables[16]).toContain('CREATE TABLE IF NOT EXISTS downloaded_videos');
+    expect(tables[16]).toContain('seen INTEGER NOT NULL DEFAULT 0');
+    expect(tables[16]).toContain('UNIQUE (feed_id, article_id)');
+    expect(tables[17]).toContain('PRAGMA table_info(downloaded_videos)');
+    expect(tables[18]).toContain('ALTER TABLE downloaded_videos ADD COLUMN seen');
+    expect(tables[19]).toContain('ALTER TABLE downloaded_videos ADD COLUMN playback_position_seconds');
+    expect(tables[20]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_id');
+    expect(tables[21]).toContain('ALTER TABLE downloaded_videos ADD COLUMN channel_name');
+    expect(tables[22]).toContain('INSERT OR IGNORE INTO downloaded_videos');
+    expect(tables[22]).toContain('FROM articles');
+    expect(tables[22]).toContain('download_path IS NOT NULL');
+    expect(tables[23]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[24]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[25]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -125,6 +127,8 @@ describe('rss database helpers', () => {
             { name: 'enclosure_url' },
             { name: 'enclosure_type' },
             { name: 'enclosure_length' },
+            { name: 'read_later' },
+            { name: 'read_later_scroll' },
           ],
         };
       }
@@ -1491,5 +1495,209 @@ describe('sqlite worker init watchdog', () => {
     await vi.advanceTimersByTimeAsync(105000);
     await pending;
     expect(FakeWorker.instance.terminateCalls).toBe(0);
+  });
+
+  it('loadReadLaterArticles joins flagged articles with their feeds', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{
+        feed_id: 'feed123',
+        feed_url: 'https://example.com/feed',
+        name: 'Example Feed',
+        home_page_url: 'https://example.com',
+        icon_url: null,
+        favicon_url: null,
+        last_fetch_successful: 1,
+        last_fetch_end_time: null,
+        synthetic: 0,
+        open_original_by_default: 0,
+        auto_download_youtube: 0,
+        article_id: 'art1',
+        article_url: 'https://example.com/post',
+        unique_id: 'u1',
+        title: 'Saved Post',
+        content_html: '<p>body</p>',
+        content_text: 'body',
+        external_url: null,
+        summary: 'summary',
+        image_url: null,
+        banner_image_url: null,
+        date_published: '2026-02-01T00:00:00.000Z',
+        date_modified: null,
+        authors: '[]',
+        tags: '[]',
+        read: 1,
+        starred: 0,
+        read_later: 1,
+        download_path: null,
+        date_arrived: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const db = await importDatabaseModule();
+    const items = await db.loadReadLaterArticles();
+
+    const sql = FakeWorker.instance.messages[0].params.sql;
+    expect(sql).toContain('FROM articles a');
+    expect(sql).toContain('INNER JOIN feeds f ON f.feed_id = a.feed_id');
+    expect(sql).toContain('WHERE a.read_later = 1');
+    // Read state is irrelevant: the archive is a get-back-to-it list.
+    expect(sql).not.toContain('read = 0');
+    expect(sql).toContain('ORDER BY COALESCE(a.date_published, a.date_arrived) DESC');
+
+    expect(items).toHaveLength(1);
+    expect(items[0].feed.feedID).toBe('feed123');
+    expect(items[0].article.articleID).toBe('art1');
+    expect(items[0].article.title).toBe('Saved Post');
+    expect(items[0].article.readLater).toBe(true);
+    expect(items[0].article.read).toBe(true);
+  });
+
+  it('loadReadLaterArticles drops entries whose feed row is gone', async () => {
+    // Unlike downloaded files, a flagged article without its feed has no
+    // standalone content to display, so the INNER JOIN drops it.
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+    const db = await importDatabaseModule();
+    const items = await db.loadReadLaterArticles();
+    expect(items).toEqual([]);
+  });
+
+  it('countUnreadReadLaterArticles returns the unread archive count', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ unread_count: 4 }],
+    });
+
+    const db = await importDatabaseModule();
+    const count = await db.countUnreadReadLaterArticles();
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain('WHERE read_later = 1 AND read = 0');
+    expect(count).toBe(4);
+  });
+
+  it('updateArticleStatus writes the read_later flag with bound params', async () => {
+    const db = await importDatabaseModule();
+    await db.updateArticleStatus('feed123', 'art1', { readLater: true });
+    await db.updateArticleStatus('feed123', 'art1', { readLater: false });
+
+    const [flagMessage, unflagMessage] = FakeWorker.instance.messages;
+    expect(flagMessage.params.sql).toBe(
+      'UPDATE articles SET read_later = ? WHERE feed_id = ? AND article_id = ?'
+    );
+    expect(flagMessage.params.params).toEqual([1, 'feed123', 'art1']);
+    expect(unflagMessage.params.params).toEqual([0, 'feed123', 'art1']);
+  });
+
+  it('updateArticleStatus writes and clears the read_later scroll position', async () => {
+    const db = await importDatabaseModule();
+    await db.updateArticleStatus('feed123', 'art1', { readLaterScroll: 412.5 });
+    await db.updateArticleStatus('feed123', 'art1', { readLaterScroll: null });
+
+    const [saveMessage, clearMessage] = FakeWorker.instance.messages;
+    expect(saveMessage.params.sql).toBe(
+      'UPDATE articles SET read_later_scroll = ? WHERE feed_id = ? AND article_id = ?'
+    );
+    expect(saveMessage.params.params).toEqual([412.5, 'feed123', 'art1']);
+    // Clearing stores NULL, not 0 — 0 is a real (top-of-article) position.
+    expect(clearMessage.params.params).toEqual([null, 'feed123', 'art1']);
+  });
+
+  it('getReadLaterScrollPosition returns the saved offset', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ read_later_scroll: 412.5 }],
+    });
+
+    const db = await importDatabaseModule();
+    const position = await db.getReadLaterScrollPosition('feed123', 'art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('query');
+    expect(message.params.sql).toContain('SELECT read_later_scroll FROM articles');
+    expect(message.params.params).toEqual(['feed123', 'art1']);
+    expect(position).toBe(412.5);
+  });
+
+  it('getReadLaterScrollPosition returns null when nothing is saved', async () => {
+    FakeWorker.onMessage = (m) => ({
+      id: m.id,
+      ok: true,
+      result: [{ read_later_scroll: null }],
+    });
+
+    const db = await importDatabaseModule();
+    const position = await db.getReadLaterScrollPosition('feed123', 'art1');
+    expect(position).toBeNull();
+  });
+
+  it('purgeOldReadArticles and deleteArticlesNotInSet keep read-later articles', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: null });
+    const db = await importDatabaseModule();
+
+    await db.purgeOldReadArticles('feed123', 30);
+    await db.deleteArticlesNotInSet('feed123', ['art1', 'art2']);
+
+    const messages = FakeWorker.instance.messages;
+    // The retention purge deletes read, unstarred, non-read-later rows;
+    // the not-in-set delete keeps starred and read-later rows.
+    const deleteMessages = messages.filter((m) =>
+      m.params.sql?.startsWith('DELETE FROM articles')
+    );
+    expect(deleteMessages).toHaveLength(2);
+    for (const message of deleteMessages) {
+      expect(message.params.sql).toContain('starred = 0');
+      expect(message.params.sql).toContain('read_later = 0');
+    }
+    // The cleared_articles memory skips read-later rows too, so they are
+    // not "remembered as cleared" and resurrected unread on refresh.
+    const memoryMessages = messages.filter((m) =>
+      m.params.sql?.includes('INSERT OR REPLACE INTO cleared_articles')
+    );
+    expect(memoryMessages).toHaveLength(2);
+    for (const message of memoryMessages) {
+      expect(message.params.sql).toContain('read_later = 0');
+    }
+  });
+
+  it('deleteArticle remembers the row in cleared_articles, then deletes it', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: null });
+    const db = await importDatabaseModule();
+
+    await db.deleteArticle('feed123', 'art1');
+
+    const [memory, markdown, remove] = FakeWorker.instance.messages;
+    expect(memory.params.sql).toContain('INSERT OR REPLACE INTO cleared_articles');
+    // [cleared_at, feedID, articleID] — the timestamp marks when the row
+    // was deleted.
+    expect(memory.params.params).toHaveLength(3);
+    expect(memory.params.params.slice(1)).toEqual(['feed123', 'art1']);
+    // Unlike the retention purge, the cleared memory is written for the
+    // row regardless of its read state: the article is being deleted for
+    // good, not recycled.
+    expect(memory.params.sql).not.toContain('read = 1');
+    expect(markdown.params.sql).toContain('DELETE FROM article_markdown');
+    expect(markdown.params.params).toEqual(['feed123', 'art1']);
+    expect(remove.params.sql).toContain('DELETE FROM articles WHERE feed_id = ? AND article_id = ?');
+    expect(remove.params.params).toEqual(['feed123', 'art1']);
+  });
+
+  it('saveArticles persists the read_later flag', async () => {
+    const db = await importDatabaseModule();
+    await db.saveArticles('feed123', [
+      {
+        articleID: 'art1',
+        uniqueID: 'u1',
+        readLater: true,
+        dateArrived: new Date('2026-01-01T00:00:00.000Z'),
+      },
+    ]);
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.params.sql).toContain('read, starred, read_later, download_path');
   });
 });

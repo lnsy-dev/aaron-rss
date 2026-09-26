@@ -4,10 +4,26 @@
  * Cmd/Ctrl+Plus and Cmd/Ctrl+Minus adjust article text size in steps;
  * Cmd/Ctrl+0 resets it. The chosen step persists in the settings table
  * and is re-applied (via the data-article-font-step attribute) when the
- * app reloads.
+ * app reloads. The command panel offers the same adjustments as the
+ * "Increase Font Size" / "Decrease Font Size" / "Reset Font Size"
+ * commands.
  */
 
 import { test, expect } from '@playwright/test';
+
+/**
+ * Open the command panel with its key event and run the named command.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name - Command name shown in the panel.
+ */
+async function runCommand(page, name) {
+  await page.keyboard.press('Control+Shift+P');
+  const panel = page.locator('command-panel dialog[open]');
+  await expect(panel).toBeVisible();
+  await panel.locator('.command-item', { hasText: name }).first().click();
+  await expect(panel).toBeHidden();
+}
 
 test.describe('Article font size', () => {
   test.beforeEach(async ({ page }) => {
@@ -86,6 +102,29 @@ test.describe('Article font size', () => {
     });
     await page.keyboard.press('Control+-');
     await expect(component).toHaveAttribute('data-article-font-step', 'step-3');
+  });
+
+  test('the command panel increases, decreases, and resets the step', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+
+    await component.evaluate((el) => {
+      el.settings.articleFontStep = 0;
+      el._applyArticleFontStep();
+    });
+    await expect(component).toHaveAttribute('data-article-font-step', 'step0');
+
+    await runCommand(page, 'Increase Font Size');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step1');
+
+    await runCommand(page, 'Decrease Font Size');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step0');
+
+    await runCommand(page, 'Increase Font Size');
+    await runCommand(page, 'Increase Font Size');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step2');
+
+    await runCommand(page, 'Reset Font Size');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step0');
   });
 
   test('a non-zero step scales the reader body font from CSS', async ({ page }) => {

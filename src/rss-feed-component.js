@@ -1067,6 +1067,9 @@ class RSSFeedComponent extends DataroomElement {
       { name: 'Quick Keys', action: () => this.showQuickKeysModal() },
       { name: 'Toggle Distraction Free Mode', action: () => this.toggleDistractionFreeMode() },
       { name: 'Toggle Full Screen', action: () => this.toggleFullScreen() },
+      { name: 'Increase Font Size', action: () => this._handleArticleFontAction('increase') },
+      { name: 'Decrease Font Size', action: () => this._handleArticleFontAction('decrease') },
+      { name: 'Reset Font Size', action: () => this._handleArticleFontAction('reset') },
       { name: 'Help', action: () => window.open('/help.html', '_blank') },
     ];
 

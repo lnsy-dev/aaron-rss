@@ -29,6 +29,7 @@ import {
   deleteDownloadedVideosForArticle as dbDeleteDownloadedVideosForArticle,
   deleteDownloadedVideosForFeed as dbDeleteDownloadedVideosForFeed,
   loadDownloadedArticles as dbLoadDownloadedArticles,
+  loadReadLaterArticles as dbLoadReadLaterArticles,
   loadDownloadedPodcastArticles as dbLoadDownloadedPodcastArticles,
   listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
   saveArticleMarkdown as dbSaveArticleMarkdown,
@@ -1041,4 +1042,30 @@ export async function toggleArticleStarred(feedID, articleID) {
   if (!article) return;
 
   await dbUpdateArticleStatus(feedID, articleID, { starred: !article.starred });
+}
+
+/**
+ * Set an article's Read Later flag on or off.
+ *
+ * Unlike the star toggle, the flag is passed explicitly: Read Later
+ * actions live in several surfaces (feed rows and the article viewer
+ * header), and each knows the target state.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @param {boolean} readLater
+ * @returns {Promise<void>}
+ */
+export async function setArticleReadLater(feedID, articleID, readLater) {
+  await dbUpdateArticleStatus(feedID, articleID, { readLater: Boolean(readLater) });
+}
+
+/**
+ * Load every article flagged for the Read Later archive, for the
+ * Read Later view.
+ *
+ * @returns {Promise<Array<{feed: object, article: object}>>} Newest first
+ */
+export function loadReadLaterArticles() {
+  return dbLoadReadLaterArticles();
 }

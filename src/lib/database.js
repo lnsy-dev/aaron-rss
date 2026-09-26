@@ -318,11 +318,12 @@ export async function initRSSSchema() {
       banner_image_url TEXT,
       date_published TEXT,
       date_modified TEXT,
-      authors TEXT,
-      tags TEXT,
-      read INTEGER DEFAULT 0,
-      starred INTEGER DEFAULT 0,
-      download_path TEXT,
+    authors TEXT,
+    tags TEXT,
+    read INTEGER DEFAULT 0,
+    starred INTEGER DEFAULT 0,
+    read_later INTEGER DEFAULT 0,
+    download_path TEXT,
       enclosure_url TEXT,
       enclosure_type TEXT,
       enclosure_length INTEGER,
@@ -365,6 +366,15 @@ export async function initRSSSchema() {
   if (!articleColumns.some((col) => col.name === 'enclosure_length')) {
     await callWorker('exec', {
       sql: 'ALTER TABLE articles ADD COLUMN enclosure_length INTEGER',
+    });
+  }
+
+  // Migration: the Read Later archive. Each article can be flagged for
+  // the reading queue; read-later articles are excluded from the read
+  // retention purge and from deletion when they fall out of a feed.
+  if (!articleColumns.some((col) => col.name === 'read_later')) {
+    await callWorker('exec', {
+      sql: 'ALTER TABLE articles ADD COLUMN read_later INTEGER DEFAULT 0',
     });
   }
 
@@ -551,6 +561,7 @@ function articleToRow(article, feedID) {
     JSON.stringify(article.tags || []),
     article.read ? 1 : 0,
     article.starred ? 1 : 0,
+    article.readLater ? 1 : 0,
     article.downloadPath || null,
     article.enclosureURL || null,
     article.enclosureType || null,
@@ -607,6 +618,7 @@ function rowsToFeeds(rows) {
         tags: row.tags ? JSON.parse(row.tags) : [],
         read: Boolean(row.read),
         starred: Boolean(row.starred),
+        readLater: Boolean(row.read_later),
         downloadPath: row.download_path || undefined,
         enclosureURL: row.enclosure_url || undefined,
         enclosureType: row.enclosure_type || undefined,
@@ -653,8 +665,8 @@ export async function saveFeed(feed) {
   for (const article of feed.articles) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, read_later, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: articleToRow(article, feed.feedID),
     });
   }
@@ -716,8 +728,8 @@ export async function saveArticles(feedID, articles) {
   for (const article of writable) {
     await callWorker('exec', {
       sql: `INSERT INTO articles
-        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (article_id, feed_id, unique_id, title, content_html, content_text, url, external_url, summary, image_url, banner_image_url, date_published, date_modified, authors, tags, read, starred, read_later, download_path, enclosure_url, enclosure_type, enclosure_length, date_arrived, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(article_id) DO UPDATE SET
           feed_id = excluded.feed_id,
           unique_id = excluded.unique_id,
@@ -735,6 +747,7 @@ export async function saveArticles(feedID, articles) {
           tags = excluded.tags,
           read = excluded.read,
           starred = excluded.starred,
+          read_later = excluded.read_later,
           download_path = excluded.download_path,
           enclosure_url = excluded.enclosure_url,
           enclosure_type = excluded.enclosure_type,
@@ -782,6 +795,7 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
         AND article_id NOT IN (${placeholders})
         AND read = 1
         AND starred = 0
+        AND read_later = 0
         AND unique_id IS NOT NULL`,
     params: [new Date().toISOString(), feedID, ...articleIDs],
   });
@@ -790,7 +804,8 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
     sql: `DELETE FROM articles
       WHERE feed_id = ?
         AND article_id NOT IN (${placeholders})
-        AND starred = 0`,
+        AND starred = 0
+        AND read_later = 0`,
     params: [feedID, ...articleIDs],
   });
 }
@@ -798,7 +813,9 @@ export async function deleteArticlesNotInSet(feedID, articleIDs) {
 /**
  * Purge read, unstarred articles older than the retention window.
  *
- * Before deleting, each purged article is recorded in cleared_articles
+ * Read-later articles are never purged: flagging an article for the
+ * Read Later archive is exactly a request to keep it around. Before
+ * deleting, each purged article is recorded in cleared_articles
  * (the same memory the research-topic clear uses). Without it, a feed
  * whose XML still lists the purged items re-adds them on the next
  * refresh as brand-new, unread articles — read state appeared to be
@@ -820,6 +837,7 @@ export async function purgeOldReadArticles(feedID, retentionDays = DEFAULT_READ_
       WHERE feed_id = ?
         AND read = 1
         AND starred = 0
+        AND read_later = 0
         AND date_arrived < ?`,
     params: [new Date().toISOString(), feedID, cutoff],
   });
@@ -829,6 +847,7 @@ export async function purgeOldReadArticles(feedID, retentionDays = DEFAULT_READ_
       WHERE feed_id = ?
         AND read = 1
         AND starred = 0
+        AND read_later = 0
         AND date_arrived < ?`,
     params: [feedID, cutoff],
   });
@@ -901,7 +920,7 @@ export function loadFeedsForDisplay() {
         CASE WHEN ${SOCIAL_URL_SQL} THEN a.content_text END AS content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.enclosure_url, a.enclosure_type, a.enclosure_length,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.read_later,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id AND a.read = 0
@@ -930,7 +949,7 @@ export function loadAllFeeds() {
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.enclosure_url, a.enclosure_type, a.enclosure_length,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.read_later,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
@@ -976,7 +995,7 @@ export function loadFeed(feedID) {
         a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.enclosure_url, a.enclosure_type, a.enclosure_length,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.read_later,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
@@ -1009,7 +1028,7 @@ export function loadFeedForRefresh(feedID) {
         a.article_id, a.unique_id, a.title,
         a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.enclosure_url, a.enclosure_type, a.enclosure_length,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.read_later,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived, a.content_hash
       FROM feeds f
       LEFT JOIN articles a ON a.feed_id = f.feed_id
@@ -1170,6 +1189,10 @@ export async function updateArticleStatus(feedID, articleID, updates) {
   if ('starred' in updates) {
     fields.push('starred = ?');
     params.push(updates.starred ? 1 : 0);
+  }
+  if ('readLater' in updates) {
+    fields.push('read_later = ?');
+    params.push(updates.readLater ? 1 : 0);
   }
   if ('downloadPath' in updates) {
     fields.push('download_path = ?');
@@ -1370,7 +1393,7 @@ export function loadDownloadedArticles() {
         a.article_id, a.unique_id, COALESCE(a.title, v.title) AS title, a.content_html, a.content_text,
         COALESCE(a.url, v.youtube_url) AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
         a.enclosure_url, a.enclosure_type, a.enclosure_length,
-        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred, a.read_later,
         COALESCE(v.file_path, a.download_path) AS download_path, a.date_arrived,
         v.feed_id AS video_feed_id, v.article_id AS video_article_id
       FROM downloaded_videos v
@@ -1415,6 +1438,7 @@ export function loadDownloadedArticles() {
         tags: row.tags ? JSON.parse(row.tags) : [],
         read: Boolean(row.read),
         starred: Boolean(row.starred),
+        readLater: Boolean(row.read_later),
         downloadPath: row.download_path || undefined,
         enclosureURL: row.enclosure_url || undefined,
         enclosureType: row.enclosure_type || undefined,
@@ -1423,6 +1447,65 @@ export function loadDownloadedArticles() {
       },
     };
   }));
+}
+
+/**
+ * SQL predicate matching read-later articles: flagged for the reading
+ * archive. Unread flagged articles are excluded from the read retention
+ * purge and from deletion when they fall out of a feed.
+ * @type {string}
+ */
+const READ_LATER_PREDICATE = 'a.read_later = 1';
+
+/**
+ * Load every article flagged for the Read Later archive
+ * (Read Later view data).
+ *
+ * Read state is irrelevant: the archive holds articles the user wants
+ * to get back to, whether or not they were opened when they flagged
+ * them. Entries whose feed was deleted are dropped — unlike the Videos
+ * view there is no standalone file to keep, so a read-later article
+ * without its feed's content cannot be displayed.
+ *
+ * @returns {Promise<Array<{feed: object, article: object}>>} Newest first
+ */
+export function loadReadLaterArticles() {
+  return callWorker('query', {
+    sql: `SELECT
+        f.feed_id, f.url AS feed_url, f.name, f.home_page_url, f.icon_url, f.favicon_url,
+        f.last_fetch_successful, f.last_fetch_end_time, f.synthetic, f.open_original_by_default, f.auto_download_youtube,
+        a.article_id, a.unique_id, a.title, a.content_html, a.content_text,
+        a.url AS article_url, a.external_url, a.summary, a.image_url, a.banner_image_url,
+        a.enclosure_url, a.enclosure_type, a.enclosure_length,
+        a.date_published, a.date_modified, a.authors, a.tags, a.read, a.starred,
+        a.read_later, a.download_path, a.date_arrived
+      FROM articles a
+      INNER JOIN feeds f ON f.feed_id = a.feed_id
+      WHERE ${READ_LATER_PREDICATE}
+      ORDER BY COALESCE(a.date_published, a.date_arrived) DESC`,
+  }).then((rows) => (rows || []).map((row) => {
+    // Reuse rowsToFeeds for one row to get consistent feed/article mapping.
+    const feeds = rowsToFeeds([row]);
+    const feed = feeds.length > 0 ? feeds[0] : null;
+    const article = feed && feed.articles.length > 0 ? feed.articles[0] : null;
+    return { feed, article };
+  }));
+}
+
+/**
+ * Count unread articles flagged for the Read Later archive.
+ *
+ * Drives the ready badge on the footer Read Later button: the archive
+ * includes read articles, so its badge highlights only the ones still
+ * waiting to be read.
+ *
+ * @returns {Promise<number>} Number of unread read-later articles
+ */
+export function countUnreadReadLaterArticles() {
+  return callWorker('query', {
+    sql: `SELECT COUNT(*) AS unread_count FROM articles
+      WHERE read_later = 1 AND read = 0`,
+  }).then((rows) => (rows && rows.length > 0 ? Number(rows[0].unread_count) || 0 : 0));
 }
 
 /**
@@ -1500,6 +1583,7 @@ export function loadDownloadedPodcastArticles() {
 }
 
 /**
+
  * Fetch the newest downloaded_videos record for a YouTube URL.
  *
  * Used to dedupe manual downloads started from the command menu: the

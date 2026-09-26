@@ -306,6 +306,10 @@ body.distraction-free
   mask-image: url('../assets/solid/video.svg');
 }
 
+.rss-view-toggle-icon--read-later {
+  -webkit-mask-image: url('../assets/solid/bookmark.svg');
+  mask-image: url('../assets/solid/bookmark.svg');
+}
 .rss-view-toggle-icon--podcasts {
   -webkit-mask-image: url('../assets/solid/headphones.svg');
   mask-image: url('../assets/solid/headphones.svg');
@@ -1625,6 +1629,64 @@ body.distraction-free
    marker needs styling here. */
 .rss-videos-view-button--active .rss-view-toggle-option-label {
   background: var(--secondary-color);
+}
+
+/* Read Later view: the archive of articles to get back to, laid out
+   like the Videos view. */
+.rss-read-later-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.rss-read-later-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.25rem 0.25rem 0.5rem;
+}
+
+.rss-read-later-view-count {
+  font-size: 0.85rem;
+  color: var(--quaternary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.rss-read-later-view-item .rss-article {
+  border-bottom: 1px solid var(--quaternary-color);
+}
+
+/* Unread badge on the footer Read Later button: a small count bubble
+   shown while flagged articles are still waiting to be read. The
+   option wrapper (.rss-view-toggle-option) provides the positioning
+   context; styling matches the Videos ready badge. */
+.rss-read-later-badge {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.3rem;
+  min-width: 0.95rem;
+  height: 0.95rem;
+  padding: 0 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--notification-color);
+  color: var(--background-color);
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-family: var(--font-ui);
+  line-height: 1;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The hidden attribute must win over the display value above. */
+.rss-read-later-badge[hidden] {
+  display: none;
 }
 
 /* Ready badge on the footer Videos button: a small count bubble shown

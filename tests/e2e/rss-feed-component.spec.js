@@ -346,6 +346,9 @@ test.describe('Aaron RSS', () => {
       'Quick Keys',
       'Toggle Distraction Free Mode',
       'Toggle Full Screen',
+      'Increase Font Size',
+      'Decrease Font Size',
+      'Reset Font Size',
       'Help',
     ]);
   });

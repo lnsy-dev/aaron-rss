@@ -2001,3 +2001,25 @@ rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"])
   font-size: calc(var(--article-font-scale) * var(--font-size-body));
   font-weight: 600;
 }
+
+/* Social post viewer (Bluesky / Mastodon): scale the post text and the
+   comment thread too — the shortcut adjusts what you are reading, and in
+   a comment-heavy Bluesky post that is the comments. The post text shares
+   the heading scale, comments the body scale. Titles in these viewers
+   render as bold body-size text, so no separate heading rules are needed. */
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-social-text {
+  font-size: calc(var(--article-font-scale) * var(--font-size-h2));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-social-comment {
+  /* Keep the * 0.8 from the unscaled rule: comments render slightly
+     smaller than body text, scaling must not promote them to full size. */
+  font-size: calc(var(--article-font-scale) * var(--font-size-body) * 0.8);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-social-embed {
+  /* Embeds have no explicit base size — they inherit the viewer's. `1em`
+     in font-size resolves to the parent's computed size, so this
+     multiplies whatever the embed inherits without hardcoding a base. */
+  font-size: calc(var(--article-font-scale) * 1em);
+}

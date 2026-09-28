@@ -8136,6 +8136,18 @@ class RSSFeedComponent extends DataroomElement {
     if (window.electron?.onShowQuickKeys) {
       window.electron.onShowQuickKeys(() => this.showQuickKeysModal());
     }
+
+    // Cloudflare-protected feeds (e.g. counterpunch.org) need a real
+    // browser window to clear their bot challenge; the main process pops
+    // one (usually hidden, occasionally visible) on the user's behalf.
+    // Announce it so a surprise popup is never mistaken for misbehavior.
+    if (window.electron?.onResolveChallengeStatus) {
+      window.electron.onResolveChallengeStatus(({ stage }) => {
+        if (stage === 'solving') {
+          this.showToast('Cloudflare check detected — opening a window to clear it…', 'info', 10000);
+        }
+      });
+    }
   }
 
   /**

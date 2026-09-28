@@ -47,6 +47,8 @@ import { installProcessErrorGuards } from './error-guards.js';
 import { windowChromeOptions, usesApplicationMenu } from './window-chrome.js';
 import { buildWindowMenu } from './window-menu.js';
 import { readUserThemeCss } from './user-theme.js';
+import { isCloudflareChallenge } from './challenge-detect.js';
+import { resolveCloudflareChallenge } from './challenge-bypass.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -546,36 +548,83 @@ async function createWindow() {
 /**
  * Fetch a URL from the main process on behalf of the renderer.
  *
+ * Uses Electron's Chromium network stack (net.fetch) instead of Node's
+ * undici fetch: some sites (e.g. counterpunch.org behind Cloudflare)
+ * challenge non-browser TLS fingerprints with a 403 interstitial even
+ * when the URL is a valid feed. Riding the session also reuses any
+ * clearance cookies previously obtained. Cookies are sent explicitly
+ * (credentials: 'include', useSessionCookies: true) — without them the
+ * clearance cookie is not attached and protected sites keep 403-ing.
+ *
+ * When the response is a Cloudflare challenge, open a window on the URL
+ * once so the challenge can clear (usually hidden and automatic), then
+ * retry. The clearance cookie persists in the session, so the retry and
+ * all later requests succeed.
+ *
  * Returns a plain object so it serializes cleanly through the
  * context-bridge IPC layer.
  *
  * @param {string} url - The URL to fetch
- * @returns {Promise<{ok: boolean, status: number, text: string}>}
+ * @returns {Promise<{ok: boolean, status: number, text: string, contentType: string}>}
  */
 async function fetchText(url) {
   try {
-    const response = await fetch(url);
-    const text = await response.text();
-    return { ok: response.ok, status: response.status, text };
+    let response = await net.fetch(url, {
+      useSessionCookies: true,
+      credentials: 'include',
+    });
+    let text = await response.text();
+
+    // Cloudflare-protected sites answer the very first request with a
+    // challenge page; visiting the URL once in a real window clears it
+    // (clearance cookies persist in the session) and the retry succeeds.
+    if (isCloudflareChallenge({ status: response.status, text, contentType: response.headers.get('content-type') })) {
+      const cleared = await resolveCloudflareChallenge(url);
+      if (cleared) {
+        response = await net.fetch(url, {
+          useSessionCookies: true,
+          credentials: 'include',
+        });
+        text = await response.text();
+      }
+    }
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      text,
+      contentType: response.headers.get('content-type') || '',
+    };
   } catch (error) {
-    return { ok: false, status: 0, text: error.message };
+    return { ok: false, status: 0, text: error.message, contentType: '' };
   }
 }
 
 /**
  * Fetch a URL's raw bytes from the main process on behalf of the renderer.
  *
- * Used for things like saving or copying remote article images, which
- * cannot be fetched from the app:// origin because of missing CORS
- * headers. Returns a plain object with the body as a Uint8Array so it
- * serializes cleanly through the context-bridge IPC layer.
+ * Shares the network stack and Cloudflare-challenge handling with
+ * fetchText() above. Used for things like saving or copying remote
+ * article images, which cannot be fetched from the app:// origin because
+ * of missing CORS headers. Returns a plain object with the body as a
+ * Uint8Array so it serializes cleanly through the context-bridge IPC layer.
  *
  * @param {string} url - The URL to fetch
- * @returns {Promise<{ok: boolean, status: number, buffer?: Uint8Array, text?: string}>}
+ * @returns {Promise<{ok: boolean, status: number, buffer?: Uint8Array, contentType?: string, text?: string}>}
  */
 async function fetchBinary(url) {
   try {
-    const response = await fetch(url);
+    const fetchInit = {
+      useSessionCookies: true,
+      credentials: 'include',
+    };
+    let response = await net.fetch(url, fetchInit);
+
+    if (response.status === 403 || response.status === 503) {
+      await resolveCloudflareChallenge(url);
+      response = await net.fetch(url, fetchInit);
+    }
+
     const arrayBuffer = await response.arrayBuffer();
     return {
       ok: response.ok,
@@ -588,9 +637,33 @@ async function fetchBinary(url) {
   }
 }
 
-ipcMain.handle('fetch-text', async (_, url) => fetchText(url));
-ipcMain.handle('fetch-binary', async (_, url) => fetchBinary(url));
-ipcMain.handle('open-external', async (_, url) => shell.openExternal(url));
+ipcMain.handle('fetch-text', async (_event, url) => fetchText(url));
+ipcMain.handle('fetch-binary', async (_event, url) => fetchBinary(url));
+ipcMain.handle('open-external', async (_event, url) => shell.openExternal(url));
+
+/**
+ * Let the renderer ask for a Cloudflare challenge to be cleared for a
+ * URL ahead of a failing request ("Try Again" affordance).
+ *
+ * Sends progress updates over the same channel while solving so the
+ * renderer can show status text; the final reply resolves to the
+ * challenge outcome.
+ *
+ * @param {Electron.IpcMainInvokeEvent} event - The invoking renderer.
+ * @param {string} url - The URL whose origin is challenged.
+ * @returns {Promise<{cleared: boolean}>}
+ */
+ipcMain.handle('resolve-feed-challenge', async (event, url) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const sendStatus = (stage) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('resolve-feed-challenge-status', { stage });
+    }
+  };
+  sendStatus('solving');
+  const cleared = await resolveCloudflareChallenge(url);
+  return { cleared };
+});
 
 // User theme override from ~/.config/theme.css. A missing folder or
 // file resolves to null and the renderer keeps the bundled theme

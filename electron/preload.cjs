@@ -32,6 +32,29 @@ contextBridge.exposeInMainWorld('electron', {
   fetchBytes: (url) => ipcRenderer.invoke('fetch-binary', url),
 
   /**
+   * Ask the main process to clear a Cloudflare challenge for a URL by
+   * visiting it in a real window (hidden when possible; shown when the
+   * site demands an interactive solve).
+   *
+   * @param {string} url - The URL whose origin is challenged
+   * @returns {Promise<{cleared: boolean}>} Whether clearance was obtained
+   */
+  resolveFeedChallenge: (url) => ipcRenderer.invoke('resolve-feed-challenge', url),
+
+  /**
+   * Subscribe to progress updates from resolveFeedChallenge while a
+   * solve is in flight.
+   *
+   * @param {(status: {stage: string}) => void} callback - Invoked per update
+   * @returns {() => void} Function that removes the subscription
+   */
+  onResolveChallengeStatus: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('resolve-feed-challenge-status', listener);
+    return () => ipcRenderer.removeListener('resolve-feed-challenge-status', listener);
+  },
+
+  /**
    * Open a URL in the user's default browser.
    *
    * @param {string} url - The URL to open

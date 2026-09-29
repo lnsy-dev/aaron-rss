@@ -1083,6 +1083,119 @@ test.describe('Aaron RSS', () => {
     expect(box.height).toBeGreaterThanOrEqual(44);
   });
 
+  test('original viewer embeds the site in-app, not in the system browser', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await page.evaluate(() => {
+      window.__openedExternalUrls = [];
+      window.electron = {
+        openExternal: async (url) => {
+          window.__openedExternalUrls.push(url);
+        },
+      };
+    });
+
+    await component.evaluate((el) => {
+      el.openOriginalViewer(
+        { title: 'Sample Article', url: 'https://example.com/post' },
+        { feedID: 'feed-1', name: 'Example Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-original-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    // The embed element must be created, navigated in place, and left
+    // alone — the system browser is only for the explicit "Open in
+    // Browser" action or a site that provably refuses in-app rendering.
+    const tagName = await viewer.locator('.rss-article-viewer-frame').evaluate((frame) => frame.tagName);
+    expect(tagName).toBe('IFRAME'); // browser runtime: iframe embed
+    await expect(viewer.locator('.rss-article-viewer-frame')).toHaveJSProperty('__originalEmbedNavigated', true);
+    await expect(viewer.locator('.rss-article-viewer-frame')).toHaveJSProperty('src', 'https://example.com/post');
+
+    // Give any bogus fallback time to misfire; nothing may open.
+    await page.waitForTimeout(700);
+    const opened = await page.evaluate(() => window.__openedExternalUrls);
+    expect(opened).toEqual([]);
+  });
+
+  test('blocked original embed closes the viewer and opens the browser', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await page.evaluate(() => {
+      window.__openedExternalUrls = [];
+      window.electron = {
+        openExternal: async (url) => {
+          window.__openedExternalUrls.push(url);
+        },
+      };
+    });
+
+    await component.evaluate((el) => {
+      el.openOriginalViewer(
+        { title: 'Sample Article', url: 'https://blocked.example/post' },
+        { feedID: 'feed-1', name: 'Example Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-original-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    // Simulate the site refusing to render in-app (frame-ancestors in a
+    // real browser; a load failure under the Electron webview).
+    await viewer.locator('.rss-article-viewer-frame').evaluate((frame) => {
+      frame.dispatchEvent(
+        new CustomEvent('original-embed-blocked', { detail: { url: 'https://blocked.example/post' } })
+      );
+    });
+
+    await expect(viewer).not.toBeVisible();
+    const opened = await page.evaluate(() => window.__openedExternalUrls);
+    expect(opened).toEqual(['https://blocked.example/post']);
+  });
+
+  test('article viewer reverts to the extracted article when the site blocks in-app rendering', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    await page.evaluate(() => {
+      window.__openedExternalUrls = [];
+      window.electron = {
+        openExternal: async (url) => {
+          window.__openedExternalUrls.push(url);
+        },
+      };
+    });
+
+    await component.evaluate((el) => {
+      el.createArticleViewer(
+        { title: 'Toggle Test Article', url: 'https://blocked.example/post' },
+        { feedID: 'feed-1', name: 'Example Feed' }
+      );
+    });
+
+    const viewer = page.locator('.rss-article-viewer-overlay');
+    await expect(viewer).toBeVisible();
+
+    await viewer.locator('button', { hasText: 'Open Original' }).click();
+    const frame = viewer.locator('.rss-article-viewer-frame');
+    await expect(frame).toBeVisible();
+
+    await frame.evaluate((frameEl) => {
+      frameEl.dispatchEvent(
+        new CustomEvent('original-embed-blocked', { detail: { url: 'https://blocked.example/post' } })
+      );
+    });
+
+    // Back to the extracted article; browser gets the URL too.
+    await expect(viewer.locator('.rss-article-viewer-body')).toBeVisible();
+    await expect(frame).not.toBeVisible();
+    const opened = await page.evaluate(() => window.__openedExternalUrls);
+    expect(opened).toEqual(['https://blocked.example/post']);
+  });
+
   test('original viewer has an Open in Browser button', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toBeVisible();

@@ -105,6 +105,11 @@ import {
   isDistractionFreeShortcutEvent,
 } from './lib/quick-keys.js';
 import { isYouTubeURL, isYouTubeStream, isYouTubeHostURL, extractYouTubeVideoID, getYouTubeEmbedURL } from './lib/youtube.js';
+import {
+  createOriginalSiteEmbed,
+  navigateOriginalSiteEmbed,
+  ORIGINAL_EMBED_BLOCKED_EVENT,
+} from './lib/original-embed.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
 import { isPodcastEpisode } from './lib/podcast.js';
 import { isPodcastDownloadAvailable } from './lib/podcast-bridge.js';
@@ -4927,11 +4932,16 @@ class RSSFeedComponent extends DataroomElement {
       this._stopPlayAll();
     }
 
-    // Release the original-page iframe and extracted body so the renderer
+    // Release the original-page embed and extracted body so the renderer
     // can reclaim the browsing context and large article objects.
     if (overlay._originalFrame) {
-      overlay._originalFrame.removeAttribute('src');
-      overlay._originalFrame.src = 'about:blank';
+      // A webview is torn down with its element (and attaching one for
+      // about:blank is refused by the main process), so only iframes
+      // need the explicit release navigation.
+      if (overlay._originalFrame.tagName !== 'WEBVIEW') {
+        overlay._originalFrame.removeAttribute('src');
+        overlay._originalFrame.src = 'about:blank';
+      }
       overlay._originalFrame = null;
     }
 
@@ -6051,13 +6061,10 @@ class RSSFeedComponent extends DataroomElement {
 
     dialog.appendChild(actions);
 
-    const frame = document.createElement('iframe');
-    frame.className = 'rss-article-viewer-frame';
-    frame.setAttribute(
-      'sandbox',
-      'allow-scripts allow-same-origin allow-forms allow-popups'
-    );
-    frame.title = 'Original article';
+    // In Electron this is a <webview>, so sites that forbid being
+    // iframed (frame-ancestors 'self' — Slashdot, most news sites)
+    // render in-app again; browsers keep the sandboxed-iframe embed.
+    const frame = createOriginalSiteEmbed(article.url);
     frame.style.display = 'block';
 
     dialog.appendChild(frame);
@@ -7630,13 +7637,7 @@ class RSSFeedComponent extends DataroomElement {
     spinner.textContent = 'Extracting article content…';
     body.appendChild(spinner);
 
-    const originalFrame = document.createElement('iframe');
-    originalFrame.className = 'rss-article-viewer-frame';
-    originalFrame.setAttribute(
-      'sandbox',
-      'allow-scripts allow-same-origin allow-forms allow-popups'
-    );
-    originalFrame.title = 'Original article';
+    const originalFrame = createOriginalSiteEmbed(article.url);
 
     dialog.appendChild(body);
     dialog.appendChild(originalFrame);
@@ -7658,40 +7659,39 @@ class RSSFeedComponent extends DataroomElement {
   }
 
   /**
-   * Navigate an original-view iframe to a URL and fall back to the default
-   * browser if the site blocks framing via CSP.
+   * Navigate an original-site embed to a URL.
    *
-   * @param {HTMLIFrameElement} frame - The iframe to navigate
+   * The embed is a <webview> in Electron and a sandboxed <iframe>
+   * elsewhere (see src/lib/original-embed.js). When the site cannot be
+   * shown in-app — a load failure in the webview case, or a framing
+   * refusal (CSP frame-ancestors) in the iframe case — `onBlocked`
+   * decides the fallback; the default closes the viewer and opens the
+   * URL in the system browser (used by the standalone original viewer,
+   * which has no article body to revert to).
+   *
+   * @param {HTMLElement} embed - Embed from createOriginalSiteEmbed
    * @param {string} url - The original article URL
+   * @param {Function} [onBlocked] - Alternate blocked fallback
    * @returns {void}
    */
-  _navigateOriginalFrame(frame, url) {
-    frame.addEventListener(
-      'load',
-      () => {
-        setTimeout(() => {
-          try {
-            const location = frame.contentWindow.location.href;
-            if (location === 'about:blank' || location === window.location.href) {
-              this.closeModal();
-              this.openExternalURL(url);
-            }
-          } catch {
-            // Cross-origin successful loads throw SecurityError when reading
-            // location.href from the parent. That means the frame loaded,
-            // so no fallback is needed.
-          }
-        }, 500);
-      },
-      { once: true }
-    );
-    frame.src = url;
+  _navigateOriginalFrame(embed, url, onBlocked = null) {
+    embed.addEventListener(ORIGINAL_EMBED_BLOCKED_EVENT, () => {
+      if (onBlocked) {
+        onBlocked();
+        return;
+      }
+      this.showToast('This site blocks in-app viewing — opened in your browser instead', 'info');
+      this.closeModal();
+      this.openExternalURL(url);
+    });
+    navigateOriginalSiteEmbed(embed, url);
   }
 
   /**
    * Switch the article viewer to the original website view.
    *
-   * Hides the extracted Markdown body and shows an iframe loaded with the
+   * Hides the extracted Markdown body and shows the original-site embed
+   * (webview in Electron, sandboxed iframe elsewhere) loaded with the
    * article's original URL, keeping navigation inside the same window.
    *
    * @param {HTMLElement} overlay - The article viewer overlay
@@ -7702,7 +7702,14 @@ class RSSFeedComponent extends DataroomElement {
     overlay._viewerMode = 'original';
     overlay._articleBody.style.display = 'none';
     overlay._originalFrame.style.display = 'block';
-    this._navigateOriginalFrame(overlay._originalFrame, url);
+    this._navigateOriginalFrame(overlay._originalFrame, url, () => {
+      // The site refused to render in-app: return to the extracted
+      // article instead of leaving a blank embed, and hand the page to
+      // the system browser so the user still gets the content.
+      this._showArticleView(overlay);
+      this.openExternalURL(url);
+      this.showToast('This site blocks in-app viewing — opened in your browser instead', 'info');
+    });
 
     // The back button now always closes the viewer, so expose a way back
     // to the extracted article through the "Open Original" action instead.
@@ -7715,7 +7722,7 @@ class RSSFeedComponent extends DataroomElement {
   /**
    * Switch the article viewer back to the extracted Markdown view.
    *
-   * Hides the original-website iframe and restores the Markdown body.
+   * Hides the original-site embed and restores the Markdown body.
    *
    * @param {HTMLElement} overlay - The article viewer overlay
    * @returns {void}

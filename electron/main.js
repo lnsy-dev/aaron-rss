@@ -440,6 +440,12 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.resolve(__dirname, 'preload.cjs'),
+      // The "Open Original" viewer embeds article websites as <webview>
+      // guests. A plain iframe cannot show sites that send
+      // frame-ancestors 'self' (Slashdot, etc.), but a webview loads the
+      // site as a top-level guest, which those headers do not govern.
+      // Each attach is gated by will-attach-webview below.
+      webviewTag: true,
       // Allow the renderer to throttle timers while hidden. The RSS
       // component pauses auto-refresh on visibilitychange, so the app
       // does not keep churning memory while idle.
@@ -500,6 +506,21 @@ async function createWindow() {
     shell.openExternal(details.url);
   });
 
+  // Security gate for <webview> attaches (the "Open Original" viewer is
+  // the only sanctioned user of the tag). Strips the preload from guest
+  // pages so third-party sites never run app code, and refuses
+  // webviews pointing outside http(s).
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    const src = typeof params.src === 'string' ? params.src : '';
+    if (!/^https?:/i.test(src)) {
+      event.preventDefault();
+    }
+  });
+
   // Forward keystrokes the renderer cannot rely on a menu to deliver.
   // Escape goes over IPC so it works even when keyboard focus sits
   // inside a cross-origin iframe (e.g. the "Open Original" website
@@ -544,6 +565,22 @@ async function createWindow() {
     }
   });
 }
+
+// Popups opened by <webview> guest content (target=_blank links,
+// window.open inside an embedded site) must never surface as app
+// windows: deny everything, and let the OS browser show external URLs.
+// Internal ones (about:blank placeholders) simply close.
+app.on('web-contents-created', (event, webContents) => {
+  if (webContents.getType() !== 'webview') {
+    return;
+  }
+  webContents.setWindowOpenHandler(({ url }) => {
+    if (!isInternalUrl(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' }; // Never a window from guest content.
+  });
+});
 
 /**
  * Fetch a URL from the main process on behalf of the renderer.

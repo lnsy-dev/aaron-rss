@@ -47,6 +47,12 @@ const FEED = {
 /**
  * Open the command panel with its key event and run the named command.
  *
+ * The real mouse pointer is parked at the viewport's top-left corner
+ * afterwards (over body — no :hover rule applies there): the click on
+ * the command item leaves it wherever the centered panel happens to be,
+ * and a parked pointer over an article row would hold its Distraction
+ * Free download button open through the "hidden" assertions.
+ *
  * @param {import('@playwright/test').Page} page
  * @param {string} name - Command name shown in the panel.
  */
@@ -56,6 +62,7 @@ async function runCommand(page, name) {
   await expect(panel).toBeVisible();
   await panel.locator('.command-item', { hasText: name }).first().click();
   await expect(panel).toBeHidden();
+  await page.mouse.move(0, 0);
 }
 
 test.describe('Distraction Free download hover', () => {
@@ -115,6 +122,7 @@ test.describe('Distraction Free download hover', () => {
     await expect(plainArticle.locator('[data-action="download-youtube"]')).toHaveCount(0);
 
     // Toggling the mode off restores the always-visible actions.
+    // (runCommand parks the mouse out of the article rows first.)
     await runCommand(page, 'Toggle Distraction Free Mode');
     await expect(page.locator('body')).not.toHaveClass(/distraction-free/);
     await expect(videoArticle.locator('[data-action="download-youtube"]')).toBeVisible();

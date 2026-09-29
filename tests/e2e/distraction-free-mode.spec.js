@@ -25,6 +25,12 @@ const FEED_XML = [
 /**
  * Open the command panel with its key event and run the named command.
  *
+ * The real mouse pointer is parked at the viewport's top-left corner
+ * afterwards (over body — no :hover rule applies there): the click on
+ * the command item leaves it wherever the centered panel happens to be,
+ * and a parked pointer over an article row would hold that row's
+ * actions open through the Distraction Free "hidden" assertions.
+ *
  * @param {import('@playwright/test').Page} page
  * @param {string} name - Command name shown in the panel.
  */
@@ -34,6 +40,7 @@ async function runCommand(page, name) {
   await expect(panel).toBeVisible();
   await panel.locator('.command-item', { hasText: name }).first().click();
   await expect(panel).toBeHidden();
+  await page.mouse.move(0, 0);
 }
 
 test.describe('Distraction Free Mode', () => {

@@ -81,6 +81,27 @@ test.describe('podcasts view', () => {
       });
     });
 
+    // Capture the app's sqlite worker so the queue-row tests below can
+    // seed and verify downloaded_videos rows directly over the worker's
+    // message protocol (dynamically importing /src/lib/database.js
+    // cannot work: the dev bundle ships its modules pre-bundled). The
+    // dev bundle constructs the worker with empty options, so match on
+    // the chunk URL rather than the module-worker type flag.
+    await page.addInitScript(() => {
+      const OriginalWorker = window.Worker;
+      window.__dbWorkerPromise = new Promise((resolve) => {
+        window.__resolveDbWorker = resolve;
+      });
+      window.Worker = class extends OriginalWorker {
+        constructor(url, options) {
+          super(url, options);
+          if (String(url).includes('sqlite-worker')) {
+            window.__resolveDbWorker(this);
+          }
+        }
+      };
+    });
+
     for (const path of [EP1_PATH, EP2_PATH]) {
       await page.route(`**${path}`, async (route) => {
         await route.fulfill({
@@ -139,6 +160,42 @@ test.describe('podcasts view', () => {
     const view = page.locator('.rss-podcasts-view');
     await expect(view).toBeVisible();
     return view;
+  }
+
+  /**
+   * Run one SQL statement against the app's own sqlite worker.
+   *
+   * Dynamically importing /src/lib/database.js cannot work in the
+   * bundled page, so seeded or verified rows go straight through the
+   * worker's {id, action, params} protocol. Negative ids never collide
+   * with the database client's positive, incrementing request ids; the
+   * listener ignores responses meant for the app.
+   *
+   * @param {import('@playwright/test').Page} page Playwright page
+   * @param {string} action 'exec' or 'query'
+   * @param {string} sql SQL text
+   * @param {Array} params Bound parameters
+   * @returns {Promise<unknown>} Query rows (exec resolves null)
+   */
+  async function runWorkerSQL(page, action, sql, params = []) {
+    return page.evaluate(({ action, sql, params }) => {
+      return window.__dbWorkerPromise.then((worker) => new Promise((resolve, reject) => {
+        const id = -Math.floor(Math.random() * 1e9) - 1;
+        worker.addEventListener('message', function handler(event) {
+          const data = event.data;
+          if (!data || data.id !== id) {
+            return;
+          }
+          worker.removeEventListener('message', handler);
+          if (data.ok) {
+            resolve(data.result);
+          } else {
+            reject(new Error(data.error));
+          }
+        });
+        worker.postMessage({ id, action, params: { sql, params } });
+      }));
+    }, { action, sql, params });
   }
 
   test('the footer Podcasts button opens a view listing downloaded episodes', async ({ page }) => {
@@ -283,6 +340,119 @@ test.describe('podcasts view', () => {
     await expect(viewer).toBeHidden();
     await page.waitForTimeout(1100);
     await expect(page.locator('.rss-article-viewer-overlay')).toHaveCount(0);
+  });
+
+  test('deleting from the Podcasts view also clears the feeds-view downloaded state', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    const component = page.locator('rss-feed-component');
+    await seedPodcastFeed(page);
+    await downloadEpisode(page, 'View Episode One');
+
+    const view = await openPodcastsView(page);
+    await expect(view.locator('.rss-podcasts-view-count')).toHaveText('1 episode');
+
+    // Delete the episode from its Podcasts view row.
+    const item = view.locator('.rss-podcasts-view-item', { hasText: 'View Episode One' });
+    await item.locator('[data-action="delete-podcast"]').click();
+
+    // The row leaves the view immediately.
+    await expect(view.locator('.rss-no-articles')).toHaveText('No downloaded podcasts');
+
+    // The canonical article in this.feeds must not keep a stale pointer:
+    // the view entries carry their own article copies, so without the
+    // canonical sync the feeds view keeps showing "Downloaded ✓" (and a
+    // Delete Audio action for a file that no longer exists) until the
+    // next full reload.
+    const storedPath = await component.evaluate(
+      (el) => el.feeds[0].articles.find((a) => a.articleID)?.downloadPath ?? null
+    );
+    expect(storedPath).toBe(null);
+  });
+
+  test('a downloaded podcast never appears in the Videos view', async ({ page }) => {
+    test.setTimeout(60000);
+    const component = page.locator('rss-feed-component');
+    await seedPodcastFeed(page);
+    await downloadEpisode(page, 'View Episode One');
+
+    const { articleID } = await component.evaluate((el) => {
+      const article = el.feeds[0].articles.find((a) => a.downloadPath);
+      return { articleID: article.articleID };
+    });
+
+    // Backfill sanity: no downloaded_videos queue row was created for the
+    // podcast episode (the schema backfill excludes audio enclosures and
+    // podcast downloads never record queue rows).
+    const rows = await runWorkerSQL(
+      page,
+      'query',
+      'SELECT COUNT(*) AS n FROM downloaded_videos WHERE article_id = ?',
+      [articleID],
+    );
+    expect(rows[0].n).toBe(0);
+
+    // The Videos view stays empty while the Podcasts view lists it.
+    await page.locator('.rss-view-toggle-option--videos .rss-view-toggle-option-label').click();
+    const videosView = page.locator('.rss-videos-view');
+    await expect(videosView).toBeVisible();
+    await expect(videosView.locator('.rss-no-articles')).toHaveText('No downloaded videos');
+
+    // The episode is also visible in the main feed (ready-video
+    // exclusion must not swallow podcast episodes).
+    await page.locator('.rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
+    await expect(page.locator('.rss-article', { hasText: 'View Episode One' })).toBeVisible();
+  });
+
+  test('deleting a podcast removes any stale video-queue ghost row', async ({ page }) => {
+    test.setTimeout(60000);
+    const component = page.locator('rss-feed-component');
+    await seedPodcastFeed(page);
+    await downloadEpisode(page, 'View Episode One');
+
+    // Simulate the old backfill bug: a downloaded_videos row created for
+    // the podcast episode, with youtube_url and file_path both pointing
+    // at the audio file (the artifact shape the cleanup migration
+    // targets). seen = 0 is also what made the episode vanish from the
+    // main feed, through the ready-video exclusion.
+    const { feedID, articleID, downloadPath } = await component.evaluate((el) => {
+      const feed = el.feeds[0];
+      const article = feed.articles.find((a) => a.downloadPath);
+      return { feedID: feed.feedID, articleID: article.articleID, downloadPath: article.downloadPath };
+    });
+    await runWorkerSQL(
+      page,
+      'exec',
+      `INSERT OR REPLACE INTO downloaded_videos
+        (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+      ['e2e-ghost-1', feedID, articleID, downloadPath, downloadPath, 'View Episode One', '2026-01-01T00:00:00.000Z'],
+    );
+
+    // With the ghost row present the episode does show up in Videos.
+    await page.locator('.rss-view-toggle-option--videos .rss-view-toggle-option-label').click();
+    await expect(
+      page.locator('.rss-videos-view .rss-article', { hasText: 'View Episode One' })
+    ).toBeVisible();
+
+    // Delete the episode from its Podcasts view row (the main feed hides
+    // it while the ghost row is unseen); the ghost row must go with it.
+    const podcastsView = await openPodcastsView(page);
+    const item = podcastsView.locator('.rss-podcasts-view-item', { hasText: 'View Episode One' });
+    await item.locator('[data-action="delete-podcast"]').click();
+    await expect(podcastsView.locator('.rss-no-articles')).toHaveText('No downloaded podcasts');
+
+    await page.locator('.rss-view-toggle-option--videos .rss-view-toggle-option-label').click();
+    const videosView = page.locator('.rss-videos-view');
+    await expect(videosView).toBeVisible();
+    await expect(videosView.locator('.rss-no-articles')).toHaveText('No downloaded videos');
+
+    // The ready-video exclusion lifts with the ghost row gone: the
+    // episode is listed in the main feed again after a reload.
+    await page.locator('.rss-view-toggle-option--feeds .rss-view-toggle-option-label').click();
+    await component.evaluate((el) => el.refreshFeeds());
+    await expect(page.locator('.rss-article', { hasText: 'View Episode One' })).toBeVisible();
   });
 
   test('Play All without Electron explains that nothing can play', async ({ page }) => {

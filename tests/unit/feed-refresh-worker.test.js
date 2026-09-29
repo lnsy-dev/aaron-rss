@@ -294,4 +294,82 @@ describe('feed refresh worker', () => {
       'https://example.com/posts/new.html',
     ]);
   });
+
+  describe('YouTube feed-URL fallback during channel_id outages', () => {
+    const CANONICAL_URL = 'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456';
+    const UU_URL = 'https://www.youtube.com/feeds/videos.xml?playlist_id=UUabc123def456';
+    const UULF_URL = 'https://www.youtube.com/feeds/videos.xml?playlist_id=UULFabc123def456';
+
+    function feedTextFor(url) {
+      return JSON.stringify({
+        version: 'https://jsonfeed.org/version/1.1',
+        title: `Feed ${url}`,
+        home_page_url: 'https://example.com',
+        items: [{ id: 'u1', url: 'https://example.com/1', title: 'One' }],
+      });
+    }
+
+    it('fetches the uploads-playlist twin when the canonical feed 404s', async () => {
+      const port = installPort();
+      const fetchedURLs = [];
+      port.onReply = (msg) => {
+        fetchedURLs.push(msg.url);
+        if (msg.url === CANONICAL_URL) {
+          return { id: msg.id, ok: true, result: { ok: false, status: 404, text: 'Not Found' } };
+        }
+        return { id: msg.id, ok: true, result: { ok: true, status: 200, text: feedTextFor(msg.url) } };
+      };
+
+      const existingFeed = { feedID: 'feed-yt', url: CANONICAL_URL, articles: [] };
+      await send({ fetchFromURL: existingFeed.url, existingFeed, maxArticles: 50 });
+
+      // Canonical first, then the UU twin; UULF never needed.
+      expect(fetchedURLs).toEqual([CANONICAL_URL, UU_URL]);
+
+      const response = lastResult();
+      expect(response.ok).toBe(true);
+      expect(response.result.lastFetchWasSuccessful).toBe(true);
+      // The feed identity stays canonical even though the twin answered.
+      expect(response.result.url).toBe(CANONICAL_URL);
+    });
+
+    it('keeps the refresh failing when every candidate 404s', async () => {
+      const port = installPort();
+      const fetchedURLs = [];
+      port.onReply = (msg) => {
+        fetchedURLs.push(msg.url);
+        return { id: msg.id, ok: true, result: { ok: false, status: 404, text: 'Not Found' } };
+      };
+
+      const existingFeed = {
+        feedID: 'feed-yt',
+        url: CANONICAL_URL,
+        articles: [
+          { articleID: 'art1', uniqueID: 'u1', read: true, starred: false, contentHash: 'h1' },
+        ],
+      };
+      await send({ fetchFromURL: existingFeed.url, existingFeed, maxArticles: 50 });
+
+      expect(fetchedURLs).toEqual([CANONICAL_URL, UU_URL, UULF_URL]);
+
+      const response = lastResult();
+      expect(response.ok).toBe(true);
+      expect(response.result.lastFetchWasSuccessful).toBe(false);
+      expect(response.result.articles[0].skipPersist).toBe(true);
+    });
+
+    it('never tries alternates for non-YouTube feeds', async () => {
+      const port = installPort();
+      const fetchedURLs = [];
+      port.onReply = (msg) => {
+        fetchedURLs.push(msg.url);
+        return { id: msg.id, ok: true, result: { ok: true, status: 200, text: feedTextFor(msg.url) } };
+      };
+
+      const existingFeed = { feedID: 'feed-x', url: 'https://example.com/feed', articles: [] };
+      await send({ fetchFromURL: existingFeed.url, existingFeed, maxArticles: 50 });
+
+      expect(fetchedURLs).toEqual(['https://example.com/feed']);
+    });
+  });
 });

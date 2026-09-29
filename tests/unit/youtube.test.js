@@ -13,7 +13,12 @@ import {
   extractYouTubeVideoID,
   getYouTubeEmbedURL,
   buildYouTubeChannelFeedURL,
+  buildYouTubeChannelFeedURLCandidates,
   extractYouTubeChannelFeedID,
+  extractYouTubeChannelReference,
+  extractYouTubeRSSLink,
+  extractYouTubeChannelIDFromHTML,
+  extractYouTubeChannelTitle,
 } from '../../src/lib/youtube.js';
 
 describe('youtube helpers', () => {
@@ -181,6 +186,124 @@ describe('youtube helpers', () => {
       expect(
         extractYouTubeChannelFeedID('https://www.youtube.com/feeds/videos.xml?channel_id=short')
       ).toBeNull();
+    });
+  });
+
+  describe('buildYouTubeChannelFeedURLCandidates', () => {
+    it('lists the canonical channel feed first, then uploads-playlist twins', () => {
+      expect(buildYouTubeChannelFeedURLCandidates('UCabc123def456')).toEqual([
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456',
+        'https://www.youtube.com/feeds/videos.xml?playlist_id=UUabc123def456',
+        'https://www.youtube.com/feeds/videos.xml?playlist_id=UULFabc123def456',
+      ]);
+    });
+
+    it('returns nothing for malformed or missing channel ids', () => {
+      expect(buildYouTubeChannelFeedURLCandidates('')).toEqual([]);
+      expect(buildYouTubeChannelFeedURLCandidates(null)).toEqual([]);
+      expect(buildYouTubeChannelFeedURLCandidates('short')).toEqual([]);
+    });
+  });
+
+  describe('extractYouTubeChannelReference', () => {
+    it('parses @handle URLs', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/@AdamSomething')).toEqual({
+        kind: 'handle',
+        value: 'AdamSomething',
+      });
+    });
+
+    it('parses canonical /channel/UC... URLs', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/channel/UCabc123def456')).toEqual({
+        kind: 'channelID',
+        value: 'UCabc123def456',
+      });
+    });
+
+    it('parses legacy /c/ and /user/ URLs', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/c/VanityName')).toEqual({
+        kind: 'legacy',
+        value: 'VanityName',
+      });
+      expect(extractYouTubeChannelReference('https://www.youtube.com/user/SomeUser')).toEqual({
+        kind: 'legacy',
+        value: 'SomeUser',
+      });
+    });
+
+    it('ignores sub-paths of channel pages', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/@AdamSomething/videos')).toEqual({
+        kind: 'handle',
+        value: 'AdamSomething',
+      });
+    });
+
+    it('rejects malformed channel IDs in /channel/ URLs', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/channel/short')).toBeNull();
+    });
+
+    it('rejects non-channel YouTube URLs and non-YouTube hosts', () => {
+      expect(extractYouTubeChannelReference('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
+      expect(extractYouTubeChannelReference('https://www.youtube.com/')).toBeNull();
+      expect(extractYouTubeChannelReference('https://example.com/@AdamSomething')).toBeNull();
+      expect(extractYouTubeChannelReference('')).toBeNull();
+      expect(extractYouTubeChannelReference(null)).toBeNull();
+    });
+  });
+
+  describe('extractYouTubeRSSLink', () => {
+    it('reads the RSS link tag', () => {
+      const html = '<html><head><link rel="alternate" type="application/rss+xml" title="RSS" href="https://www.youtube.com/feeds/videos.xml?channel_id=UCcvfHa-GHSOHFAjU0-Ie57A"></head></html>';
+      expect(extractYouTubeRSSLink(html)).toBe(
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCcvfHa-GHSOHFAjU0-Ie57A'
+      );
+    });
+
+    it('reads the rssUrl JSON field when the link tag is absent', () => {
+      const html = '<script>{"rssUrl":"https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456"}</script>';
+      expect(extractYouTubeRSSLink(html)).toBe(
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456'
+      );
+    });
+
+    it('returns null for pages without an advertised feed', () => {
+      expect(extractYouTubeRSSLink('<html><head></head></html>')).toBeNull();
+      expect(extractYouTubeRSSLink('')).toBeNull();
+      expect(extractYouTubeRSSLink(null)).toBeNull();
+    });
+  });
+
+  describe('extractYouTubeChannelIDFromHTML', () => {
+    it('prefers externalId over a bare channelId', () => {
+      // @handle pages mention the featured video's channel first; the
+      // page's own channel is carried by externalId.
+      const html = '<script>{"channelId":"UCcsQYra-bISsFxNqnd6Javw","externalId":"UCcvfHa-GHSOHFAjU0-Ie57A"}</script>';
+      expect(extractYouTubeChannelIDFromHTML(html)).toBe('UCcvfHa-GHSOHFAjU0-Ie57A');
+    });
+
+    it('falls back to channelId when no externalId exists', () => {
+      const html = '<script>{"channelId":"UCabc123def456"}</script>';
+      expect(extractYouTubeChannelIDFromHTML(html)).toBe('UCabc123def456');
+    });
+
+    it('returns null when no channel ID appears', () => {
+      expect(extractYouTubeChannelIDFromHTML('<html></html>')).toBeNull();
+      expect(extractYouTubeChannelIDFromHTML('')).toBeNull();
+      expect(extractYouTubeChannelIDFromHTML(null)).toBeNull();
+    });
+  });
+
+  describe('extractYouTubeChannelTitle', () => {
+    it('reads og:title with either attribute order, then the title element', () => {
+      expect(extractYouTubeChannelTitle('<meta property="og:title" content="Adam Something">')).toBe('Adam Something');
+      expect(extractYouTubeChannelTitle('<meta content="Adam Something" property="og:title">')).toBe('Adam Something');
+      expect(extractYouTubeChannelTitle('<title>Fallback &amp; Co</title>')).toBe('Fallback &amp; Co');
+    });
+
+    it('returns null when no title is present', () => {
+      expect(extractYouTubeChannelTitle('<html></html>')).toBeNull();
+      expect(extractYouTubeChannelTitle('')).toBeNull();
+      expect(extractYouTubeChannelTitle(null)).toBeNull();
     });
   });
 });

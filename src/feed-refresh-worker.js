@@ -31,6 +31,10 @@ import {
   mergeArticles,
   skipPersist,
 } from './lib/article-processor.js';
+import {
+  buildYouTubeChannelFeedURLCandidates,
+  extractYouTubeChannelFeedID,
+} from './lib/youtube.js';
 
 /**
  * The fetch relay port installed via the 'setFetchPort' action.
@@ -94,6 +98,31 @@ function relayFetchText(url) {
 }
 
 /**
+ * Collect the fetch candidates for a feed URL, best first.
+ *
+ * YouTube's channel_id feeds intermittently answer 404 fleet-wide while
+ * the identical upload feed keyed by the channel's uploads playlist
+ * (channel ID with UC replaced by UULF) keeps working. The canonical URL
+ * always comes first, so a healthy feed server is hit exactly as before;
+ * the twin only matters when the canonical request fails.
+ *
+ * @param {string} url - Feed URL to fetch
+ * @returns {Array<string>} Candidate URLs, canonical first
+ */
+function feedURLCandidates(url) {
+  const candidates = [url];
+  const channelID = extractYouTubeChannelFeedID(url);
+  if (channelID) {
+    for (const alternate of buildYouTubeChannelFeedURLCandidates(channelID)) {
+      if (!candidates.includes(alternate)) {
+        candidates.push(alternate);
+      }
+    }
+  }
+  return candidates;
+}
+
+/**
  * Build a failure record for an existing feed when fetching or parsing fails.
  *
  * Articles are flagged skipPersist: failure records reuse the slim
@@ -149,8 +178,18 @@ async function refreshFeed(params) {
   let sourceHTMLText = htmlText;
 
   if (params.fetchFromURL !== undefined) {
-    const response = await relayFetchText(params.fetchFromURL);
-    if (!response.ok) {
+    // The canonical URL is tried first; known alternates (the YouTube
+    // uploads-playlist twin during channel_id outages) are only fetched
+    // when it fails. The feed's stored URL is never rewritten — identity
+    // stays canonical, only the transport falls back.
+    let response = null;
+    for (const candidate of feedURLCandidates(params.fetchFromURL)) {
+      response = await relayFetchText(candidate);
+      if (response.ok) {
+        break;
+      }
+    }
+    if (!response || !response.ok) {
       return buildFailedFeed(existingFeed);
     }
     if (existingFeed.synthetic) {

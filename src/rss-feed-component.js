@@ -6953,6 +6953,13 @@ class RSSFeedComponent extends DataroomElement {
    * then re-renders so the episode returns to its plain "Download
    * Podcast" state. Read state is untouched.
    *
+   * The download pointer is cleared on the canonical article in
+   * this.feeds, not just on the clicked entry: view entries (Podcasts,
+   * Videos, Read Later) resolve their clicks from their own cached
+   * {feed, article} pairs, so patching only that copy would leave the
+   * feeds-view article showing "Downloaded ✓" for a file that is gone.
+   * markAsRead applies the same canonical sync before re-rendering.
+   *
    * @param {object} article - Article with a downloadPath
    * @param {object} feed - The article's feed
    * @param {HTMLElement} [buttonElement] - The clicked button, if any
@@ -6971,6 +6978,11 @@ class RSSFeedComponent extends DataroomElement {
       if (article.downloadPath) {
         await deleteArticlePodcast(feedID, article.articleID, article.downloadPath);
         article.downloadPath = null;
+        // Keep the canonical this.feeds copy in sync (see docstring).
+        const canonical = feedID ? this.findArticle(feedID, article.articleID) : null;
+        if (canonical) {
+          canonical.downloadPath = null;
+        }
       }
       this.renderFeeds();
     } catch (error) {
@@ -7137,6 +7149,14 @@ class RSSFeedComponent extends DataroomElement {
         // article's denormalized download pointer in one step.
         await deleteArticleYouTubeVideo(feedID, article.articleID, article.downloadPath);
         article.downloadPath = null;
+        // Keep the canonical this.feeds copy in sync: view entries carry
+        // their own article copies, so patching only this one would leave
+        // stale "Downloaded ✓" state behind in views that list read
+        // articles (Read Later, starred). Same treatment as podcast deletes.
+        const canonical = feedID ? this.findArticle(feedID, article.articleID) : null;
+        if (canonical) {
+          canonical.downloadPath = null;
+        }
         await this._refreshVideosReadyBadge();
       }
       if (feedID) {

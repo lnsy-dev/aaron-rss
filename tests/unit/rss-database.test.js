@@ -67,7 +67,7 @@ describe('rss database helpers', () => {
     await db.initRSSSchema();
 
     const actions = FakeWorker.instance.messages.map((m) => m.action);
-    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
+    expect(actions).toEqual(['exec', 'query', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'exec', 'query', 'exec', 'exec', 'exec', 'exec']);
 
     const tables = FakeWorker.instance.messages.map((m) => m.params.sql);
     expect(tables[0]).toContain('CREATE TABLE IF NOT EXISTS feeds');
@@ -98,9 +98,14 @@ describe('rss database helpers', () => {
     expect(tables[22]).toContain('INSERT OR IGNORE INTO downloaded_videos');
     expect(tables[22]).toContain('FROM articles');
     expect(tables[22]).toContain('download_path IS NOT NULL');
-    expect(tables[23]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
-    expect(tables[24]).toContain('PRAGMA table_info(research_topics)');
-    expect(tables[25]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
+    // Podcast episodes must never be backfilled into the video queue.
+    expect(tables[22]).toContain('enclosure_url IS NOT NULL');
+    // Follow-up cleanup removes rows the pre-podcast backfill created.
+    expect(tables[23]).toContain('DELETE FROM downloaded_videos');
+    expect(tables[23]).toContain('file_path = youtube_url');
+    expect(tables[24]).toContain('CREATE TABLE IF NOT EXISTS research_topics');
+    expect(tables[25]).toContain('PRAGMA table_info(research_topics)');
+    expect(tables[26]).toContain('ALTER TABLE research_topics ADD COLUMN summary');
   });
 
   it('skips migrations when all optional columns already exist', async () => {
@@ -162,9 +167,10 @@ describe('rss database helpers', () => {
     const actions = FakeWorker.instance.messages.map((m) => m.action);
     expect(actions).toEqual([
       'exec', 'query', 'exec', 'query', 'exec', 'exec', 'exec', 'exec', 'query', 'exec',
-      // Research Topics, article markdown, and clear-memory tables close
-      // out the schema init (the summary column exists, so no ALTER).
-      'exec', 'query', 'exec', 'exec', 'exec',
+      // The podcast-ghost cleanup follows the backfill; Research Topics,
+      // article markdown, and clear-memory tables close out the schema
+      // init (the summary column exists, so no ALTER).
+      'exec', 'exec', 'query', 'exec', 'exec', 'exec',
     ]);
 
     const alterMessages = FakeWorker.instance.messages.filter((m) =>
@@ -406,6 +412,70 @@ describe('rss database helpers', () => {
     expect(message.params.sql).toContain('download_path = ?');
     expect(message.params.sql).toContain('WHERE feed_id = ? AND article_id = ?');
     expect(message.params.params).toEqual(['/downloads/video.mp4', 'feed123', 'art1']);
+  });
+
+  it('deleteDownloadedVideoRecordsForArticleID deletes every queue row for the article id', async () => {
+    const db = await importDatabaseModule();
+    await db.deleteDownloadedVideoRecordsForArticleID('art1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toBe('DELETE FROM downloaded_videos WHERE article_id = ?');
+    expect(message.params.params).toEqual(['art1']);
+  });
+
+  it('initRSSSchema excludes podcast episodes from the downloaded_videos backfill', async () => {
+    FakeWorker.onMessage = (m) => {
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(feeds)') {
+        return { id: m.id, ok: true, result: [{ name: 'feed_id' }] };
+      }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(articles)') {
+        return { id: m.id, ok: true, result: [{ name: 'article_id' }] };
+      }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(downloaded_videos)') {
+        return { id: m.id, ok: true, result: [{ name: 'video_id' }] };
+      }
+      return { id: m.id, ok: true, result: null };
+    };
+
+    const db = await importDatabaseModule();
+    await db.initRSSSchema();
+
+    const backfill = FakeWorker.instance.messages.find((m) =>
+      m.params.sql?.includes('INSERT OR IGNORE INTO downloaded_videos')
+    );
+    expect(backfill).toBeTruthy();
+    // The exclusion must run before the row is selected, not after.
+    expect(backfill.params.sql).toMatch(
+      /download_path IS NOT NULL AND download_path != ''\s*\n\s*AND NOT \(enclosure_url IS NOT NULL AND enclosure_url != ''\)/
+    );
+  });
+
+  it('initRSSSchema cleans up backfilled podcast rows from downloaded_videos', async () => {
+    FakeWorker.onMessage = (m) => {
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(feeds)') {
+        return { id: m.id, ok: true, result: [{ name: 'feed_id' }] };
+      }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(articles)') {
+        return { id: m.id, ok: true, result: [{ name: 'article_id' }] };
+      }
+      if (m.action === 'query' && m.params.sql === 'PRAGMA table_info(downloaded_videos)') {
+        return { id: m.id, ok: true, result: [{ name: 'video_id' }] };
+      }
+      return { id: m.id, ok: true, result: null };
+    };
+
+    const db = await importDatabaseModule();
+    await db.initRSSSchema();
+
+    const cleanup = FakeWorker.instance.messages.find((m) =>
+      m.params.sql?.startsWith('DELETE FROM downloaded_videos')
+    );
+    expect(cleanup).toBeTruthy();
+    // Only rows whose stored URL equals the article's download_path are
+    // backfill artifacts; genuine yt-dlp rows carry the video URL.
+    expect(cleanup.params.sql).toContain('file_path = youtube_url');
+    expect(cleanup.params.sql).toContain('a.enclosure_url IS NOT NULL');
   });
 
   it('recordDownloadedVideo inserts a row with bound params and generated id', async () => {

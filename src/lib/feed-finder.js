@@ -3,12 +3,21 @@
  *
  * Discovers RSS/Atom/JSON Feed URLs from a website. Tries the URL as-is,
  * parses `<link>` tags in the HTML, probes common feed paths, and handles
- * a few well-known site special cases.
+ * a few well-known site special cases (YouTube channels, Bluesky and
+ * Mastodon profiles, BBC).
  */
 
 import { fetchText } from './rss-network.js';
 import { parseFeedText } from './rss-parser.js';
 import { decodeHTMLEntities } from './html-utils.js';
+import {
+  buildYouTubeChannelFeedURLCandidates,
+  extractYouTubeChannelFeedID,
+  extractYouTubeChannelReference,
+  extractYouTubeChannelIDFromHTML,
+  extractYouTubeChannelTitle,
+  extractYouTubeRSSLink,
+} from './youtube.js';
 
 const COMMON_FEED_PATHS = [
   '/rss',
@@ -158,7 +167,8 @@ function isJSONFeedDocument(text) {
 /**
  * Discover feeds for well-known social media profile URLs.
  *
- * Bluesky and Mastodon expose standard RSS/Atom feeds for profiles, but
+ * Bluesky and Mastodon expose standard RSS/Atom feeds for profiles, and
+ * YouTube channels publish their feed URL in the channel page HTML, but
  * those feeds are not always discoverable via generic `<link>` tags or
  * common feed paths. This helper maps profile URLs directly to their
  * canonical feed URLs and validates them before returning.
@@ -172,7 +182,12 @@ async function trySocialMediaFeeds(url) {
     return blueskyFeeds;
   }
 
-  return tryMastodonFeed(url);
+  const mastodonFeeds = await tryMastodonFeed(url);
+  if (mastodonFeeds.length > 0) {
+    return mastodonFeeds;
+  }
+
+  return tryYouTubeChannelFeed(url);
 }
 
 /**
@@ -204,6 +219,95 @@ async function tryBlueskyFeed(url) {
     }
   } catch {
     // invalid URL
+  }
+
+  return [];
+}
+
+/**
+ * Map a YouTube channel URL to its RSS feed.
+ *
+ * Accepts every channel-page shape YouTube serves (/@handle, the
+ * canonical /channel/UC..., and the legacy /c/ and /user/ forms) as well
+ * as direct feeds/videos.xml URLs.
+ *
+ * /channel/UC... URLs and feed URLs resolve locally: the channel ID is
+ * already in the path or query string. @handle, /c/ and /user/ pages are
+ * resolved from their HTML, which advertises the canonical feed URL of
+ * the page's channel — authoritative even when the page JSON mentions
+ * other channel IDs first (e.g. the featured video's channel on @handle
+ * pages).
+ *
+ * The channel's candidate feed URLs (canonical channel_id, then the
+ * uploads-playlist twins) are probed and, when one answers, the
+ * canonical channel_id URL is returned — identity stays canonical even
+ * while YouTube's channel_id feeds 404, so add and refresh can
+ * transparently fetch a working candidate instead (see
+ * fetchFeedCandidates). When no candidate answers nothing is returned
+ * and the generic discovery paths continue.
+ *
+ * @param {string} url
+ * @returns {Promise<Array<object>>}
+ */
+async function tryYouTubeChannelFeed(url) {
+  let channelID = null;
+  let title = null;
+
+  const reference = extractYouTubeChannelReference(url);
+  if (reference?.kind === 'channelID') {
+    channelID = reference.value;
+  }
+  if (!channelID) {
+    // A feeds/videos.xml URL already names its channel.
+    channelID = extractYouTubeChannelFeedID(url);
+  }
+
+  // @handle, /c/ and /user/ forms: resolve through the channel page.
+  if (!channelID && reference) {
+    try {
+      const response = await fetchText(url);
+      if (response.ok) {
+        const html = response.text || '';
+        title = extractYouTubeChannelTitle(html);
+
+        // The advertised feed URL names the page's channel authoritatively;
+        // other channel IDs can appear earlier in the page JSON (e.g. the
+        // featured video's channel on @handle pages).
+        const rssLink = extractYouTubeRSSLink(html);
+        if (rssLink) {
+          try {
+            channelID = new URL(rssLink, url).searchParams.get('channel_id') || null;
+          } catch {
+            channelID = null;
+          }
+        }
+
+        // Page advertises no RSS link: fall back to the page's own
+        // channel ID from its embedded JSON.
+        if (!channelID) {
+          channelID = extractYouTubeChannelIDFromHTML(html);
+        }
+      }
+    } catch {
+      // Network failure: leave resolution to the generic discovery paths.
+    }
+  }
+
+  if (!channelID) {
+    return [];
+  }
+
+  // Probe the canonical URL first, then the uploads-playlist twins; if
+  // any candidate answers, report the canonical channel_id URL. The
+  // identity that lands in the subscription list must not depend on
+  // which shape happens to be up, or the same channel could end up
+  // subscribed twice under different URLs — add/refresh fetch through
+  // the working candidate instead (see fetchFeedCandidates).
+  const candidates = buildYouTubeChannelFeedURLCandidates(channelID);
+  for (const candidate of candidates) {
+    if (await isFeedURL(candidate)) {
+      return [{ url: candidates[0], title: title || undefined, score: 95 }];
+    }
   }
 
   return [];

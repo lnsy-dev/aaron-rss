@@ -30,6 +30,7 @@ vi.mock('../../src/lib/database.js', () => ({
   getDownloadedVideoForURL: vi.fn(),
   deleteDownloadedVideosForArticle: vi.fn(),
   deleteDownloadedVideosForFeed: vi.fn(),
+  deleteDownloadedVideoRecordsForArticleID: vi.fn(),
   listFeedIDsInResearchTopics: vi.fn(),
   saveArticleMarkdown: vi.fn(),
   listClearedUniqueIDs: vi.fn(),
@@ -990,6 +991,27 @@ describe('feed manager', () => {
       expect(deleteDownloadedPodcast).toHaveBeenCalledWith('/downloads/Aaron-RSS-Podcasts/dangling.mp3');
       expect(updateArticleStatus).not.toHaveBeenCalled();
     });
+
+    it('deleteArticlePodcast removes stale downloaded_videos rows for the episode', async () => {
+      const { deleteDownloadedVideoRecordsForArticleID } = await import('../../src/lib/database.js');
+      const { deleteArticlePodcast } = await importFeedManager();
+
+      await deleteArticlePodcast('feed-podcast', 'ep1', '/downloads/Aaron-RSS-Podcasts/Episode 1.mp3');
+
+      // Podcast downloads are never recorded in the video queue; any row
+      // carrying the article id is a stale backfill artifact whose only
+      // effect was listing the episode in the Videos view.
+      expect(deleteDownloadedVideoRecordsForArticleID).toHaveBeenCalledWith('ep1');
+    });
+
+    it('deleteArticlePodcast still clears stale queue rows when the feed row is gone', async () => {
+      const { deleteDownloadedVideoRecordsForArticleID } = await import('../../src/lib/database.js');
+      const { deleteArticlePodcast } = await importFeedManager();
+
+      await deleteArticlePodcast(null, 'ep-dangling', '/downloads/Aaron-RSS-Podcasts/dangling.mp3');
+
+      expect(deleteDownloadedVideoRecordsForArticleID).toHaveBeenCalledWith('ep-dangling');
+    });
   });
 
   describe('snapshot feeds (watched pages)', () => {
@@ -1339,6 +1361,94 @@ describe('feed manager', () => {
       await expect(subscribeToYouTubeChannelFeed('UCabc123def456')).rejects.toThrow(
         /Could not fetch the channel feed/
       );
+    });
+  });
+
+  describe('YouTube feed-URL fallback (channel_id 404 outages)', () => {
+    const CANONICAL_URL = 'https://www.youtube.com/feeds/videos.xml?channel_id=UCabc123def456';
+    const UU_URL = 'https://www.youtube.com/feeds/videos.xml?playlist_id=UUabc123def456';
+    const UULF_URL = 'https://www.youtube.com/feeds/videos.xml?playlist_id=UULFabc123def456';
+
+    it('addFeed fetches uploads-playlist twins when the canonical feed 404s', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url === CANONICAL_URL) {
+          return { ok: false, status: 404, text: 'Not Found' };
+        }
+        if (url === UU_URL) {
+          return { ok: true, status: 200, text: '<feed/>' };
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      parseFeedText.mockResolvedValue({ title: 'Channel Feed', items: [] });
+
+      const { addFeed } = await importFeedManager();
+      const feed = await addFeed(CANONICAL_URL);
+
+      expect(feed).not.toBeNull();
+      // Canonical first, then the UU twin; UULF never needed.
+      expect(fetchText.mock.calls.map(([url]) => url)).toEqual([CANONICAL_URL, UU_URL]);
+      // The feed is still stored under the canonical URL the user asked
+      // for, so channel-ID subscription checks keep matching.
+      expect(feed.url).toBe(CANONICAL_URL);
+      expect(parseFeedText).toHaveBeenCalledWith('<feed/>', CANONICAL_URL);
+    });
+
+    it('addFeed keeps the canonical URL when it works', async () => {
+      fetchText.mockImplementation(async (url) => {
+        if (url === CANONICAL_URL) {
+          return { ok: true, status: 200, text: '<feed/>' };
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      parseFeedText.mockResolvedValue({ title: 'Channel Feed', items: [] });
+
+      const { addFeed } = await importFeedManager();
+      const feed = await addFeed(CANONICAL_URL);
+
+      expect(feed).not.toBeNull();
+      expect(fetchText).toHaveBeenCalledTimes(1);
+      expect(feed.url).toBe(CANONICAL_URL);
+    });
+
+    it('addFeed returns null when every candidate fails', async () => {
+      fetchText.mockResolvedValue({ ok: false, status: 404, text: 'Not Found' });
+
+      const { addFeed } = await importFeedManager();
+      const feed = await addFeed(CANONICAL_URL);
+
+      expect(feed).toBeNull();
+      expect(fetchText.mock.calls.map(([url]) => url)).toEqual([CANONICAL_URL, UU_URL, UULF_URL]);
+      expect(saveFeed).not.toHaveBeenCalled();
+    });
+
+    it('addFeed never adds fallback candidates for non-YouTube feeds', async () => {
+      fetchText.mockResolvedValue({ ok: false, status: 404, text: 'Not Found' });
+
+      const { addFeed } = await importFeedManager();
+      await addFeed('https://example.com/rss.xml');
+
+      expect(fetchText).toHaveBeenCalledTimes(1);
+    });
+
+    it('subscribeToYouTubeChannelFeed succeeds via the uploads twin during an outage', async () => {
+      loadFeed.mockResolvedValue(null);
+      fetchText.mockImplementation(async (url) => {
+        if (url === CANONICAL_URL) {
+          return { ok: false, status: 404, text: 'Not Found' };
+        }
+        if (url === UU_URL) {
+          return { ok: true, status: 200, text: '<feed/>' };
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      parseFeedText.mockResolvedValue({ title: 'Rss: Example Channel', items: [] });
+
+      const { subscribeToYouTubeChannelFeed } = await importFeedManager();
+      const result = await subscribeToYouTubeChannelFeed('UCabc123def456', 'Example Channel');
+
+      expect(result).toEqual({ subscribed: true, name: 'Example Channel' });
+      const savedFeed = saveFeed.mock.calls[0][0];
+      expect(savedFeed.url).toBe(CANONICAL_URL);
     });
   });
 

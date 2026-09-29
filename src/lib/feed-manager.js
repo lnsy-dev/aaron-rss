@@ -32,6 +32,7 @@ import {
   loadDownloadedArticles as dbLoadDownloadedArticles,
   loadReadLaterArticles as dbLoadReadLaterArticles,
   loadDownloadedPodcastArticles as dbLoadDownloadedPodcastArticles,
+  deleteDownloadedVideoRecordsForArticleID as dbDeleteDownloadedVideoRecordsForArticleID,
   listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
   saveArticleMarkdown as dbSaveArticleMarkdown,
   listClearedUniqueIDs as dbListClearedUniqueIDs,
@@ -48,7 +49,7 @@ import { refreshFeedInWorker } from './feed-refresh-bridge.js';
 import { enrichBlueskyFeedItems } from './social-post.js';
 import { downloadYouTubeVideo, deleteDownloadedVideo } from './youtube-bridge.js';
 import { downloadPodcastFile, deleteDownloadedPodcast } from './podcast-bridge.js';
-import { isYouTubeURL, isYouTubeStream, buildYouTubeChannelFeedURL, extractYouTubeChannelFeedID } from './youtube.js';
+import { isYouTubeURL, isYouTubeStream, buildYouTubeChannelFeedURL, buildYouTubeChannelFeedURLCandidates, extractYouTubeChannelFeedID } from './youtube.js';
 import { isPodcastEpisode, suggestPodcastFileName } from './podcast.js';
 import { extractArticle } from './article-extractor.js';
 
@@ -87,9 +88,12 @@ export async function addFeed(url, name, synthetic = false) {
     if (synthetic) {
       parsedFeed = await generateRSSFromHTML(url);
     } else {
-      const response = await fetchText(url);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch feed (${url}): HTTP ${response.status}`);
+      // Try known fallbacks (e.g. YouTube uploads-playlist feeds during
+      // channel_id outages) but keep the requested URL as the feed's
+      // identity, so channel-ID-based subscription checks stay correct.
+      const response = await fetchFeedCandidates(url);
+      if (!response) {
+        throw new Error(`Failed to fetch feed (${url})`);
       }
       parsedFeed = await parseFeedText(response.text, url);
     }
@@ -134,6 +138,54 @@ export async function discoverAndAddFeed(url) {
 
   const best = discovered[0];
   return addFeed(best.url, best.title, best.synthetic);
+}
+
+/**
+ * Fetch a feed URL, falling back to known alternates when it fails.
+ *
+ * YouTube's channel_id feeds intermittently answer 404 fleet-wide while
+ * the identical uploads feed keyed by playlist IDs keeps working (see
+ * buildYouTubeChannelFeedURLCandidates). The first candidate that
+ * answers ok wins; the feed is still stored under the originally
+ * requested URL, so channel-ID-based subscription checks keep working.
+ * Everything else — non-YouTube URLs, single-candidate inputs,
+ * challenges — behaves exactly like a plain fetchText.
+ *
+ * @param {string} url - Feed URL to fetch
+ * @returns {Promise<{ok: boolean, status: number, text: string}|null>}
+ *   The first ok response, or null when every candidate failed
+ */
+async function fetchFeedCandidates(url) {
+  for (const candidate of collectFeedURLCandidates(url)) {
+    const response = await fetchText(candidate);
+    if (response.ok) {
+      return response;
+    }
+  }
+  return null;
+}
+
+/**
+ * Collect the fetch candidates for a feed URL, best first.
+ *
+ * The canonical URL always comes first, so a healthy YouTube feed server
+ * keeps serving the exact URL the user subscribed to; alternates only
+ * matter when the canonical request fails.
+ *
+ * @param {string} url - Feed URL to fetch
+ * @returns {Array<string>} Candidate URLs
+ */
+function collectFeedURLCandidates(url) {
+  const candidates = [url];
+  const channelID = extractYouTubeChannelFeedID(url);
+  if (channelID) {
+    for (const alternate of buildYouTubeChannelFeedURLCandidates(channelID)) {
+      if (alternate !== url && !candidates.includes(alternate)) {
+        candidates.push(alternate);
+      }
+    }
+  }
+  return candidates;
 }
 
 /**
@@ -302,7 +354,9 @@ async function parseAndEnrichBlueskyFeed(feedURL, feedText) {
  * through the bridge relay and the main thread only persists the result.
  * Bluesky feeds are the one exception: their per-item enrichment needs
  * the main thread, so they fetch and parse there (as before) and hand a
- * pre-parsed feed to the worker for merging.
+ * pre-parsed feed to the worker for merging. The worker itself falls
+ * back to known alternate feed URLs (YouTube uploads-playlist twins)
+ * when a canonical channel_id fetch fails.
  *
  * @param {string} feedID
  * @param {number} maxArticles
@@ -334,7 +388,9 @@ export async function refreshFeed(feedID, maxArticles = 50) {
     } else {
       // The worker fetches the source itself through the relay; watched-
       // page feeds hand it the stored snapshot so the fetched HTML is
-      // link-diffed against it.
+      // link-diffed against it. The worker itself falls back to known
+      // alternate URLs (YouTube uploads-playlist twins) when the stored
+      // canonical URL fails.
       workerParams = {
         fetchFromURL: existingFeed.url,
         snapshotLinks: snapshot ? snapshot.links : undefined,
@@ -754,6 +810,12 @@ export async function downloadArticlePodcast(feed, article, onProgress = null) {
  * Delete a downloaded podcast file and clear the article's download
  * pointer so the UI stops showing "Downloaded ✓".
  *
+ * Also removes any downloaded_videos queue row carrying the article's
+ * id: podcast downloads are never recorded in the queue, so such a row
+ * can only be a stale artifact of the pre-podcast backfill migration —
+ * left alone it would keep the episode listed in the Videos view (and
+ * hidden from the main feed) after its audio was deleted.
+ *
  * @param {string|null} feedID - Null when the feed row is gone; the
  *   file is still removed.
  * @param {string} articleID
@@ -774,6 +836,15 @@ export async function deleteArticlePodcast(feedID, articleID, filePath) {
       await dbUpdateArticleStatus(feedID, articleID, { downloadPath: null });
     } catch (error) {
       console.error('Failed to clear downloaded podcast record:', error);
+    }
+  }
+  // Only needs the article id: stale backfill rows are matched by id, so
+  // this also runs for dangling episodes whose feed row is already gone.
+  if (articleID) {
+    try {
+      await dbDeleteDownloadedVideoRecordsForArticleID(articleID);
+    } catch (error) {
+      console.error('Failed to remove stale video-queue row for podcast:', error);
     }
   }
 }

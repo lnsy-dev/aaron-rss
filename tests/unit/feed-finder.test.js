@@ -271,4 +271,166 @@ describe('feed-finder', () => {
 
     expect(Array.isArray(feeds)).toBe(true);
   });
+
+  describe('YouTube channel feeds', () => {
+    const CHANNEL_ID = 'UCfeed1111111111111111';
+    const CANONICAL_FEED_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
+    const channelPageHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Test Channel - YouTube</title>
+          <meta property="og:title" content="Test Channel">
+          <link rel="canonical" href="https://www.youtube.com/channel/${CHANNEL_ID}">
+          <link rel="alternate" type="application/rss+xml" title="RSS" href="${CANONICAL_FEED_URL}">
+        </head>
+        <body></body>
+      </html>
+    `;
+    const channelRss = `
+      <?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Test Channel</title>
+        <link href="https://www.youtube.com/channel/${CHANNEL_ID}"/>
+      </feed>
+    `;
+
+    function mockYouTubeFetch({ canonical = 'ok', uu = 'ok', uulf = 'not-found' } = {}) {
+      const uuUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=UU${CHANNEL_ID.slice(2)}`;
+      const uulfUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=UULF${CHANNEL_ID.slice(2)}`;
+
+      fetch.mockImplementation(async (url) => {
+        if (url === CANONICAL_FEED_URL) {
+          return canonical === 'ok'
+            ? mockFetchResponse(channelRss, 'application/atom+xml')
+            : mockNotFound();
+        }
+        if (url === uuUrl) {
+          return uu === 'ok' ? mockFetchResponse(channelRss, 'application/atom+xml') : mockNotFound();
+        }
+        if (url === uulfUrl) {
+          return uulf === 'ok' ? mockFetchResponse(channelRss, 'application/atom+xml') : mockNotFound();
+        }
+        if (url.startsWith('https://www.youtube.com/@')) {
+          return mockFetchResponse(channelPageHtml);
+        }
+        return mockNotFound();
+      });
+    }
+
+    it('discovers an @handle channel feed via the page\'s advertised RSS link', async () => {
+      mockYouTubeFetch();
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/@SomeChannel');
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+      expect(feeds[0].title).toBe('Test Channel');
+    });
+
+    it('resolves an @handle page without an RSS link via the page channel id', async () => {
+      fetch.mockImplementation(async (url) => {
+        if (url === CANONICAL_FEED_URL) {
+          return mockFetchResponse(channelRss, 'application/atom+xml');
+        }
+        if (url.startsWith('https://www.youtube.com/@')) {
+          // No <link rel=alternate> tag; the page JSON names the channel.
+          return mockFetchResponse(
+            `<html><head><meta property="og:title" content="Test Channel"></head>` +
+            `<body><script>{"externalId":"${CHANNEL_ID}"}</script></body></html>`
+          );
+        }
+        return mockNotFound();
+      });
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/@SomeChannel');
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+    });
+
+    it('ignores unrelated channel ids mentioned on @handle pages', async () => {
+      // @handle pages mention other channels' IDs (e.g. the featured
+      // video's channel) before the page's own; the advertised RSS link
+      // must win over the first channelId in the JSON.
+      fetch.mockImplementation(async (url) => {
+        if (url === CANONICAL_FEED_URL) {
+          return mockFetchResponse(channelRss, 'application/atom+xml');
+        }
+        if (url.startsWith('https://www.youtube.com/@')) {
+          return mockFetchResponse(
+            `<html><body><script>{"channelId":"UCdecoy000000000000000","externalId":"${CHANNEL_ID}"}` +
+            `</script></body></html>`
+          );
+        }
+        return mockNotFound();
+      });
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/@SomeChannel');
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+    });
+
+    it('reports the canonical feed URL even when only the uploads twin answers', async () => {
+      // While YouTube's channel_id feeds 404, the uploads playlist twin
+      // keeps working — discovery must still land the canonical URL as
+      // the subscription identity.
+      mockYouTubeFetch({ canonical: 'not-found', uu: 'ok' });
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/@SomeChannel');
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+    });
+
+    it('rescues a direct channel_id feed URL that is currently 404ing', async () => {
+      mockYouTubeFetch({ canonical: 'not-found', uu: 'ok' });
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds(CANONICAL_FEED_URL);
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+    });
+
+    it('resolves /channel/UC... URLs without fetching the channel page', async () => {
+      mockYouTubeFetch();
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds(`https://www.youtube.com/channel/${CHANNEL_ID}`);
+
+      expect(feeds).toHaveLength(1);
+      expect(feeds[0].url).toBe(CANONICAL_FEED_URL);
+      // The page URL is probed once by the generic input check; channel
+      // resolution itself builds the feed URL from the path without a
+      // second page fetch.
+      const pageFetches = fetch.mock.calls.filter(
+        ([url]) => url === `https://www.youtube.com/channel/${CHANNEL_ID}`
+      );
+      expect(pageFetches).toHaveLength(1);
+    });
+
+    it('finds nothing when no candidate feed answers', async () => {
+      mockYouTubeFetch({ canonical: 'not-found', uu: 'not-found', uulf: 'not-found' });
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/@SomeChannel');
+
+      expect(feeds).toHaveLength(0);
+    });
+
+    it('does not treat non-channel YouTube URLs as channel feeds', async () => {
+      fetch.mockImplementation(async () => mockNotFound());
+
+      const { findFeeds } = await importFeedFinder();
+      const feeds = await findFeeds('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+
+      expect(feeds).toHaveLength(0);
+    });
+  });
 });

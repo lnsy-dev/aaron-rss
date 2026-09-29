@@ -217,6 +217,199 @@ export function buildYouTubeChannelFeedURL(channelID) {
 }
 
 /**
+ * Classify the channel reference carried by a YouTube channel-page URL.
+ *
+ * Recognizes the four path shapes YouTube uses for channels: the modern
+ * @handle form, the canonical /channel/UC... form, and the legacy
+ * /c/vanity and /user/username forms. The value is the last path
+ * segment, percent-decoded; validation of handle/ID shapes is left to
+ * the resolvers that consume it.
+ *
+ * @param {string} url - Any www.youtube.com URL
+ * @returns {{kind: 'channelID'|'handle'|'legacy', value: string}|null}
+ *   The reference, or null when the URL is not a YouTube channel page
+ */
+export function extractYouTubeChannelReference(url) {
+  if (!url || typeof url !== 'string') {
+    return null;
+  }
+
+  let urlObj;
+  try {
+    urlObj = new URL(url);
+  } catch {
+    return null;
+  }
+
+  if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+    return null;
+  }
+
+  const hostname = urlObj.hostname.toLowerCase();
+  if (hostname !== 'www.youtube.com' && hostname !== 'youtube.com' && hostname !== 'm.youtube.com') {
+    return null;
+  }
+
+  const segments = urlObj.pathname.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const first = segments[0];
+  let value;
+  try {
+    value = decodeURIComponent(first);
+  } catch {
+    value = first;
+  }
+
+  if (value.startsWith('@')) {
+    return { kind: 'handle', value: value.slice(1) };
+  }
+  if ((first === 'channel' || first === 'c' || first === 'user') && segments.length > 1) {
+    let reference;
+    try {
+      reference = decodeURIComponent(segments[1]);
+    } catch {
+      reference = segments[1];
+    }
+    if (first === 'channel') {
+      return CHANNEL_ID_REGEX.test(reference) ? { kind: 'channelID', value: reference } : null;
+    }
+    return { kind: 'legacy', value: reference };
+  }
+
+  return null;
+}
+
+/**
+ * Extract the canonical channel RSS feed URL from a YouTube channel page.
+ *
+ * YouTube embeds the feed URL of the page's channel in its HTML in
+ * several places: an <link rel="alternate" type="application/rss+xml">
+ * tag and a "rssUrl" field in the page JSON. Resolving feeds from this
+ * tag (instead of guessing IDs from path segments) is authoritative —
+ * notably /@handle pages can also mention other channel IDs (e.g. a
+ * featured video's channel), which must not be mistaken for the page's
+ * channel. /channel/UC... pages carry no such ambiguity.
+ *
+ * @param {string} html - Raw HTML of a YouTube channel page
+ * @returns {string|null} The advertised feeds/videos.xml URL, or null
+ */
+export function extractYouTubeRSSLink(html) {
+  if (!html || typeof html !== 'string') {
+    return null;
+  }
+
+  // Preferred: the <link rel="alternate" type="application/rss+xml">
+  // tag. Attributes may appear in any order, so match the tag first and
+  // pull the href out of the tag snippet.
+  const linkTag = html.match(/<link\b[^>]*type=["']application\/rss\+xml["'][^>]*>/i);
+  if (linkTag) {
+    const href = linkTag[0].match(/href=["']([^"']+)["']/i);
+    if (href) {
+      return href[1];
+    }
+  }
+
+  // Fallback: the "rssUrl" field in the page's embedded JSON.
+  const rssURL = html.match(/["']rssUrl["']\s*:\s*["']([^"']+)["']/);
+  if (rssURL) {
+    return rssURL[1];
+  }
+
+  return null;
+}
+
+/**
+ * Extract the page's own channel ID from a YouTube channel page.
+ *
+ * Last-resort resolution for channel pages that advertise no RSS link:
+ * prefers the "externalId" field (the page channel's ID) over a bare
+ * "channelId", which on @handle pages can belong to an unrelated
+ * embedded entity (e.g. the featured video's channel).
+ *
+ * @param {string} html - Raw HTML of a YouTube channel page
+ * @returns {string|null} The UC... channel ID, or null
+ */
+export function extractYouTubeChannelIDFromHTML(html) {
+  if (!html || typeof html !== 'string') {
+    return null;
+  }
+
+  const external = html.match(/["']externalId["']\s*:\s*["'](UC[A-Za-z0-9_-]+)["']/);
+  if (external) {
+    return external[1];
+  }
+
+  const canonical = html.match(/["']channelId["']\s*:\s*["'](UC[A-Za-z0-9_-]+)["']/);
+  if (canonical) {
+    return canonical[1];
+  }
+
+  return null;
+}
+
+/**
+ * Extract the human-readable channel title from a YouTube channel page.
+ *
+ * Reads the og:title meta tag (either attribute order), falling back to
+ * the <title> element. HTML entities are decoded; the result labels the
+ * discovered feed.
+ *
+ * @param {string} html - Raw HTML of a YouTube channel page
+ * @returns {string|null} The channel title, or null when absent
+ */
+export function extractYouTubeChannelTitle(html) {
+  if (!html || typeof html !== 'string') {
+    return null;
+  }
+
+  const patterns = [
+    /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i,
+    /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:title["']/i,
+    /<title[^>]*>([^<]*)<\/title>/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match && match[1].trim()) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Build the candidate feed URLs for a YouTube channel, best first.
+ *
+ * YouTube's feed server has been intermittently answering 404 for the
+ * classic channel_id feeds (the "RSS feeds are down" outages of 2024
+ * and 2026), sometimes shape-specifically. The same server keeps
+ * serving the channel's uploads feed keyed by uploads playlist IDs,
+ * which are the channel ID with the UC prefix replaced: UU (all
+ * uploads, the same items as the channel_id feed) and UULF (long-form
+ * uploads only, shorts filtered). Callers use these as fallbacks when
+ * the canonical URL fails, so subscriptions and refreshes survive the
+ * outage without changing what "subscribing to a channel" means.
+ *
+ * @param {string} channelID - Channel ID (UC...)
+ * @returns {Array<string>} Feed URLs, canonical first
+ */
+export function buildYouTubeChannelFeedURLCandidates(channelID) {
+  if (!channelID || !CHANNEL_ID_REGEX.test(channelID)) {
+    return [];
+  }
+  const uploads = channelID.slice(2);
+  return [
+    buildYouTubeChannelFeedURL(channelID),
+    `https://www.youtube.com/feeds/videos.xml?playlist_id=UU${uploads}`,
+    `https://www.youtube.com/feeds/videos.xml?playlist_id=UULF${uploads}`,
+  ];
+}
+
+/**
  * Extract a channel ID from a YouTube channel RSS feed URL.
  *
  * Inverse of buildYouTubeChannelFeedURL: lets the subscription check

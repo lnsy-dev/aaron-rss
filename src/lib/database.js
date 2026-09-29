@@ -467,12 +467,37 @@ export async function initRSSSchema() {
   // the downloaded_videos table existed. The UNIQUE constraints make this
   // idempotent — paths/records already in the table are skipped, so it can
   // run on every startup without duplicating rows.
+  //
+  // Podcast episodes are excluded: their downloads are recorded only on
+  // the article's own download_path column (never in this queue), so
+  // backfilling them would list every downloaded episode in the Videos
+  // view. The cleanup migration below removes rows the old version of
+  // this backfill wrongly created.
   await callWorker('exec', {
     sql: `INSERT OR IGNORE INTO downloaded_videos
       (video_id, feed_id, article_id, youtube_url, file_path, title, downloaded_at, file_size_bytes)
       SELECT lower(hex(randomblob(16))), feed_id, article_id, url, download_path, title, date_arrived, NULL
       FROM articles
-      WHERE download_path IS NOT NULL AND download_path != ''`,
+      WHERE download_path IS NOT NULL AND download_path != ''
+        AND NOT (enclosure_url IS NOT NULL AND enclosure_url != '')`,
+  });
+
+  // Cleanup migration: rows the pre-podcast backfill copied from podcast
+  // episodes. Those rows hijacked the articles into the Videos view (and
+  // hid them from the main feed via the ready-video exclusion) even
+  // though podcast episodes are managed solely through download_path.
+  // Match the backfill's source condition — enclosure_url present and the
+  // row's stored URL equals the article's download_path — so genuine
+  // yt-dlp video rows (whose youtube_url is a real video URL) survive.
+  // Runs on every startup and no-ops once nothing matches.
+  await callWorker('exec', {
+    sql: `DELETE FROM downloaded_videos
+      WHERE file_path IN (
+        SELECT a.download_path FROM articles a
+        WHERE a.download_path IS NOT NULL AND a.download_path != ''
+          AND a.enclosure_url IS NOT NULL AND a.enclosure_url != ''
+      )
+      AND file_path = youtube_url`,
   });
 
   // Research Topics: named groups of feeds scraped together. Membership
@@ -1701,6 +1726,26 @@ export async function deleteDownloadedVideosForArticle(feedID, articleID) {
   await callWorker('exec', {
     sql: 'DELETE FROM downloaded_videos WHERE feed_id = ? AND article_id = ?',
     params: [feedID, articleID],
+  });
+}
+
+/**
+ * Delete the downloaded_videos row for one article by its article_id
+ * alone, regardless of which feed the queue row points at.
+ *
+ * Podcast deletes use this: a podcast episode never legitimately has a
+ * queue row (podcast downloads are recorded only on the article's
+ * download_path), so any row carrying the article's id is a stale
+ * backfill artifact to remove — including dangling rows whose feed_id
+ * no longer matches the article's current feed.
+ *
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteDownloadedVideoRecordsForArticleID(articleID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM downloaded_videos WHERE article_id = ?',
+    params: [articleID],
   });
 }
 

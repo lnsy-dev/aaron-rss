@@ -141,6 +141,29 @@ test.describe('podcast detection and download', () => {
     expect(storedPath).toBe('Episode 1 The Beginning.mp3');
   });
 
+  test('deleting a downloaded episode restores the Download Podcast action', async ({ page }) => {
+    await seedPodcastFeed(page);
+
+    const episode = page.locator('.rss-article[data-article-id="ep1"]');
+    await episode.locator('[data-action="download-podcast"]').click();
+    await expect(episode.locator('[data-action="download-podcast"]')).toHaveText(
+      'Downloaded ✓',
+      { timeout: 15000 }
+    );
+    await expect(episode.locator('[data-action="delete-podcast"]')).toHaveText('Delete Audio');
+
+    await episode.locator('[data-action="delete-podcast"]').click();
+
+    // The downloaded state clears and the episode stays in the feed:
+    // deleting audio never removes the episode itself.
+    await expect(episode.locator('[data-action="download-podcast"]')).toHaveText(
+      'Download Podcast',
+      { timeout: 15000 }
+    );
+    await expect(episode.locator('[data-action="delete-podcast"]')).toHaveCount(0);
+    await expect(episode.locator('.rss-podcast-badge')).toHaveText('🎙 Podcast');
+  });
+
   test('the podcast viewer shows a download action and show notes instead of extraction', async ({ page }) => {
     await seedPodcastFeed(page);
 

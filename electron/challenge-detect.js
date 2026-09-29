@@ -13,11 +13,26 @@
  */
 
 /**
+ * Text markers unique to Cloudflare's challenge interstitials.
+ *
+ * `/cdn-cgi/challenge-platform/` appears in every managed-challenge
+ * page's script src, and `cf-challenge` in its response headers/JS
+ * payload. Checking the body (not just the status) keeps ordinary
+ * 403/503 responses — domain-parked pages, failed origin servers,
+ * permission errors — from being mistaken for challenges.
+ */
+const CHALLENGE_BODY_MARKERS = ['/cdn-cgi/challenge-platform/', 'cf-challenge'];
+
+/**
  * Detect Cloudflare's managed challenge / "Just a moment..." page.
  *
- * Recognizes both a 403 status carrying a challenge body and a
- * Cloudflare "challenge solved, redirecting" page that can appear on
- * 200 responses after an auto-solve.
+ * A response only counts as a challenge when its body carries
+ * Cloudflare's challenge markers: plain 403/503 responses (parked
+ * domains, dead origins, permission errors) are NOT challenges, and
+ * treating them as one sends the solver off to load random sites in
+ * windows. The marker check also recognizes the "challenge solved,
+ * redirecting" page that can appear on 200 responses after an
+ * auto-solve.
  *
  * @param {{status?: number, text?: string, contentType?: string}} response
  *   A fetch-like response summary.
@@ -32,16 +47,14 @@ export function isCloudflareChallenge(response) {
   const text = typeof response.text === 'string' ? response.text : '';
   const contentType = (response.contentType || '').toLowerCase();
 
-  if (text && contentType && !contentType.includes('html')) {
+  // Only HTML can be a challenge page; feeds and other payloads with
+  // marker-like strings never are.
+  if (!contentType.includes('html')) {
     return false;
   }
 
-  if (status === 403 || status === 503) {
-    return true;
-  }
-
-  if (status === 200 && text) {
-    return text.includes('/cdn-cgi/challenge-platform/') || text.includes('cf-challenge');
+  if (status === 403 || status === 503 || status === 200) {
+    return text !== '' && CHALLENGE_BODY_MARKERS.some((marker) => text.includes(marker));
   }
 
   return false;

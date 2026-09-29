@@ -645,9 +645,12 @@ ipcMain.handle('open-external', async (_event, url) => shell.openExternal(url));
  * Let the renderer ask for a Cloudflare challenge to be cleared for a
  * URL ahead of a failing request ("Try Again" affordance).
  *
- * Sends progress updates over the same channel while solving so the
- * renderer can show status text; the final reply resolves to the
- * challenge outcome.
+ * This is the only interactive solve path: because the user asked for
+ * it, the solver may show the challenge window when the challenge needs
+ * a manual click-through. Automatic callers (fetchText, fetchBinary)
+ * keep every window hidden. Sends progress updates over the same
+ * channel while solving so the renderer can show status text; the final
+ * reply resolves to the challenge outcome.
  *
  * @param {Electron.IpcMainInvokeEvent} event - The invoking renderer.
  * @param {string} url - The URL whose origin is challenged.
@@ -661,7 +664,7 @@ ipcMain.handle('resolve-feed-challenge', async (event, url) => {
     }
   };
   sendStatus('solving');
-  const cleared = await resolveCloudflareChallenge(url);
+  const cleared = await resolveCloudflareChallenge(url, { interactive: true });
   return { cleared };
 });
 

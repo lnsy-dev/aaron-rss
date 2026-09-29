@@ -8,7 +8,8 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-const CHALLENGE_PAGE = '<html><head><title>Just a moment...</title></head><body>challenge</body></html>';
+const CHALLENGE_PAGE =
+  '<html><head><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1"></script></head><body>challenge</body></html>';
 const FEED_XML = '<?xml version="1.0"?><rss version="2.0"><channel><title>t</title></channel></rss>';
 
 function stubElectronBridge(overrides = {}) {
@@ -73,6 +74,24 @@ describe('rss-network challenge retry', () => {
 
     expect(electron.resolveFeedChallenge).not.toHaveBeenCalled();
     expect(electron.fetchText).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invoke the solver for a bare 403 without challenge markers (parked domain)', async () => {
+    const electron = stubElectronBridge({
+      fetchText: vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: '<html><head><title>Domain Auction</title></head><body>buy this domain</body></html>',
+        contentType: 'text/html',
+      }),
+    });
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    const response = await fetchText('https://example.com/feed');
+
+    expect(electron.resolveFeedChallenge).not.toHaveBeenCalled();
+    expect(electron.fetchText).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(403);
   });
 
   it('retries fetchBytes for challenges too', async () => {

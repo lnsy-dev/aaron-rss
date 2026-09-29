@@ -13,6 +13,18 @@
  */
 
 /**
+ * Cloudflare challenge detection shared with the main process.
+ *
+ * Imported from electron/challenge-detect.js so renderer and main use
+ * one sniffing implementation — the previous byte-identical twin
+ * drifted the moment either copy changed. Re-exported so existing
+ * imports of these names from this module keep working.
+ */
+import { isCloudflareChallenge, describeFailureReason } from '../../electron/challenge-detect.js';
+
+export { isCloudflareChallenge, describeFailureReason };
+
+/**
  * Detect whether the current runtime is Electron.
  *
  * @returns {boolean}
@@ -53,69 +65,6 @@ export function normalizeFeedURL(url) {
  */
 function responseContentType(response) {
   return response.headers?.get?.('content-type') || '';
-}
-
-/**
- * Whether a response is a Cloudflare "prove you are human" interstitial.
- *
- * Cloudflare-protected sites answer plain HTTP clients with a
- * "Just a moment..." challenge page (usually HTTP 403/503) instead of
- * the real content. The sniffing lives in the main process for fetches
- * it performs; this renderer-side twin mirrors it for direct renderer
- * fetches (web builds) and for triaging bridge results.
- *
- * @param {{status?: number, text?: string, contentType?: string}} response
- *   A fetch-like response summary.
- * @returns {boolean} True when the response looks like a challenge page.
- */
-export function isCloudflareChallenge(response) {
-  if (!response || typeof response !== 'object') {
-    return false;
-  }
-
-  const status = typeof response.status === 'number' ? response.status : 0;
-  const text = typeof response.text === 'string' ? response.text : '';
-  const contentType = (response.contentType || '').toLowerCase();
-
-  if (text && contentType && !contentType.includes('html')) {
-    return false;
-  }
-
-  if (status === 403 || status === 503) {
-    return true;
-  }
-
-  if (status === 200 && text) {
-    return text.includes('/cdn-cgi/challenge-platform/') || text.includes('cf-challenge');
-  }
-
-  return false;
-}
-
-/**
- * Build a short, user-facing explanation for a failed feed request.
- *
- * @param {{status?: number, contentType?: string}} response
- *   The failed fetch response summary.
- * @returns {string} Message suitable for toasts and feed errors.
- */
-export function describeFailureReason(response) {
-  const status = response && typeof response.status === 'number' ? response.status : 0;
-  const contentType = ((response && response.contentType) || '').toLowerCase();
-
-  if (status === 403 || status === 503) {
-    return 'Blocked by bot protection. Use "Watch Page (no RSS)" or try again.';
-  }
-  if (status === 404) {
-    return 'The server replied 404 Not Found — this address has no feed.';
-  }
-  if (contentType.includes('html')) {
-    return 'No feed found at this address (the page is HTML, not RSS).';
-  }
-  if (status >= 400) {
-    return `The server replied HTTP ${status}.`;
-  }
-  return 'No feed found at this address.';
 }
 
 /**

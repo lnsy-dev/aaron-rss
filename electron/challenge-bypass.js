@@ -19,8 +19,12 @@
  *      clearance cookie, the result is verified with real fetches before
  *      declaring success.
  *   3. When the site demands an interactive solve, show the window so
- *      the user can click through once. Clearance cookies persist in the
- *      session, so every later request to the site benefits.
+ *      the user can click through once — but only when the caller asked
+ *      for an interactive solve (the user-facing "Try Again" path).
+ *      Automatic callers (feed refreshes) never pop a window to the
+ *      front: all their attempts stay hidden, and a stubborn challenge
+ *      simply fails quietly. Clearance cookies persist in the session,
+ *      so every later request to the site benefits.
  */
 
 import { BrowserWindow, net } from 'electron';
@@ -141,20 +145,27 @@ async function settleUntilClear(url) {
 /**
  * Clear a Cloudflare challenge for a URL by visiting it in a window.
  *
- * Tries a hidden window first; if the challenge does not auto-solve,
- * shows the window and waits for the user to complete it. Every success
- * is verified with a real session-cookie fetch before returning, so a
+ * Tries a hidden window first; if the challenge does not auto-solve and
+ * `interactive` is set, shows the window and waits for the user to
+ * complete it. Automatic callers (feed refreshes) keep every attempt
+ * hidden — an unsolved challenge just returns false, instead of
+ * popping a website window to the front mid-refresh. Every success is
+ * verified with a real session-cookie fetch before returning, so a
  * `true` result guarantees the caller's next request gets the content.
  *
  * Concurrent solves for the same origin share one job, so refreshing
- * many Cloudflare-protected feeds never opens a storm of windows.
+ * many Cloudflare-protected feeds never opens a storm of windows; the
+ * first caller's `interactive` choice wins for the shared job.
  *
  * @param {string} url - The URL whose origin is challenged.
+ * @param {{interactive?: boolean}} [options]
+ *   `interactive: true` allows visible windows on retry attempts (for
+ *   user-initiated solves); the default keeps every window hidden.
  * @returns {Promise<boolean>} True when clearance was verified.
  */
 const inFlightSolves = new Map();
 
-export function resolveCloudflareChallenge(url) {
+export function resolveCloudflareChallenge(url, { interactive = false } = {}) {
   let origin = url;
   try {
     origin = new URL(url).origin;
@@ -166,7 +177,7 @@ export function resolveCloudflareChallenge(url) {
     return inFlightSolves.get(origin);
   }
 
-  const job = resolveCloudflareChallengeUncached(url).finally(() => {
+  const job = resolveCloudflareChallengeUncached(url, interactive).finally(() => {
     inFlightSolves.delete(origin);
   });
   inFlightSolves.set(origin, job);
@@ -186,9 +197,11 @@ export function __resetInFlightSolvesForTests() {
  * Uncached single-flight body of resolveCloudflareChallenge.
  *
  * @param {string} url - The URL whose origin is challenged.
+ * @param {boolean} interactive - Whether retry attempts may show the
+ *   window for a manual solve (user-initiated calls only).
  * @returns {Promise<boolean>} True when clearance was verified.
  */
-async function resolveCloudflareChallengeUncached(url) {
+async function resolveCloudflareChallengeUncached(url, interactive) {
   if (!(await probeIsChallenged(url))) {
     return true;
   }
@@ -196,12 +209,14 @@ async function resolveCloudflareChallengeUncached(url) {
   for (let attempt = 0; attempt < Math.max(1, solveTiming.attempts); attempt++) {
     let win = null;
     try {
-      // First attempt solves invisibly; later attempts are visible so
-      // the user can complete an interactive challenge.
+      // Hidden first, so a window that auto-solves (the common case)
+      // never flickers. Retries surface the window only for interactive
+      // solves; automatic callers (feed refreshes) stay invisible —
+      // their failures must not throw a website window at the user.
       win = new BrowserWindow({
         width: 520,
         height: 640,
-        show: attempt > 0,
+        show: interactive && attempt > 0,
         // The default (main) session holds the cookies the fetch bridge
         // uses, so the clearance must land there.
         webPreferences: {
@@ -215,10 +230,11 @@ async function resolveCloudflareChallengeUncached(url) {
 
       const titleCleared = await waitForChallengeTitleClear(
         win,
-        attempt === 0 ? solveTiming.hiddenMs : solveTiming.visibleMs
+        interactive && attempt > 0 ? solveTiming.visibleMs : solveTiming.hiddenMs
       );
       if (titleCleared === null) {
-        // Budget exhausted for this attempt; destroy and retry visibly.
+        // Budget exhausted for this attempt; destroy and retry (visible
+        // only when the caller asked for an interactive solve).
         continue;
       }
 

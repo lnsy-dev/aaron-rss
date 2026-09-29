@@ -15,13 +15,19 @@ describe('isCloudflareChallenge', () => {
       isCloudflareChallenge({
         status: 403,
         contentType: 'text/html; charset=UTF-8',
-        text: '<html><head><title>Just a moment...</title></head></html>',
+        text: '<html><head><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script></head></html>',
       })
     ).toBe(true);
   });
 
   it('recognizes a 503 challenge interstitial', () => {
-    expect(isCloudflareChallenge({ status: 503, contentType: 'text/html', text: '<html></html>' })).toBe(true);
+    expect(
+      isCloudflareChallenge({
+        status: 503,
+        contentType: 'text/html',
+        text: '<html><body><script>cf-challenge</script></body></html>',
+      })
+    ).toBe(true);
   });
 
   it('recognizes a 200 "challenge solved" relay page', () => {
@@ -32,6 +38,38 @@ describe('isCloudflareChallenge', () => {
         text: '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script>',
       })
     ).toBe(true);
+  });
+
+  it('does not flag a bare 403 with no challenge markers (parked domain)', () => {
+    // A parked-domain 403 like wpx.net's must not trigger the challenge
+    // solver — otherwise every refresh opens a window on the site.
+    expect(
+      isCloudflareChallenge({
+        status: 403,
+        contentType: 'text/html',
+        text: '<html><head><title>Domain Auction</title></head><body>buy this domain</body></html>',
+      })
+    ).toBe(false);
+  });
+
+  it('does not flag a bare 503 (failed origin server)', () => {
+    expect(
+      isCloudflareChallenge({ status: 503, contentType: 'text/html', text: '<html><body>Service Unavailable</body></html>' })
+    ).toBe(false);
+  });
+
+  it('does not flag a 403 with no body', () => {
+    expect(isCloudflareChallenge({ status: 403, contentType: 'text/html', text: '' })).toBe(false);
+  });
+
+  it('does not flag marker-like strings in non-HTML payloads', () => {
+    expect(
+      isCloudflareChallenge({
+        status: 200,
+        contentType: 'application/rss+xml',
+        text: '<?xml version="1.0"?><rss>cf-challenge</rss>',
+      })
+    ).toBe(false);
   });
 
   it('does not flag a 200 HTML page', () => {

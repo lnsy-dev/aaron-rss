@@ -58,7 +58,8 @@ const HTML_HEADERS = { get: () => 'text/html; charset=UTF-8' };
 const CHALLENGE = {
   status: 403,
   headers: HTML_HEADERS,
-  text: async () => '<html><head><title>Just a moment...</title></head></html>',
+  text: async () =>
+    '<html><head><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1"></script></head></html>',
 };
 const NORMAL = {
   status: 200,
@@ -139,7 +140,7 @@ describe('resolveCloudflareChallenge', () => {
     });
     queueNetResponses(CHALLENGE);
 
-    const winPromise = resolveCloudflareChallenge('https://example.com/feed');
+    const winPromise = resolveCloudflareChallenge('https://example.com/feed', { interactive: true });
 
     // Wait until both attempts have opened their windows.
     await vi.waitFor(() => expect(winInstances).toHaveLength(2));
@@ -148,6 +149,41 @@ describe('resolveCloudflareChallenge', () => {
     expect(winInstances[0].options.show).toBe(false);
     expect(winInstances[1].options.show).toBe(true);
     expect(winInstances[1].isDestroyed()).toBe(true);
+  });
+
+  it('keeps every window hidden for automatic (non-interactive) solves that time out', async () => {
+    configureChallengeSolveTimeouts({
+      hiddenMs: 200,
+      visibleMs: 200,
+      pollMs: 10,
+      settleMs: 200,
+      settlePollMs: 10,
+      attempts: 3,
+    });
+    queueNetResponses(CHALLENGE);
+
+    const winPromise = resolveCloudflareChallenge('https://example.com/feed');
+
+    // All attempts open windows, but none of them may ever be shown.
+    await vi.waitFor(() => expect(winInstances).toHaveLength(3));
+
+    expect(await winPromise).toBe(false);
+    for (const win of winInstances) {
+      expect(win.options.show).toBe(false);
+      expect(win.shown).toBe(false);
+    }
+  });
+
+  it('still solves hidden windows for non-interactive calls when the challenge auto-clears', async () => {
+    queueNetResponses(CHALLENGE, NORMAL);
+    const winPromise = resolveCloudflareChallenge('https://example.com/feed');
+    const win = await firstWindow();
+    win.titleQueue = ['Just a moment...', ''];
+
+    expect(await winPromise).toBe(true);
+    expect(win.options.show).toBe(false);
+    expect(win.shown).toBe(false);
+    expect(winInstances).toHaveLength(1);
   });
 
   it('swallows loadURL failures and still verifies via the settle probe', async () => {

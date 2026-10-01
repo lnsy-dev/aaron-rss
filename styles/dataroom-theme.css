@@ -107,6 +107,10 @@
   --neutral-2: #8f8b7d;
   --neutral-3: #f2ece2;
   --foreground-dim: #000000;
+  /* Modal backdrop dim, painted translucent by .rss-modal-overlay::before.
+     Dark in BOTH schemes: the dark theme's --foreground is a light cream,
+     which used to flare up a jarring light overlay on every modal. */
+  --scrim: #1a1812;
   --background-light: #ffffff;
   --background-dark: #e2d5bf;
   --highlight-bright: #b00002;
@@ -189,6 +193,9 @@
     --neutral-2: #404148;
     --neutral-3: #1b1c25;
     --foreground-dim: #bc7b39;
+    /* Near-black modal backdrop dim (see --scrim): a cream scrim would
+       wash the dark app out from under every dialog. */
+    --scrim: #050608;
     --background-light: #3b3d51;
     --background-dark: #050608;
     --highlight-bright: #e2d5c0;

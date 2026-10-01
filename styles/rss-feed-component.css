@@ -628,10 +628,15 @@ body.distraction-free
   background: var(--highlight-color);
 }
 
+/* Fill from --danger, not --error-color: --error-color aliases
+   --accent, which flips to a light cream in the dark theme, so danger
+   buttons used to render there exactly like .rss-button-primary.
+   The red fill with white text is readable in both themes (>=4.5:1)
+   and keeps destructive actions distinct from primary ones. */
 .rss-button-danger {
-  background: var(--error-color);
-  color: var(--background-color);
-  border-color: var(--error-color);
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
 }
 
 .rss-button-danger:hover {
@@ -1838,10 +1843,13 @@ body.distraction-free
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* Keep Delete Video recognizable as destructive in the floating row. */
+/* Keep Delete Video recognizable as destructive in the floating row.
+   The fill comes from --danger rather than --error-color: in the dark
+   theme --error-color is the light --accent cream, so the hardcoded
+   white text below used to render light-on-light and was unreadable. */
 .rss-video-chrome .rss-youtube-delete-button {
-  background: var(--error-color);
-  border-color: var(--error-color);
+  background: var(--danger);
+  border-color: var(--danger);
   color: #fff;
 }
 

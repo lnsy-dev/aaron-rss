@@ -122,6 +122,12 @@
   --accent-purple: #70119f;
   --accent-cyan: #119f9f;
 
+  /* Destructive-action fill. Danger buttons pair this with white text
+     in both themes: --accent (and therefore --error-color) flips to a
+     light cream in the dark theme, which would pair a near-white fill
+     with white text. */
+  --danger: #9f1113;
+
   /* Semantic aliases — referenced directly by layout.css */
   --color-heading: var(--foreground);
 
@@ -197,6 +203,11 @@
     --accent-yellow: #d9d9c9;
     --accent-purple: #d4c9d9;
     --accent-cyan: #c9d9d9;
+
+    /* Danger fill: red lightened just enough that white text clears
+       4.5:1 on it and the button still reads as destructive against
+       the dark surface. */
+    --danger: #c24541;
 
     /* Input icons — chevron colored with the theme's --foreground
        (SVG data URIs can't reference CSS variables, so it's defined here) */

@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
    * @param {string} url - The URL to fetch
    * @returns {Promise<{ok: boolean, status: number, text: string}>} Response body and status
    */
-  fetchText: (url) => ipcRenderer.invoke('fetch-text', url),
+  fetchText: (url, options) => ipcRenderer.invoke('fetch-text', url, options),
 
   /**
    * Fetch the raw bytes of a URL from the main process.

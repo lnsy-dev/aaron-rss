@@ -130,9 +130,13 @@ test.describe('video playback mode', () => {
   });
 
   test('chrome fades away after the idle delay and returns on mouse movement', async ({ page }) => {
-    // Shorten the 10s fade delay so the test stays fast.
+    // Shorten the 10s fade delay so the test stays fast — but not to
+    // 50ms: the initial "chrome starts awake" assertion below races the
+    // hide timer, and a locator roundtrip under load loses that race
+    // intermittently (on main as well). 500ms keeps the test quick and
+    // the race won.
     await component.evaluate((el) => {
-      el._videoChromeHideDelayMs = 50;
+      el._videoChromeHideDelayMs = 500;
     });
 
     await openVideoPlaybackViewer(page);

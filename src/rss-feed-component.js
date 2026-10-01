@@ -81,7 +81,7 @@ import {
 } from './lib/file-storage.js';
 import { exportOPML, parseOPML } from './lib/opml.js';
 import { stripHTML, repairBrokenEntitiesInHTML } from './lib/html-utils.js';
-import { extractArticle } from './lib/article-extractor.js';
+import { extractArticle, CLOUDFLARE_CHALLENGE_CODE } from './lib/article-extractor.js';
 import {
   ARTICLE_FONT_DEFAULT_STEP,
   articleFontStepAttrValue,
@@ -5909,6 +5909,32 @@ class RSSFeedComponent extends DataroomElement {
       }
     } catch (error) {
       console.error('Failed to open article viewer:', error);
+
+      // A Cloudflare bot check blocked the fetch (Slashdot,
+      // notebookcheck, …). Extraction deliberately runs no challenge
+      // solver (see article-extractor.js) so the open stays instant and
+      // window-free — show the website in the article view through the
+      // original-site embed instead of an error pane.
+      if (error.code === CLOUDFLARE_CHALLENGE_CODE) {
+        const renderedCached = await this._renderCachedArticleFallback(
+          body, article, feed, error, 'article'
+        );
+        if (!renderedCached) {
+          body.innerHTML = '';
+          const notice = document.createElement('p');
+          notice.className = 'rss-article-viewer-cached-notice';
+          notice.textContent =
+            'This site blocks article extraction — showing the website instead.';
+          body.appendChild(notice);
+        }
+        this.showToast('This site blocks article extraction — showing the website instead', 'info');
+        this._showOriginalView(overlay, article.url);
+        if (feed?.feedID) {
+          await this.markAsRead(feed.feedID, article.articleID);
+        }
+        return;
+      }
+
       const renderedCached = await this._renderCachedArticleFallback(
         body, article, feed, error, 'article'
       );
@@ -7603,7 +7629,15 @@ class RSSFeedComponent extends DataroomElement {
     originalButton.setAttribute('data-action', 'open-original');
     originalButton.textContent = 'Open Original';
     originalButton.addEventListener('click', () => {
-      this._showOriginalView(overlay, article.url);
+      // The action toggles between the two views: "Open Original" shows
+      // the website, "Show Article" returns to the extracted body. It
+      // used to call _showOriginalView unconditionally, so the flipped
+      // "Show Article" button could never get back.
+      if (overlay._viewerMode === 'original') {
+        this._showArticleView(overlay);
+      } else {
+        this._showOriginalView(overlay, article.url);
+      }
     });
     actions.appendChild(originalButton);
 

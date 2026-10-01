@@ -11,6 +11,7 @@
 
 import Defuddle from 'defuddle';
 import { fetchText } from './rss-network.js';
+import { isCloudflareChallenge } from '../../electron/challenge-detect.js';
 import { repairBrokenEntitiesInHTML } from './html-utils.js';
 import {
   extractPDFArticle,
@@ -18,6 +19,14 @@ import {
   isPDFURL,
   looksLikePDFText,
 } from './pdf-extractor.js';
+
+/**
+ * Error `code` set when a fetch is answered by a Cloudflare bot
+ * challenge rather than the article. Callers (the article viewer)
+ * react by showing the website in the article view instead of an
+ * extraction error.
+ */
+export const CLOUDFLARE_CHALLENGE_CODE = 'cloudflare-challenge';
 
 /**
  * Remove unescaped control characters from JSON-LD schema.org script blocks.
@@ -67,7 +76,18 @@ export async function extractArticle(url) {
     return extractPDFArticle(url);
   }
 
-  const response = await fetchText(url);
+  // Article extraction never runs the challenge solver: a hidden solve
+  // stalls the open for up to a minute and an interactive one pops a
+  // browser window at the user (the reported "very delayed, then a new
+  // window" bug). Fetch as-is, detect the challenge up front, and let
+  // the viewer show the website in the article view instead — a
+  // top-level embed clears the check like any normal browser tab.
+  const response = await fetchText(url, { clearChallenges: false });
+  if (isCloudflareChallenge(response)) {
+    const error = new Error('This site is protected by a Cloudflare bot check');
+    error.code = CLOUDFLARE_CHALLENGE_CODE;
+    throw error;
+  }
   if (!response.ok) {
     throw new Error(`Failed to fetch article: ${response.status}`);
   }

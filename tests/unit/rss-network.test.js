@@ -31,7 +31,9 @@ describe('fetchBytes', () => {
     const { fetchBytes } = await import('../../src/lib/rss-network.js');
     const response = await fetchBytes('https://example.com/img.png');
 
-    expect(window.electron.fetchBytes).toHaveBeenCalledWith('https://example.com/img.png');
+    expect(window.electron.fetchBytes).toHaveBeenCalledWith('https://example.com/img.png', {
+      clearChallenges: true,
+    });
     expect(response.ok).toBe(true);
     expect(response.status).toBe(200);
     expect(response.buffer).toBe(buffer);
@@ -101,7 +103,9 @@ describe('fetchText', () => {
     const { fetchText } = await import('../../src/lib/rss-network.js');
     const response = await fetchText('https://example.com/rss');
 
-    expect(window.electron.fetchText).toHaveBeenCalledWith('https://example.com/rss');
+    expect(window.electron.fetchText).toHaveBeenCalledWith('https://example.com/rss', {
+      clearChallenges: true,
+    });
     expect(response.ok).toBe(true);
     expect(response.text).toBe('<rss/>');
     expect(response.contentType).toBe('text/xml');

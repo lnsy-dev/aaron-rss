@@ -77,23 +77,29 @@ function responseContentType(response) {
  * persist in the session, so the retry — and all later requests —
  * succeed.
  *
+ * Pass `{ clearChallenges: false }` for callers that must stay fast and
+ * window-free (article extraction): the bridge then skips its hidden
+ * auto-solve too, and no resolveFeedChallenge retry happens — the
+ * challenge response comes back as-is for the caller to react to.
+ *
  * @param {string} url - Absolute URL to fetch.
  * @param {'fetchText'|'fetchBytes'} bridgeMethod - Bridge call to make.
+ * @param {{clearChallenges?: boolean}} [options] - Fetch behavior flags.
  * @returns {Promise<{ok: boolean, status: number, text?: string, buffer?: Uint8Array, contentType?: string}>}
  *   The response from the bridge, or a failed stub when unavailable.
  */
-async function bridgeFetchWithChallengeRetry(url, bridgeMethod) {
+async function bridgeFetchWithChallengeRetry(url, bridgeMethod, { clearChallenges = true } = {}) {
   const electron = typeof window !== 'undefined' ? window.electron : null;
   if (!electron || typeof electron[bridgeMethod] !== 'function') {
     throw new Error('Electron fetch bridge is not available. Cannot fetch from the renderer.');
   }
 
-  let response = await electron[bridgeMethod](url);
+  let response = await electron[bridgeMethod](url, { clearChallenges });
 
-  if (isCloudflareChallenge(response) && typeof electron.resolveFeedChallenge === 'function') {
+  if (clearChallenges && isCloudflareChallenge(response) && typeof electron.resolveFeedChallenge === 'function') {
     const { cleared } = await electron.resolveFeedChallenge(url).catch(() => ({ cleared: false }));
     if (cleared) {
-      response = await electron[bridgeMethod](url);
+      response = await electron[bridgeMethod](url, { clearChallenges });
     }
   }
 
@@ -136,15 +142,18 @@ export async function fetchBytes(url) {
  * In Electron this always goes through the main-process bridge to avoid
  * CORS. It never uses the renderer's fetch() in Electron. When the
  * response is a Cloudflare challenge, the challenge is cleared in a
- * window once and the request retried (see bridgeFetchWithChallengeRetry).
+ * window once and the request retried (see bridgeFetchWithChallengeRetry)
+ * — unless `options.clearChallenges` is false, which fetches as-is with
+ * no solver involvement at all.
  *
  * @param {string} url - The URL to fetch
+ * @param {{clearChallenges?: boolean}} [options] - Fetch behavior flags.
  * @returns {Promise<{ok: boolean, status: number, text: string, contentType: string}>}
  */
-export async function fetchText(url) {
+export async function fetchText(url, options = {}) {
   url = normalizeFeedURL(url);
   if (isElectron()) {
-    return bridgeFetchWithChallengeRetry(url, 'fetchText');
+    return bridgeFetchWithChallengeRetry(url, 'fetchText', options);
   }
 
   try {

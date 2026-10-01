@@ -596,15 +596,20 @@ app.on('web-contents-created', (event, webContents) => {
  * When the response is a Cloudflare challenge, open a window on the URL
  * once so the challenge can clear (usually hidden and automatic), then
  * retry. The clearance cookie persists in the session, so the retry and
- * all later requests succeed.
+ * all later requests succeed. Callers that must not wait on — or trigger
+ * — the solver pass `{ clearChallenges: false }` and receive the
+ * challenge response as-is (article extraction, which falls back to
+ * showing the website in the article view instead).
  *
  * Returns a plain object so it serializes cleanly through the
  * context-bridge IPC layer.
  *
  * @param {string} url - The URL to fetch
+ * @param {{clearChallenges?: boolean}} [options] - Whether the challenge solver may run
  * @returns {Promise<{ok: boolean, status: number, text: string, contentType: string}>}
  */
-async function fetchText(url) {
+async function fetchText(url, options) {
+  const { clearChallenges = true } = options || {};
   try {
     let response = await net.fetch(url, {
       useSessionCookies: true,
@@ -615,7 +620,10 @@ async function fetchText(url) {
     // Cloudflare-protected sites answer the very first request with a
     // challenge page; visiting the URL once in a real window clears it
     // (clearance cookies persist in the session) and the retry succeeds.
-    if (isCloudflareChallenge({ status: response.status, text, contentType: response.headers.get('content-type') })) {
+    if (
+      clearChallenges &&
+      isCloudflareChallenge({ status: response.status, text, contentType: response.headers.get('content-type') })
+    ) {
       const cleared = await resolveCloudflareChallenge(url);
       if (cleared) {
         response = await net.fetch(url, {
@@ -674,7 +682,7 @@ async function fetchBinary(url) {
   }
 }
 
-ipcMain.handle('fetch-text', async (_event, url) => fetchText(url));
+ipcMain.handle('fetch-text', async (_event, url, options) => fetchText(url, options));
 ipcMain.handle('fetch-binary', async (_event, url) => fetchBinary(url));
 ipcMain.handle('open-external', async (_event, url) => shell.openExternal(url));
 

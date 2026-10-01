@@ -657,8 +657,11 @@ body.distraction-free
   position: absolute;
   inset: 0;
   /* Translucent so an article viewer left open underneath remains visible
-     while the modal still has enough contrast to read. */
-  background: var(--foreground-color);
+     while the modal still has enough contrast to read. The color is the
+     theme's --scrim, a dark dim in both schemes — var(--foreground-color)
+     flips to a light cream in the dark theme and used to wash this
+     overlay out into a jarring light backdrop. */
+  background: var(--scrim);
   opacity: 0.7;
 }
 

@@ -64,6 +64,38 @@ describe('rss-network challenge retry', () => {
     expect(response.status).toBe(403);
   });
 
+  it('forwards the challenge flag to the bridge by default', async () => {
+    const electron = stubElectronBridge({
+      fetchText: vi.fn().mockResolvedValue({ ok: true, status: 200, text: FEED_XML, contentType: 'application/rss+xml' }),
+    });
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    await fetchText('https://example.com/feed');
+
+    // The bridge reads this to decide whether its hidden auto-solve may
+    // run; ordinary fetches keep it enabled.
+    expect(electron.fetchText).toHaveBeenCalledWith('https://example.com/feed', { clearChallenges: true });
+  });
+
+  it('never invokes the solver when clearChallenges is false', async () => {
+    // Article extraction fetches this way: a challenge must come back
+    // as-is (so the viewer can show the website instead) with no hidden
+    // stall and no visible window.
+    const electron = stubElectronBridge({
+      fetchText: vi.fn().mockResolvedValue({ ok: false, status: 403, text: CHALLENGE_PAGE, contentType: 'text/html' }),
+      resolveFeedChallenge: vi.fn().mockResolvedValue({ cleared: true }),
+    });
+
+    const { fetchText } = await import('../../src/lib/rss-network.js');
+    const response = await fetchText('https://example.com/post', { clearChallenges: false });
+
+    expect(electron.fetchText).toHaveBeenCalledTimes(1);
+    expect(electron.fetchText).toHaveBeenCalledWith('https://example.com/post', { clearChallenges: false });
+    expect(electron.resolveFeedChallenge).not.toHaveBeenCalled();
+    expect(response.status).toBe(403);
+    expect(response.text).toBe(CHALLENGE_PAGE);
+  });
+
   it('does not invoke the solver for normal responses', async () => {
     const electron = stubElectronBridge({
       fetchText: vi.fn().mockResolvedValue({ ok: true, status: 200, text: FEED_XML, contentType: 'application/rss+xml' }),

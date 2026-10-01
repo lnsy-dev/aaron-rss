@@ -55,6 +55,58 @@ describe('article-extractor', () => {
     await expect(extractArticle('https://example.com/post')).rejects.toThrow('Failed to fetch article: 404');
   });
 
+  it('fetches without engaging the challenge solver', async () => {
+    // Article opens must stay instant and window-free: extraction
+    // always asks the network layer to skip Cloudflare solving.
+    fetchText.mockResolvedValue({ ok: false, status: 404, text: '' });
+
+    await extractArticle('https://example.com/post').catch(() => {});
+    expect(fetchText).toHaveBeenCalledWith('https://example.com/post', { clearChallenges: false });
+  });
+
+  it('flags a 403 Cloudflare challenge instead of parsing or solving it', async () => {
+    fetchText.mockResolvedValue({
+      ok: false,
+      status: 403,
+      contentType: 'text/html',
+      text: '<html><head><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script></head></html>',
+    });
+
+    await expect(extractArticle('https://example.com/post')).rejects.toMatchObject({
+      code: 'cloudflare-challenge',
+    });
+    expect(mockParse).not.toHaveBeenCalled();
+  });
+
+  it('flags a 200 challenge relay page before Defuddle sees it', async () => {
+    // Slashdot answers with HTTP 200 + a challenge body; parsing that
+    // interstitial as the article would render garbage.
+    fetchText.mockResolvedValue({
+      ok: true,
+      status: 200,
+      contentType: 'text/html',
+      text: '<html><head><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/h/b/orchestrate"></script></head></html>',
+    });
+
+    await expect(extractArticle('https://example.com/post')).rejects.toMatchObject({
+      code: 'cloudflare-challenge',
+    });
+    expect(mockParse).not.toHaveBeenCalled();
+  });
+
+  it('keeps a plain 403 (no challenge markers) on the generic fetch error path', async () => {
+    fetchText.mockResolvedValue({
+      ok: false,
+      status: 403,
+      contentType: 'text/html',
+      text: '<html><body>forbidden</body></html>',
+    });
+
+    const attempt = extractArticle('https://example.com/post');
+    await expect(attempt).rejects.toThrow('Failed to fetch article: 403');
+    await attempt.catch((error) => expect(error.code).toBeUndefined());
+  });
+
   it('extracts metadata and markdown from a fetched page', async () => {
     fetchText.mockResolvedValue({
       ok: true,
@@ -84,7 +136,7 @@ describe('article-extractor', () => {
 
     const result = await extractArticle('https://example.com/post');
 
-    expect(fetchText).toHaveBeenCalledWith('https://example.com/post');
+    expect(fetchText).toHaveBeenCalledWith('https://example.com/post', { clearChallenges: false });
     expect(result.markdown).toBe('# Hello\n\nWorld');
     expect(result.title).toBe('Hello World');
     expect(result.author).toBe('Jane Doe');

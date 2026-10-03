@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     strategy:
       matrix:
         # One runner per OS so electron-builder builds each platform's
@@ -25,7 +25,48 @@ jobs:
         run: npm install
       - name: Build renderer bundle (webpack + icons)
         run: npm run build
-      - name: Package and publish
-        run: npx electron-builder --publish always
+      # Package only: the installers are collected as workflow artifacts and
+      # published by a single job below. Letting each matrix job publish here
+      # races them against each other, which creates duplicate releases with
+      # only part of the assets attached.
+      - name: Package
+        run: npx electron-builder --publish never
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.blockmap
+            release/latest*.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      # Create the release as a draft, attach every platform's files, then
+      # publish in one step so the release is never visible half-populated.
+      - name: Publish GitHub release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --draft
+          gh release upload "$GITHUB_REF_NAME" installers/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false

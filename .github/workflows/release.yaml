@@ -53,6 +53,19 @@ jobs:
         with:
           path: installers
           merge-multiple: true
+      # electron-builder writes the installers with spaces in their names
+      # ("Aaron RSS Setup 0.50.4.exe"), but the latest*.yml manifests it
+      # generates use space-free "safe" names ("Aaron-RSS-Setup-0.50.4.exe").
+      # GitHub rewrites spaces in uploaded asset names to dots, so uploading
+      # the files as-is would leave every auto-update URL in the manifests
+      # pointing at a name that does not exist. Rename the files to the safe
+      # names the manifests already reference.
+      - name: Normalize installer names
+        run: |
+          find installers -maxdepth 1 -type f -name '* *' -print0 |
+            while IFS= read -r -d '' file; do
+              mv "$file" "$(dirname "$file")/$(basename "$file" | tr ' ' '-')"
+            done
       # Create the release as a draft, attach every platform's files, then
       # publish in one step so the release is never visible half-populated.
       - name: Publish GitHub release

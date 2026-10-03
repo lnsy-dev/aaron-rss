@@ -1231,7 +1231,12 @@ body.distraction-free
   margin: 1rem 0;
 }
 
-.rss-social-media a {
+/* Generic media anchors wrap images. The external link card is also an
+   `<a>`, but it is its own flex row — `a:not(...)` keeps this rule's
+   `display: block` (and its border/radius) from clobbering the card's
+   layout, which used to stack the thumbnail above the text and clip the
+   headline to a thin strip. */
+.rss-social-media a:not(.rss-social-link-card) {
   display: block;
   border-radius: 6px;
   overflow: hidden;
@@ -1265,6 +1270,10 @@ body.distraction-free
   display: flex;
   gap: 0.75rem;
   align-items: stretch;
+  /* Fill the wrapper div (the grid cell in `.rss-social-media`) instead
+     of shrinking to its content. */
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--quaternary-color);
   border-radius: 8px;
   overflow: hidden;
@@ -1281,12 +1290,21 @@ body.distraction-free
    whole card: `width: 100%` + `flex-shrink: 0` clamped the text body to
    zero width, so Bluesky link cards showed only the splash image with no
    clickable headline. */
-.rss-social-link-card img {
+/* `.rss-article-content img` (0,1,1) adds vertical margins and a radius
+   to every image in the timeline; scoping through `.rss-social-media`
+   beats it so the thumbnail is sized by the flex row alone. A
+   percentage `min-height` is avoided: against an auto-height flex
+   container it is circular and made the card collapse below the height
+   its own content needed, clipping the bottom. */
+.rss-social-media .rss-social-link-card img {
   width: 6rem;
   flex: 0 0 6rem;
-  min-height: 100%;
+  height: auto;
+  min-height: 0;
   object-fit: cover;
   align-self: stretch;
+  margin: 0;
+  border-radius: 0;
 }
 
 .rss-social-link-card-body {

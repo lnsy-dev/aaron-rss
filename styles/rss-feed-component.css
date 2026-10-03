@@ -1004,17 +1004,48 @@ body.distraction-free
   word-break: break-word;
 }
 
-.rss-article-viewer-frame {
-  display: none;
-  flex: 1;
+/* Container for the original-site embed (webview in Electron, sandboxed
+   iframe elsewhere). The container — not the embed — is the flex item
+   that takes the viewer's remaining height, because a <webview> refuses
+   to stretch its guest object when it is itself a flex item
+   (electron/electron#3948): the embedded site collapsed to a short
+   strip. Hidden until "Open Original" switches the viewer over. */
+.rss-article-viewer-embed {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
+  display: none;
+}
+
+.rss-article-viewer-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   border: none;
   background: var(--background-color);
+}
+
+/* Electron's webview shadow DOM only stretches the guest object when the
+   <webview> element is a flex container; without this the page rendered
+   at its intrinsic (tiny) height inside the absolutely-positioned box.
+   Absolutely-positioned elements are blockified, so this computes to
+   `flex`. */
+webview.rss-article-viewer-frame {
+  display: flex;
 }
 
 .rss-original-viewer-header {
   padding: 2.5rem 1rem 0.5rem;
   min-height: auto;
+}
+
+/* The standalone original viewer shows the site immediately, so its
+   embed container starts visible. */
+.rss-original-viewer-dialog .rss-article-viewer-embed {
+  display: block;
 }
 
 .rss-original-viewer-header h2 {

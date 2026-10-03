@@ -4944,6 +4944,7 @@ class RSSFeedComponent extends DataroomElement {
       }
       overlay._originalFrame = null;
     }
+    overlay._originalFrameContainer = null;
 
     if (overlay._articleBody) {
       overlay._articleBody.innerHTML = '';
@@ -6090,10 +6091,16 @@ class RSSFeedComponent extends DataroomElement {
     // In Electron this is a <webview>, so sites that forbid being
     // iframed (frame-ancestors 'self' — Slashdot, most news sites)
     // render in-app again; browsers keep the sandboxed-iframe embed.
+    // The embed sits in its own container so the viewer's remaining
+    // height is claimed by a plain div: a webview does not stretch its
+    // guest when it is itself the flex item (electron/electron#3948).
     const frame = createOriginalSiteEmbed(article.url);
-    frame.style.display = 'block';
+    const frameContainer = document.createElement('div');
+    frameContainer.className = 'rss-article-viewer-embed';
+    frameContainer.appendChild(frame);
 
-    dialog.appendChild(frame);
+    dialog.appendChild(frameContainer);
+    overlay._originalFrameContainer = frameContainer;
 
     // Sites such as Slashdot send CSP frame-ancestors 'self', which blocks
     // the iframe. Detect a blank load and fall back to the default browser
@@ -7671,15 +7678,21 @@ class RSSFeedComponent extends DataroomElement {
     spinner.textContent = 'Extracting article content…';
     body.appendChild(spinner);
 
+    // Wrapped in a container so the remaining viewer height is claimed
+    // by a plain div (see _showOriginalView for why).
     const originalFrame = createOriginalSiteEmbed(article.url);
+    const originalFrameContainer = document.createElement('div');
+    originalFrameContainer.className = 'rss-article-viewer-embed';
+    originalFrameContainer.appendChild(originalFrame);
 
     dialog.appendChild(body);
-    dialog.appendChild(originalFrame);
+    dialog.appendChild(originalFrameContainer);
     overlay.appendChild(dialog);
     this.appendChild(overlay);
 
     overlay._articleBody = body;
     overlay._originalFrame = originalFrame;
+    overlay._originalFrameContainer = originalFrameContainer;
 
     this.activeModal = overlay;
     this.lockBackgroundScroll();
@@ -7735,7 +7748,7 @@ class RSSFeedComponent extends DataroomElement {
   _showOriginalView(overlay, url) {
     overlay._viewerMode = 'original';
     overlay._articleBody.style.display = 'none';
-    overlay._originalFrame.style.display = 'block';
+    overlay._originalFrameContainer.style.display = 'block';
     this._navigateOriginalFrame(overlay._originalFrame, url, () => {
       // The site refused to render in-app: return to the extracted
       // article instead of leaving a blank embed, and hand the page to
@@ -7763,7 +7776,7 @@ class RSSFeedComponent extends DataroomElement {
    */
   _showArticleView(overlay) {
     overlay._viewerMode = 'article';
-    overlay._originalFrame.style.display = 'none';
+    overlay._originalFrameContainer.style.display = 'none';
     overlay._articleBody.style.display = '';
     overlay._articleBody.focus();
 

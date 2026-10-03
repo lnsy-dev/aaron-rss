@@ -12,6 +12,18 @@ const mocks = vi.hoisted(() => {
   const enableBlockingInSession = vi.fn();
   const onBeforeRequest = vi.fn((_details, callback) => callback({}));
 
+  /** A session stub whose webRequest records registered listeners. */
+  const makeSession = (id) => ({
+    id,
+    webRequest: {
+      onBeforeRequest: vi.fn(),
+      onHeadersReceived: vi.fn(),
+    },
+  });
+
+  const defaultSession = makeSession('default-session');
+  const originalSitesSession = makeSession('original-sites-session');
+
   return {
     enableBlockingInSession,
     onBeforeRequest,
@@ -20,7 +32,9 @@ const mocks = vi.hoisted(() => {
       onBeforeRequest,
     }),
     getPath: vi.fn(() => '/fake/user-data'),
-    defaultSession: { id: 'default-session' },
+    defaultSession,
+    originalSitesSession,
+    fromPartition: vi.fn(() => originalSitesSession),
     readFile: vi.fn(),
     writeFile: vi.fn(),
   };
@@ -38,6 +52,7 @@ vi.mock('electron', () => ({
   },
   session: {
     defaultSession: mocks.defaultSession,
+    fromPartition: mocks.fromPartition,
   },
 }));
 
@@ -46,7 +61,7 @@ vi.mock('node:fs/promises', () => ({
   writeFile: mocks.writeFile,
 }));
 
-import { initializeAdBlocker } from '../../electron/adblocker.js';
+import { initializeAdBlocker, ORIGINAL_SITES_PARTITION } from '../../electron/adblocker.js';
 
 describe('initializeAdBlocker', () => {
   beforeEach(() => {
@@ -124,6 +139,57 @@ describe('initializeAdBlocker', () => {
     expect(mocks.onBeforeRequest).toHaveBeenCalledWith(
       { url: 'https://ads.example.com/tracker.js' },
       callback
+    );
+  });
+
+  it("registers network filtering on the 'Open Original' viewer's partition session", async () => {
+    await initializeAdBlocker(vi.fn());
+
+    // The viewer's <webview> opts into this exact partition (see
+    // src/lib/original-embed.js); the session is separate from the default
+    // session, so it needs its own request listeners.
+    expect(mocks.fromPartition).toHaveBeenCalledWith(ORIGINAL_SITES_PARTITION);
+    expect(mocks.originalSitesSession.webRequest.onBeforeRequest).toHaveBeenCalledWith(
+      { urls: ['<all_urls>'] },
+      expect.any(Function),
+    );
+    expect(mocks.originalSitesSession.webRequest.onHeadersReceived).toHaveBeenCalledWith(
+      { urls: ['<all_urls>'] },
+      expect.any(Function),
+    );
+  });
+
+  it('does not use enableBlockingInSession for the partition session', async () => {
+    // enableBlockingInSession registers GLOBAL ipcMain handlers, which throws
+    // on the second session and aborts before its webRequest listeners are
+    // attached. Only the default session may go through it.
+    await initializeAdBlocker(vi.fn());
+
+    expect(mocks.enableBlockingInSession).toHaveBeenCalledTimes(1);
+    expect(mocks.enableBlockingInSession).toHaveBeenCalledWith(mocks.defaultSession);
+  });
+
+  it('routes partition-session requests through the YouTube bypass', async () => {
+    const blocker = await initializeAdBlocker(vi.fn());
+    const registered = mocks.originalSitesSession.webRequest.onBeforeRequest.mock.calls[0][1];
+    const callback = vi.fn();
+
+    registered({ url: 'https://i.ytimg.com/vi/abc/default.jpg' }, callback);
+
+    expect(callback).toHaveBeenCalledWith({});
+    expect(mocks.onBeforeRequest).not.toHaveBeenCalled();
+  });
+
+  it('filters partition-session requests through the blocker', async () => {
+    const blocker = await initializeAdBlocker(vi.fn());
+    const registered = mocks.originalSitesSession.webRequest.onBeforeRequest.mock.calls[0][1];
+    const callback = vi.fn();
+
+    registered({ url: 'https://ads.example.com/tracker.js' }, callback);
+
+    expect(mocks.onBeforeRequest).toHaveBeenCalledWith(
+      { url: 'https://ads.example.com/tracker.js' },
+      callback,
     );
   });
 });

@@ -67,7 +67,9 @@ export function createOriginalSiteEmbed(url) {
     webview.title = 'Original article';
     // Persistent partition: cookies and Cloudflare clearances survive
     // across articles and app restarts, so sites do not re-challenge
-    // every open.
+    // every open. Because the partition is its own Electron session, the
+    // ad/tracker blocker has to be enabled on this exact string — see
+    // ORIGINAL_SITES_PARTITION in electron/adblocker.js.
     webview.setAttribute('partition', 'persist:original-sites');
     // Let target=_blank links reach the system browser through the
     // main-process window-open handler instead of dying silently.

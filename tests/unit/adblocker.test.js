@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => {
       onBeforeRequest: vi.fn(),
       onHeadersReceived: vi.fn(),
     },
+    registerPreloadScript: vi.fn(() => `preload-${id}`),
+    unregisterPreloadScript: vi.fn(),
   });
 
   const defaultSession = makeSession('default-session');
@@ -30,6 +32,7 @@ const mocks = vi.hoisted(() => {
     fromPrebuiltAdsAndTracking: vi.fn().mockResolvedValue({
       enableBlockingInSession,
       onBeforeRequest,
+      config: { loadCosmeticFilters: true, loadNetworkFilters: true },
     }),
     getPath: vi.fn(() => '/fake/user-data'),
     defaultSession,
@@ -191,5 +194,39 @@ describe('initializeAdBlocker', () => {
       { url: 'https://ads.example.com/tracker.js' },
       callback,
     );
+  });
+
+  it('registers the Ghostery cosmetic-filter preload on the viewer session', async () => {
+    await initializeAdBlocker(vi.fn());
+
+    // Without this preload the viewer session only had network filtering:
+    // ad containers/scripts still loaded and rendered in the embedded page.
+    expect(mocks.originalSitesSession.registerPreloadScript).toHaveBeenCalledWith({
+      type: 'frame',
+      filePath: expect.stringContaining('adblocker-electron-preload'),
+    });
+  });
+
+  it('does not register a second cosmetic preload on the default session', async () => {
+    // enableBlockingInSession() already registers it there, and the ipcMain
+    // handlers behind it are process-wide and only exist once.
+    await initializeAdBlocker(vi.fn());
+
+    expect(mocks.defaultSession.registerPreloadScript).not.toHaveBeenCalled();
+  });
+
+  it('skips cosmetic filtering when the engine loaded no cosmetic filters', async () => {
+    mocks.fromPrebuiltAdsAndTracking.mockResolvedValueOnce({
+      enableBlockingInSession: mocks.enableBlockingInSession,
+      onBeforeRequest: mocks.onBeforeRequest,
+      config: { loadCosmeticFilters: false, loadNetworkFilters: true },
+    });
+
+    await initializeAdBlocker(vi.fn());
+
+    // Network filtering still applies; the cosmetic preload would only ask
+    // the main process for filters the engine does not have.
+    expect(mocks.originalSitesSession.webRequest.onBeforeRequest).toHaveBeenCalled();
+    expect(mocks.originalSitesSession.registerPreloadScript).not.toHaveBeenCalled();
   });
 });

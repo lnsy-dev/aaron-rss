@@ -3,7 +3,8 @@
  *
  * Main-process wrapper around @ghostery/adblocker-electron. It loads the
  * prebuilt ads-and-tracking filter list (with on-disk caching) and enables
- * request blocking on the default Electron session.
+ * request blocking plus cosmetic filtering on every session that loads a
+ * website: the default session and the "Open Original" viewer's partition.
  *
  * This module must only run in the Electron main process; the renderer has
  * no access to the blocker and no Node/Electron APIs.
@@ -12,6 +13,7 @@
 import { ElectronBlocker } from '@ghostery/adblocker-electron';
 import { app, session } from 'electron';
 import { readFile, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 /** Filename for the serialized blocker cache inside the user data directory. */
@@ -30,6 +32,26 @@ const ENGINE_FILE_NAME = 'adblocker-engine.bin';
  * @type {string}
  */
 export const ORIGINAL_SITES_PARTITION = 'persist:original-sites';
+
+/**
+ * Locate the Ghostery cosmetic-filter preload script.
+ *
+ * `ElectronBlocker.enableBlockingInSession()` registers this file itself for
+ * the default session, but the package does not re-export its path, so a
+ * second session needs the path resolved directly. It ships as a transitive
+ * dependency of @ghostery/adblocker-electron, which is what puts it in
+ * node_modules.
+ *
+ * @returns {string|null} Absolute path to the preload script, or null if it
+ *   cannot be resolved (cosmetic filtering is then skipped for extra sessions)
+ */
+function resolveCosmeticPreloadPath() {
+  try {
+    return createRequire(import.meta.url).resolve('@ghostery/adblocker-electron-preload');
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Apply the blocker's network filters to one session directly.
@@ -66,12 +88,46 @@ function enableNetworkBlockingInSession(blocker, targetSession) {
 }
 
 /**
+ * Apply cosmetic filtering (element hiding, scriptlets) to one session.
+ *
+ * This mirrors the cosmetic half of `BlockingContext.enable()` without the
+ * global `ipcMain.handle()` calls, which the default session already owns and
+ * which throw when registered twice. Cosmetic filtering is per-session
+ * because the preload script that asks the main process for the page's
+ * filters is registered with `session.registerPreloadScript()`.
+ *
+ * @param {import('@ghostery/adblocker-electron').ElectronBlocker} blocker - The configured blocker
+ * @param {Electron.Session} targetSession - Session to filter
+ * @param {string|null} preloadPath - Path to the Ghostery cosmetic preload
+ * @returns {void}
+ */
+function enableCosmeticBlockingInSession(blocker, targetSession, preloadPath) {
+  // Only cosmetic filters that were actually loaded into the engine can be
+  // injected, so skip the preload when the engine was built without them.
+  if (blocker.config?.loadCosmeticFilters === false || preloadPath === null) {
+    return;
+  }
+  // Preload scripts are registered per session, not per webContents, so this
+  // covers every page the session loads (including webview guests).
+  //
+  // Cosmetic filtering is a bonus on top of network filtering, so a failure
+  // here (unsupported Electron version, unreadable preload) must not abort
+  // initialization and take the network filters down with it.
+  try {
+    targetSession.registerPreloadScript({ type: 'frame', filePath: preloadPath });
+  } catch (error) {
+    console.warn('[adblocker] Cosmetic filtering unavailable for session:', error);
+  }
+}
+
+/**
  * Initialize the Ghostery ad/tracker blocker.
  *
  * Loads (or restores from cache) the prebuilt ads-and-tracking filter engine,
- * then enables blocking on `session.defaultSession` and on the "Open Original"
- * viewer's partition session. The cache is stored in the Electron user data
- * directory so subsequent starts do not need to re-download the filter lists.
+ * then enables network blocking and cosmetic filtering on
+ * `session.defaultSession` and on the "Open Original" viewer's partition
+ * session. The cache is stored in the Electron user data directory so
+ * subsequent starts do not need to re-download the filter lists.
  *
  * @param {Function} [fetchImpl=globalThis.fetch] - Fetch implementation used to download filter lists
  * @returns {Promise<import('@ghostery/adblocker-electron').ElectronBlocker>} The configured blocker
@@ -111,12 +167,17 @@ export async function initializeAdBlocker(fetchImpl = globalThis.fetch) {
     return originalOnBeforeRequest(details, callback);
   };
 
+  // The default session covers the app window itself, the Cloudflare
+  // challenge window, and every `net.fetch` article/fetch-bridge request.
   blocker.enableBlockingInSession(session.defaultSession);
 
   // The "Open Original" viewer runs in its own persistent session, so the
-  // default-session blocker above never sees its requests. Filter that
-  // session too, otherwise original-page views load ads and trackers.
-  enableNetworkBlockingInSession(blocker, session.fromPartition(ORIGINAL_SITES_PARTITION));
+  // default-session blocker above never sees its requests or frames. Filter
+  // that session too — network AND cosmetic — otherwise original-page views
+  // load ad scripts and trackers and render unfiltered ads.
+  const originalSitesSession = session.fromPartition(ORIGINAL_SITES_PARTITION);
+  enableNetworkBlockingInSession(blocker, originalSitesSession);
+  enableCosmeticBlockingInSession(blocker, originalSitesSession, resolveCosmeticPreloadPath());
 
   return blocker;
 }

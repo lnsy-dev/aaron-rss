@@ -592,6 +592,48 @@ export async function clearResearchTopicArticles(topicID) {
 /**
  * Manually download the YouTube video attached to an article.
  *
+/**
+ * Listeners notified whenever a downloaded video lands in the library
+ * (recordDownloadedVideo). Every download path funnels through these two
+ * writes, so subscribers see manual downloads from articles, command-menu
+ * downloads by URL, and background auto-downloads alike — without any of
+ * them having to know how to reach the UI.
+ *
+ * @type {Set<() => void>}
+ */
+const videoLibraryListeners = new Set();
+
+/**
+ * Subscribe to video-library changes (a download was recorded).
+ *
+ * @param {() => void} listener Called after the library record is written
+ * @returns {() => void} Unsubscribe function
+ */
+export function onVideoLibraryChanged(listener) {
+  videoLibraryListeners.add(listener);
+  return () => videoLibraryListeners.delete(listener);
+}
+
+/**
+ * Tell subscribers a new video joined the library.
+ *
+ * @returns {void}
+ */
+function notifyVideoLibraryChanged() {
+  for (const listener of videoLibraryListeners) {
+    try {
+      listener();
+    } catch (error) {
+      // A broken subscriber must not break the download flow.
+      console.error('Video library listener failed:', error);
+    }
+  }
+}
+
+/**
+ * Download the YouTube video attached to an article on explicit user
+ * request.
+ *
  * Downloads only run when the user explicitly clicks the article's
  * Download button (feeds with the auto-download preference instead use
  * autoDownloadNewYouTubeVideos during refreshes).
@@ -634,6 +676,7 @@ export async function downloadArticleYouTubeVideo(feed, article) {
       channelID: result.channelID || null,
       channelName: result.channelName || null,
     });
+    notifyVideoLibraryChanged();
     return result;
   } catch (error) {
     console.error(`Unexpected error downloading YouTube video ${article.url}:`, error);
@@ -745,6 +788,7 @@ export async function downloadYouTubeVideoFromURL(url) {
         channelID: result.channelID || null,
         channelName: result.channelName || null,
       });
+      notifyVideoLibraryChanged();
     } catch (error) {
       // The expensive part (the download) succeeded; losing the library
       // bookkeeping must not read as a lost download.

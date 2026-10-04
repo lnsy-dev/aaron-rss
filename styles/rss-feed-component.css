@@ -20,7 +20,10 @@ body command-panel dialog {
   gap: 12pt;
   padding: 0.5rem 1rem;
   margin: 0;
-  background: transparent;
+  /* Opaque so list content scrolling underneath never renders behind the
+     hamburger menu; the sticky view headers below rely on the header
+     covering whatever scrolls under it. */
+  background: var(--background-color);
   border: none;
   box-shadow: none;
   position: sticky;
@@ -161,6 +164,15 @@ body.distraction-free
 /* The footer reserved 4rem of bottom padding; reclaim it. */
 body.distraction-free .rss-content-area {
   padding-bottom: 1.5rem;
+}
+
+/* The app header is hidden here, so the view headers that normally stick
+   below it would leave a dead band at the top of the page. Pin them to
+   the top instead. */
+body.distraction-free .rss-videos-view-header,
+body.distraction-free .rss-podcasts-view-header,
+body.distraction-free .rss-read-later-view-header {
+  top: 0;
 }
 
 body.distraction-free
@@ -1628,7 +1640,24 @@ webview.rss-article-viewer-frame {
 }
 
 /* Videos view header: total count plus the "Play All" button that
-   plays every downloaded video one after the other. */
+   plays every downloaded video one after the other.
+
+   It sticks just below the app header (height published as
+   --rss-header-height) so the button never slides underneath the
+   hamburger menu, and its background is opaque so the entries scrolling
+   under it stay hidden. The negative inline margins bleed the background
+   to the edges of the view's own padding. */
+.rss-videos-view-header,
+.rss-podcasts-view-header,
+.rss-read-later-view-header {
+  position: sticky;
+  top: var(--rss-header-height, 0px);
+  z-index: 90;
+  background: var(--background-color);
+  margin-inline: -0.75rem;
+  padding-inline: 1rem;
+}
+
 .rss-videos-view-header {
   display: flex;
   align-items: center;

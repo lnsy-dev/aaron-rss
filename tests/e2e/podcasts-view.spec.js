@@ -234,6 +234,45 @@ test.describe('podcasts view', () => {
     );
   });
 
+  test('the Podcasts view header sticks below the app header', async ({ page }) => {
+    test.setTimeout(60000);
+    await seedPodcastFeed(page);
+    await downloadEpisode(page, 'View Episode One');
+    await downloadEpisode(page, 'View Episode Two');
+
+    const view = await openPodcastsView(page);
+    const button = view.locator('.rss-podcasts-play-all-button');
+    await expect(button).toBeVisible();
+
+    // Scrolling used to slide the header under the sticky app header,
+    // where the hamburger swallowed clicks on Play All. Sticky rows never
+    // rise above the app header's bottom edge, so the buttons stay hittable.
+    for (const scrollY of [0, 100, 300]) {
+      await page.evaluate((y) => window.scrollTo(0, y), scrollY);
+      await page.waitForTimeout(100);
+      const layout = await page.evaluate(() => {
+        const header = document.querySelector('.rss-podcasts-view-header');
+        const appHeader = document.querySelector('.rss-header');
+        const buttonEl = document.querySelector('.rss-podcasts-play-all-button');
+        const bb = buttonEl.getBoundingClientRect();
+        const hit = document.elementFromPoint(bb.left + bb.width / 2, bb.top + bb.height / 2);
+        return {
+          position: getComputedStyle(header).position,
+          headerTop: header.getBoundingClientRect().top,
+          appHeaderBottom: appHeader.getBoundingClientRect().bottom,
+          hitIsButton: hit === buttonEl,
+        };
+      });
+      expect(layout.position).toBe('sticky');
+      // The row is either still in its natural position below the header or
+      // pinned to it; it never crosses up behind it.
+      expect(layout.headerTop, `crossed the app header at scrollY ${scrollY}`).toBeGreaterThanOrEqual(
+        layout.appHeaderBottom - 1
+      );
+      expect(layout.hitIsButton, `Play All was covered at scrollY ${scrollY}`).toBe(true);
+    }
+  });
+
   test('an empty library shows the empty state without Play All', async ({ page }) => {
     await page.goto('/');
     const component = page.locator('rss-feed-component');

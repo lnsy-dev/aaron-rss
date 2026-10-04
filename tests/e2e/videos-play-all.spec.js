@@ -91,6 +91,24 @@ test.describe('videos play all', () => {
     await expect(header).toBeVisible();
     await expect(header.locator('.rss-videos-view-count')).toHaveText('2 videos');
     await expect(header.locator('.rss-videos-play-all-button')).toHaveText('▶ Play All');
+
+    // The header text renders in the theme's foreground color (not the
+    // muted quaternary color it used to use).
+    const colors = await header.evaluate((el) => ({
+      header: getComputedStyle(el).color,
+      count: getComputedStyle(el.querySelector('.rss-videos-view-count')).color,
+    }));
+    expect(colors.count).toBe(colors.header);
+    const quaternary = await page.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--quaternary-color)';
+      document.body.appendChild(probe);
+      const value = getComputedStyle(probe).color;
+      probe.remove();
+      return value;
+    });
+    expect(colors.count).not.toBe(quaternary);
+
     // The newest download is listed first (played first by Play All).
     await expect(
       page.locator('.rss-videos-view-item .rss-article-title').first()

@@ -1640,7 +1640,9 @@ webview.rss-article-viewer-frame {
 }
 
 /* Videos view header: total count plus the "Play All" button that
-   plays every downloaded video one after the other.
+   plays every downloaded video one after the other. The header text
+   reads with the theme's foreground color (it used to use the muted
+   --quaternary-color, which was too faint against the background).
 
    It sticks just below the app header (height published as
    --rss-header-height) so the button never slides underneath the
@@ -1664,11 +1666,12 @@ webview.rss-article-viewer-frame {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.25rem 0.25rem 0.5rem;
+  color: var(--foreground-color);
 }
 
 .rss-videos-view-count {
   font-size: 0.85rem;
-  color: var(--quaternary-color);
+  color: inherit;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }

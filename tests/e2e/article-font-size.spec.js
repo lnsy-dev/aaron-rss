@@ -168,4 +168,40 @@ test.describe('Article font size', () => {
     const resetSize = await body.evaluate((el) => getComputedStyle(el).fontSize);
     expect(parseFloat(resetSize)).toBe(parseFloat(defaultSize));
   });
+
+  test('a non-zero step also scales the app chrome (main header)', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+
+    // The main header is always visible; its hamburger and unread badge
+    // are the chrome the shortcuts used to leave untouched.
+    const chrome = page.locator('.rss-header');
+    const measure = () =>
+      chrome.evaluate((header) => ({
+        hamburger: getComputedStyle(header.querySelector('.rss-hamburger')).fontSize,
+        unread: getComputedStyle(header.querySelector('.rss-unread-count')).fontSize,
+      }));
+
+    await component.evaluate((el) => {
+      el.settings.articleFontStep = 0;
+      el._applyArticleFontStep();
+    });
+    const defaults = await measure();
+
+    await component.evaluate((el) => {
+      el.settings.articleFontStep = 2;
+      el._applyArticleFontStep();
+    });
+    const scaled = await measure();
+    expect(parseFloat(scaled.hamburger)).toBeGreaterThan(parseFloat(defaults.hamburger));
+    expect(parseFloat(scaled.unread)).toBeGreaterThan(parseFloat(defaults.unread));
+
+    // Reset restores the unscaled chrome.
+    await component.evaluate((el) => {
+      el.settings.articleFontStep = 0;
+      el._applyArticleFontStep();
+    });
+    const reset = await measure();
+    expect(parseFloat(reset.hamburger)).toBe(parseFloat(defaults.hamburger));
+    expect(parseFloat(reset.unread)).toBe(parseFloat(defaults.unread));
+  });
 });

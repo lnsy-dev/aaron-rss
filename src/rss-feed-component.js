@@ -463,6 +463,17 @@ class RSSFeedComponent extends DataroomElement {
    */
   renderHeader() {
     const header = this.create('header', { class: 'rss-header' });
+    this.headerEl = header;
+    this._syncHeaderHeight();
+    // The header is sticky, so the view headers below it (Videos, Podcasts,
+    // Read Later) must know how far down to stick. Font size changes and
+    // window resizes both move that line, so track it instead of guessing
+    // a hard-coded offset in CSS.
+    if (typeof ResizeObserver !== 'undefined') {
+      this._headerResizeObserver = new ResizeObserver(() => this._syncHeaderHeight());
+      this._headerResizeObserver.observe(header);
+    }
+    window.addEventListener('resize', this._headerResizeHandler = () => this._syncHeaderHeight());
 
     const menuButton = document.createElement('button');
     menuButton.className = 'rss-hamburger';
@@ -481,6 +492,24 @@ class RSSFeedComponent extends DataroomElement {
     this.unreadCountBadge.setAttribute('aria-live', 'polite');
     this.unreadCountBadge.title = 'Unread articles';
     header.appendChild(this.unreadCountBadge);
+  }
+
+  /**
+   * Publish the sticky header's height as the --rss-header-height custom
+   * property, which the view headers (Videos, Podcasts, Read Later) use as
+   * their sticky offset so their Play All buttons stop sliding underneath
+   * the hamburger menu.
+   *
+   * @returns {void}
+   */
+  _syncHeaderHeight() {
+    if (!this.headerEl) {
+      return;
+    }
+    const height = Math.round(this.headerEl.getBoundingClientRect().height);
+    if (height > 0) {
+      this.style.setProperty('--rss-header-height', `${height}px`);
+    }
   }
 
   /**

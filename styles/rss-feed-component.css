@@ -2115,3 +2115,70 @@ rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"])
      multiplies whatever the embed inherits without hardcoding a base. */
   font-size: calc(var(--article-font-scale) * 1em);
 }
+
+/* App chrome: the shortcut adjusts the whole interface, not just the
+   reading pane. The main header, the feed list rows, the view headers,
+   and the action buttons scale with the same factor; each rule
+   multiplies its own base so the relative sizes are preserved. (1em in
+   font-size resolves to the parent's computed size, so inheriting
+   elements multiply cleanly without hardcoding a base.) */
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-hamburger {
+  font-size: calc(var(--article-font-scale) * 1rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-unread-count {
+  font-size: calc(var(--article-font-scale) * 0.875rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-feed-title {
+  font-size: calc(var(--article-font-scale) * 1em);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-unread-badge {
+  font-size: calc(var(--article-font-scale) * 0.8rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-kebab-button {
+  font-size: calc(var(--article-font-scale) * 1.1rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-title {
+  font-size: calc(var(--article-font-scale) * 1em);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-meta {
+  font-size: calc(var(--article-font-scale) * 0.8rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-summary {
+  font-size: calc(var(--article-font-scale) * 0.9rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-feed-name {
+  font-size: calc(var(--article-font-scale) * 1em);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-videos-view-count,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-podcasts-view-count,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-read-later-view-count {
+  font-size: calc(var(--article-font-scale) * 0.85rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-downloaded-badge {
+  font-size: calc(var(--article-font-scale) * 0.8rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-action-button,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-button-primary,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-button-danger,
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-modal-buttons button {
+  font-size: calc(var(--article-font-scale) * 0.85rem);
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-viewer-header h2 {
+  font-size: calc(var(--article-font-scale) * var(--h3-font-size));
+}
+
+rss-feed-component[data-article-font-step]:not([data-article-font-step="step0"]) .rss-article-viewer-back {
+  font-size: calc(var(--article-font-scale) * 0.85rem);
+}

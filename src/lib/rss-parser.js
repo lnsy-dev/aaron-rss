@@ -10,6 +10,13 @@ import { decodeHTMLEntities, stripHTML } from './html-utils.js';
 import { extractAudioEnclosure } from './podcast.js';
 
 const parser = new Parser({
+  // Feeds exist whose <rss> root carries no version attribute (or an
+  // unusual one like "1.1"). Without this, rss-parser throws
+  // "Feed not recognized as RSS 1 or 2." for those; with it, the document
+  // is parsed with the RSS 2 rules, which is what those feeds are in
+  // practice. Documents whose root is not <rss> at all (HTML pages) are
+  // rejected earlier, in parseFeedText.
+  defaultRSS: 2,
   customFields: {
     feed: ['language', 'copyright', 'managingEditor', 'webMaster'],
     item: [
@@ -26,6 +33,7 @@ const FEED_TYPES = {
   RSS: 'rss',
   ATOM: 'atom',
   JSON: 'jsonFeed',
+  HTML: 'html',
   UNKNOWN: 'unknown',
 };
 
@@ -42,6 +50,18 @@ export async function parseFeedText(feedContent, feedURL) {
 
     if (type === FEED_TYPES.JSON) {
       return parseJSONFeed(feedContent, feedURL);
+    }
+
+    // An HTML page can never parse as a feed, and handing it to
+    // rss-parser only produces the cryptic "Feed not recognized as RSS 1
+    // or 2." This is the normal shape of a bot-check, consent, login, or
+    // error page served with HTTP 200, so name the real cause.
+    if (type === FEED_TYPES.HTML) {
+      console.error(
+        `Feed parsing failed: ${feedURL || 'feed URL'} returned an HTML page, not a feed. ` +
+        'The site may be behind a bot check, or the address is a regular page.'
+      );
+      return null;
     }
 
     const parsed = await parser.parseString(feedContent);
@@ -166,19 +186,57 @@ function extractJSONAuthors(value) {
 /**
  * Detect the syndication format from raw content.
  *
+ * The decision reads the document's first element, not just any marker
+ * substring: an HTML page that merely mentions "<rss" in its text used to
+ * be classified as RSS and then died in the XML parser with an unrelated
+ * syntax error. Everything before the root element — XML declaration,
+ * comments, doctype, whitespace, byte-order mark — is skipped first.
+ *
  * @param {string} content
- * @returns {string}
+ * @returns {string} A FEED_TYPES value
  */
 function detectFeedType(content) {
-  const trimmed = content.trim().toLowerCase();
+  const trimmed = stripXMLProlog(content).trim().toLowerCase();
 
-  if (trimmed.includes('<rss')) return FEED_TYPES.RSS;
-  if (trimmed.includes('<feed') && trimmed.includes('xmlns="http://www.w3.org/2005/atom"')) {
-    return FEED_TYPES.ATOM;
+  if (trimmed.startsWith('{')) return FEED_TYPES.JSON;
+  if (trimmed.startsWith('<rss')) return FEED_TYPES.RSS;
+  if (trimmed.startsWith('<feed')) return FEED_TYPES.ATOM;
+  if (trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html')) {
+    return FEED_TYPES.HTML;
   }
-  if (trimmed.startsWith('{') && trimmed.includes('"version"')) return FEED_TYPES.JSON;
 
+  // Everything else (RSS 1.0's <rdf:RDF> root, unknown dialects) still
+  // goes through rss-parser below, exactly as before; only HTML is
+  // short-circuited, because no XML parser can make a feed out of it.
   return FEED_TYPES.UNKNOWN;
+}
+
+/**
+ * Remove everything that may legally precede an XML document's root
+ * element: the byte-order mark, the XML declaration, comments, the
+ * doctype, and whitespace.
+ *
+ * @param {string} content - Raw document text
+ * @returns {string} Text starting at (or after) the root element
+ */
+function stripXMLProlog(content) {
+  let text = (content || '').replace(/^\uFEFF/, '');
+
+  // One pass per prolog construct; documents never nest them, and each
+  // construct may appear in any order, separated by whitespace.
+  for (let i = 0; i < 8; i++) {
+    const before = text;
+    text = text
+      .replace(/^\s+/, '')
+      .replace(/^<\?xml\s[^>]*\?>/, '')
+      .replace(/^<!--[\s\S]*?-->/, '')
+      .replace(/^<!doctype[^>]*>/i, '');
+    if (text === before) {
+      break;
+    }
+  }
+
+  return text;
 }
 
 /**

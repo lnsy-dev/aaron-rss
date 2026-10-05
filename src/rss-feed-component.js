@@ -51,6 +51,7 @@ import {
   downloadArticleYouTubeVideo,
   downloadYouTubeVideoFromURL,
   deleteArticleYouTubeVideo,
+  onVideoLibraryChanged,
   isYouTubeChannelFeedSubscribed,
   subscribeToYouTubeChannelFeed,
   downloadArticlePodcast,
@@ -235,6 +236,13 @@ class RSSFeedComponent extends DataroomElement {
   // Ready (downloaded, unwatched) video count for the footer badge.
   this._videosReadyCount = 0;
   this._videosReadyBadgeEl = null;
+  // A finished download records the video in the library (see
+  // onVideoLibraryChanged in feed-manager); re-render the Videos view in
+  // place when it is open so the new video shows up without switching
+  // views (see _handleVideoLibraryChanged).
+  this._videoLibraryUnsubscribe = onVideoLibraryChanged(() =>
+    this._handleVideoLibraryChanged()
+  );
   // Cached {feed, article} pairs for the Podcasts view (see
   // renderPodcastsView).
   this._podcastsEntries = null;
@@ -1054,6 +1062,26 @@ class RSSFeedComponent extends DataroomElement {
       badge.textContent = '';
       badge.removeAttribute('aria-label');
       badge.hidden = true;
+    }
+  }
+
+  /**
+   * React to a downloaded video landing in the library (feed-manager's
+   * onVideoLibraryChanged fires after the record is written — every
+   * download path funnels through it). Re-renders the Videos view in
+   * place when it is open so the freshly finished download appears
+   * immediately, no view switch needed, and refreshes the footer ready
+   * badge.
+   *
+   * Fire-and-forget: failures are logged, never thrown, so the download
+   * flow is never interrupted by view bookkeeping.
+   *
+   * @returns {void}
+   */
+  _handleVideoLibraryChanged() {
+    void this._refreshVideosReadyBadge();
+    if (this.viewMode === 'videos') {
+      void this.renderVideosView();
     }
   }
 

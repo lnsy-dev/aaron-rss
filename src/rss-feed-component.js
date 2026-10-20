@@ -1265,6 +1265,12 @@ class RSSFeedComponent extends DataroomElement {
     // DOMPurify strips target="_blank", so without this the anchor would
     // navigate the app window itself.
     const contentLink = event.target.closest('.rss-article-content a[href]');
+    // Ctrl/Cmd+clicking an image inside a link should open the image menu,
+    // not navigate the link, so defer to the image context menu handler.
+    const clickedImage = event.target.closest('img');
+    if (contentLink && clickedImage && (event.ctrlKey || event.metaKey)) {
+      return;
+    }
     if (contentLink) {
       const href = contentLink.getAttribute('href');
       if (href && !href.startsWith('#')) {
@@ -1485,7 +1491,10 @@ class RSSFeedComponent extends DataroomElement {
     // Ctrl+click fires a native contextmenu on macOS but not everywhere;
     // handle it explicitly so ctrl-click works as promised.
     this._imageCtrlClickHandler = (e) => {
-      if (!e.ctrlKey || e.button !== 0) {
+      // Ctrl+click (macOS) and Cmd+click both act as a secondary click for
+      // trackpad users; don't require a specific button value, since some
+      // platforms report the click with button !== 0.
+      if (!e.ctrlKey && !e.metaKey) {
         return;
       }
       const image = e.target.closest('img');

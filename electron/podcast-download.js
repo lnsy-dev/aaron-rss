@@ -21,6 +21,18 @@ const DOWNLOAD_DIR_NAME = 'Aaron-RSS-Podcasts';
 const PARTIAL_SUFFIX = '.part';
 
 /**
+ * Registry of in-flight downloads keyed by their final destination path.
+ *
+ * Each entry holds that download's AbortController and the `.part` path
+ * it is currently writing, so application quit can abort the network
+ * read (triggering each download's own cleanup) and the partial-file
+ * sweep can skip files that are still actively being written.
+ *
+ * @type {Map<string, {controller: AbortController, partPath: string}>}
+ */
+const activeDownloads = new Map();
+
+/**
  * Return the directory where downloaded podcast episodes are stored.
  *
  * @returns {string}
@@ -133,6 +145,9 @@ function reportDownloadProgress(onProgress, payload) {
  * Streams the response body straight to a `.part` file and renames it
  * into place on completion, so partial downloads never look finished.
  * Progress is reported as { stage, percent?, totalSize? } updates.
+ * The fetch can be aborted with cancelPodcastDownloads() (used when
+ * the application quits); an aborted download cleans up its `.part`
+ * file like any other failure.
  *
  * @param {string} url - Direct audio enclosure URL
  * @param {string} suggestedName - File name proposed by the renderer
@@ -146,6 +161,9 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
 
   let destination = null;
   let partPath = null;
+  // Each download gets its own controller so quit cancels exactly the
+  // in-flight fetches, not unrelated work.
+  const controller = new AbortController();
 
   try {
     reportDownloadProgress(onProgress, { stage: 'starting', percent: null });
@@ -155,9 +173,18 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
     destination = await resolveDestinationPath(getPodcastDownloadDirectory(), fileName);
     partPath = `${destination}${PARTIAL_SUFFIX}`;
 
-    const response = await fetch(url, { redirect: 'follow' });
+    // Register before the fetch starts so quit can cancel this
+    // download from the first byte onward.
+    activeDownloads.set(destination, { controller, partPath });
+
+    const response = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+    });
     if (!response.ok) {
-      return { error: `Download failed with status ${response.status}` };
+      // Thrown so the shared catch unregisters the download; the
+      // .part file is not created until later, so nothing to unlink.
+      throw new Error(`Download failed with status ${response.status}`);
     }
 
     // Reject obvious non-audio responses (e.g. HTML error pages that
@@ -169,7 +196,7 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
       isAudioURLExtension(url) ||
       contentType === 'application/octet-stream';
     if (!looksAudio) {
-      return { error: `URL does not point to audio (${contentType || 'unknown type'})` };
+      throw new Error(`URL does not point to audio (${contentType || 'unknown type'})`);
     }
 
     const totalBytes = Number(response.headers.get('content-length')) || null;
@@ -177,7 +204,7 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
 
     const bodyStream = response.body;
     if (!bodyStream) {
-      return { error: 'Download failed: empty response body' };
+      throw new Error('Download failed: empty response body');
     }
 
     const nodeStream = Readable.fromWeb(bodyStream);
@@ -200,25 +227,37 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
     }
 
     // Never overwrite an existing file: if another download finished
-    // first, keep both by re-resolving a free name.
+    // first, keep both by re-resolving a free name. The registry entry
+    // moves with it so cancellation and sweeps stay accurate.
     try {
       await fs.access(destination);
+      activeDownloads.delete(destination);
       const ext = path.extname(destination);
       destination = await resolveDestinationPath(
         path.dirname(destination),
         `${path.basename(destination, ext)} (2)${ext}`
       );
+      partPath = `${destination}${PARTIAL_SUFFIX}`;
+      activeDownloads.set(destination, { controller, partPath });
     } catch {
       // Destination still free — proceed with the rename.
     }
     await fs.rename(partPath, destination);
     partPath = null;
+    // Finished successfully — no longer eligible for cancellation.
+    activeDownloads.delete(destination);
 
     reportDownloadProgress(onProgress, { stage: 'processing', percent: 100 });
 
     return { filePath: destination };
   } catch (error) {
-    // Remove the partial file so failed downloads leave no litter.
+    // This download is done regardless of how it ended.
+    if (destination) {
+      activeDownloads.delete(destination);
+    }
+    // Remove the partial file so aborted or failed downloads leave no
+    // litter. An abort can land mid-stream, when the .part file is
+    // already open on disk.
     if (partPath) {
       try {
         await fs.unlink(partPath);
@@ -226,8 +265,82 @@ export async function downloadPodcastEpisode(url, suggestedName, onProgress = nu
         // Nothing to clean up (or already removed).
       }
     }
+    // Abortions (application quit) are expected, not failures.
+    if (error?.name === 'AbortError') {
+      reportDownloadProgress(onProgress, { stage: 'cancelled', percent: null });
+      return { error: 'Download cancelled' };
+    }
     return { error: error.message || String(error) };
   }
+}
+
+/**
+ * Cancel every in-flight podcast download.
+ *
+ * The only current caller is the application quit flow: aborting the
+ * fetch makes each download's error handler remove its own `.part`
+ * file, exactly like a mid-stream network failure. Cancel by error
+ * name is used because the abort can surface either from the fetch
+ * call itself or from the body stream iteration.
+ *
+ * @returns {number} Number of downloads that were cancelled
+ */
+export function cancelPodcastDownloads() {
+  let count = 0;
+  for (const { controller } of activeDownloads.values()) {
+    try {
+      controller.abort();
+      count += 1;
+    } catch {
+      // Aborting cannot realistically throw; keep the loop resilient.
+    }
+  }
+  return count;
+}
+
+/**
+ * Delete orphaned `.part` files left in the download directory.
+ *
+ * Partial files survive the process only when the app is killed
+ * faster than its cleanup runs (crash, force quit, power loss, or
+ * a download aborted right at quit time). This sweep runs at startup
+ * and after quitting to remove those leftovers. Files being written
+ * by an in-flight download are skipped.
+ *
+ * @param {string} [dir] - Directory to sweep (defaults to the podcast folder)
+ * @returns {Promise<number>} Number of partial files removed
+ */
+export async function cleanupPartialDownloads(dir = getPodcastDownloadDirectory()) {
+  let removed = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    // Directory does not exist (or is unreadable) — nothing to sweep.
+    return 0;
+  }
+
+  const activePartPaths = new Set(
+    [...activeDownloads.values()].map((state) => state.partPath)
+  );
+
+  for (const entry of entries) {
+    if (!entry.name.endsWith(PARTIAL_SUFFIX)) {
+      continue;
+    }
+    const partPath = path.join(dir, entry.name);
+    if (activePartPaths.has(partPath)) {
+      // Still being written by an in-flight download — leave it.
+      continue;
+    }
+    try {
+      await fs.unlink(partPath);
+      removed += 1;
+    } catch {
+      // Unreadable or already gone — skip rather than fail the sweep.
+    }
+  }
+  return removed;
 }
 
 /**

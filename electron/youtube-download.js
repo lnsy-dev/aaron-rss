@@ -1354,3 +1354,59 @@ export async function deleteDownloadedVideo(filePath) {
     return false;
   }
 }
+
+/**
+ * Recognize yt-dlp's temporary download artifacts.
+ *
+ * While a video is downloading, yt-dlp writes `<id>.<ext>.part`
+ * (plus `.part-Frag<N>` / `.part-Frag<N>.part` for fragmented formats
+ * and `.ytdl` bookkeeping files). These match the `%(id)s.%(ext)s`
+ * output template, so app quit, a killed yt-dlp process, or a crash
+ * can leave them behind permanently.
+ *
+ * @param {string} name - File name (not a full path)
+ * @returns {boolean}
+ */
+function isPartialYtDlpFile(name) {
+  return /\.part(-Frag\d+(\.part)*)?$/.test(name) || /\.ytdl$/.test(name);
+}
+
+/**
+ * Delete orphaned yt-dlp partial files from the download directory.
+ *
+ * Runs at startup (leftovers from a crash or force-quit during the
+ * previous session) and after quitting. yt-dlp removes its own temp
+ * files when a download completes or fails gracefully, so anything
+ * still there when no yt-dlp process is running is stale.
+ *
+ * @returns {Promise<number>} Number of stale files removed
+ */
+export async function cleanupPartialDownloads() {
+  const dir = getDownloadDirectory();
+  let removed = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    // Directory does not exist (or is unreadable) — nothing to sweep.
+    return 0;
+  }
+
+  for (const entry of entries) {
+    // Only sweep regular files: directories matching these patterns
+    // are not yt-dlp artifacts.
+    if (entry.isDirectory()) {
+      continue;
+    }
+    if (!isPartialYtDlpFile(entry.name)) {
+      continue;
+    }
+    try {
+      await fs.unlink(path.join(dir, entry.name));
+      removed += 1;
+    } catch {
+      // Unreadable or already gone — skip rather than fail the sweep.
+    }
+  }
+  return removed;
+}

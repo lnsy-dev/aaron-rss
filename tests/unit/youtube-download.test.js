@@ -700,3 +700,61 @@ describe('yt-dlp update check bound', () => {
     expect(downloadArgs).toContain('https://www.youtube.com/watch?v=abc12345678');
   });
 });
+
+describe('cleanupPartialDownloads (youtube)', () => {
+  beforeEach(() => {
+    // This describe does not live under the main describe's hooks, so
+    // it resets its own mocks and re-applies the downloads-path stub.
+    vi.clearAllMocks();
+    mockGetPath.mockImplementation((name) => `/mock/${name}`);
+  });
+
+  it('sweeps stale yt-dlp temp files but keeps finished videos', async () => {
+    const { cleanupPartialDownloads } = await importYoutubeDownload();
+    // yt-dlp artifact shapes: plain .part, fragmented .part-Frag<N>,
+    // fragmented .part-Frag<N>.part, .ytdl bookkeeping, plus a finished
+    // video and an unrelated file that must survive.
+    mockReaddir.mockResolvedValue([
+      { name: 'abc123.mp4', isDirectory: () => false },
+      { name: 'def456.webm.part', isDirectory: () => false },
+      { name: 'ghi789.f137.mp4.part-Frag1', isDirectory: () => false },
+      { name: 'jkl012.mp4.part-Frag2.part', isDirectory: () => false },
+      { name: 'mno345.mp4.ytdl', isDirectory: () => false },
+      { name: 'cover.jpg', isDirectory: () => false },
+      { name: 'not-a-tmp.partx', isDirectory: () => false },
+      { name: 'some-dir', isDirectory: () => true },
+    ]);
+    mockUnlink.mockResolvedValue(undefined);
+
+    const removed = await cleanupPartialDownloads();
+
+    expect(removed).toBe(4);
+    expect(mockUnlink.mock.calls.map((call) => call[0])).toEqual([
+      '/mock/downloads/Aaron-RSS-YouTube/def456.webm.part',
+      '/mock/downloads/Aaron-RSS-YouTube/ghi789.f137.mp4.part-Frag1',
+      '/mock/downloads/Aaron-RSS-YouTube/jkl012.mp4.part-Frag2.part',
+      '/mock/downloads/Aaron-RSS-YouTube/mno345.mp4.ytdl',
+    ]);
+  });
+
+  it('tolerates a missing download directory', async () => {
+    const { cleanupPartialDownloads } = await importYoutubeDownload();
+    mockReaddir.mockRejectedValue(Object.assign(new Error('no dir'), { code: 'ENOENT' }));
+
+    await expect(cleanupPartialDownloads()).resolves.toBe(0);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it('continues past a file it cannot delete', async () => {
+    const { cleanupPartialDownloads } = await importYoutubeDownload();
+    mockReaddir.mockResolvedValue([
+      { name: 'a.mp4.part', isDirectory: () => false },
+      { name: 'b.mp4.part', isDirectory: () => false },
+    ]);
+    mockUnlink.mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }));
+    mockUnlink.mockResolvedValueOnce(undefined);
+
+    await expect(cleanupPartialDownloads()).resolves.toBe(1);
+    expect(mockUnlink).toHaveBeenCalledTimes(2);
+  });
+});

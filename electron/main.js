@@ -35,12 +35,16 @@ import {
   getDownloadDirectory,
   readCookieConfig,
   writeCookieConfig,
+  // Aliased because podcast-download.js exports the same name.
+  cleanupPartialDownloads as cleanupPartialYouTube,
 } from './youtube-download.js';
 import { createMediaRequestHandler } from './media-protocol.js';
 import {
   downloadPodcastEpisode,
   deleteDownloadedPodcast,
   getPodcastDownloadDirectory,
+  cancelPodcastDownloads,
+  cleanupPartialDownloads as cleanupPartialPodcasts,
 } from './podcast-download.js';
 import { createResearchApiServer, API_ENDPOINTS, RESEARCH_API_HOST } from './research-api.js';
 import { installProcessErrorGuards } from './error-guards.js';
@@ -879,7 +883,70 @@ function startResearchApiServer() {
     });
 }
 
+/**
+ * Remove partial download files from both download folders and log
+ * the result. Used after quitting and at startup; a failure here is
+ * logged but never blocks quitting or starting.
+ *
+ * @returns {Promise<number>} Total number of partial files removed
+ */
+async function sweepPartialDownloads() {
+  const [podcastParts, youtubeParts] = await Promise.allSettled([
+    cleanupPartialPodcasts(),
+    cleanupPartialYouTube(),
+  ]);
+  let removed = 0;
+  if (podcastParts.status === 'fulfilled') {
+    removed += podcastParts.value;
+  } else {
+    console.error('[electron] Podcast partial-file sweep failed:', podcastParts.reason);
+  }
+  if (youtubeParts.status === 'fulfilled') {
+    removed += youtubeParts.value;
+  } else {
+    console.error('[electron] YouTube partial-file sweep failed:', youtubeParts.reason);
+  }
+  if (removed > 0) {
+    console.log(`[electron] Removed ${removed} stale partial download file(s)`);
+  }
+  return removed;
+}
+
+/**
+ * Set to true while the quit flow is running its cleanup, so the
+ * follow-up app.quit() passes through before-quit without re-entering
+ * the cleanup branch and preventing the quit forever.
+ *
+ * @type {boolean}
+ */
+let quitCleanupDone = false;
+
+// Quit flow that cleans the download folders first. Downloads in
+// flight are aborted (each removes its own .part file via its error
+// handler) and then a final sweep removes anything a killed yt-dlp
+// process or torn-down fetch left behind, so an interrupted session
+// never leaves .part litter in the user's Downloads folder.
+app.on('before-quit', (event) => {
+  if (quitCleanupDone) {
+    return;
+  }
+  quitCleanupDone = true;
+  event.preventDefault();
+
+  cancelPodcastDownloads();
+  sweepPartialDownloads()
+    .catch((error) => {
+      console.error('[electron] Quit-time partial download sweep failed:', error);
+    })
+    .finally(() => {
+      app.quit();
+    });
+});
+
 app.whenReady().then(async () => {
+  // Orphaned partial downloads from a previous session (crash, force
+  // quit, power loss) are swept away before any new download can run.
+  await sweepPartialDownloads();
   protocol.handle('app', handleAppRequest);
   // Downloaded videos live under Downloads/Aaron-RSS-YouTube and
   // podcasts under Downloads/Aaron-RSS-Podcasts; only files inside

@@ -15,6 +15,7 @@ const mockAccess = vi.fn();
 const mockOpen = vi.fn();
 const mockRename = vi.fn();
 const mockUnlink = vi.fn();
+const mockReaddir = vi.fn();
 
 vi.mock('electron', () => ({
   app: {
@@ -29,6 +30,7 @@ vi.mock('node:fs/promises', () => ({
     open: (...args) => mockOpen(...args),
     rename: (...args) => mockRename(...args),
     unlink: (...args) => mockUnlink(...args),
+    readdir: (...args) => mockReaddir(...args),
   },
 }));
 
@@ -39,6 +41,8 @@ import {
   formatBytes,
   downloadPodcastEpisode,
   deleteDownloadedPodcast,
+  cancelPodcastDownloads,
+  cleanupPartialDownloads,
 } from '../../electron/podcast-download.js';
 
 /** Build a mocked writable file handle. */
@@ -220,6 +224,87 @@ describe('downloadPodcastEpisode', () => {
       '/users/test/Downloads/Aaron-RSS-Podcasts/Episode 1.mp3.part'
     );
     expect(mockRename).not.toHaveBeenCalled();
+  });
+
+  it('can be cancelled mid-stream and still cleans up the .part file', async () => {
+    mockOpen.mockResolvedValue(fakeFileHandle());
+    // A stream that never delivers data and never closes simulates a
+    // slow/hung CDN response. Real undici rejects the body with an
+    // AbortError when its signal fires; the mock reproduces that so
+    // the streaming loop actually ends on cancellation.
+    let abortBody;
+    global.fetch = vi.fn(async (url, options) => {
+      const body = new ReadableStream({
+        start(controller) {
+          abortBody = () =>
+            controller.error(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+        },
+      });
+      options?.signal?.addEventListener('abort', () => abortBody());
+      return mockResponse(body, { 'content-type': 'audio/mpeg' });
+    });
+
+    const pending = downloadPodcastEpisode('https://cdn.example.com/ep1.mp3', 'Episode 1.mp3');
+
+    // Wait until the streaming loop is reached (the .part file is open
+    // and awaiting chunks), then cancel all in-flight downloads.
+    await vi.waitFor(() => expect(mockOpen).toHaveBeenCalled());
+    expect(cancelPodcastDownloads()).toBe(1);
+
+    const result = await pending;
+
+    expect(result.error).toBe('Download cancelled');
+    expect(mockUnlink).toHaveBeenCalledWith(
+      '/users/test/Downloads/Aaron-RSS-Podcasts/Episode 1.mp3.part'
+    );
+    expect(mockRename).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupPartialDownloads', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetPath.mockReturnValue('/users/test/Downloads');
+  });
+
+  /** Build a fakeDirent-ish entry object. */
+  function entry(name) {
+    return { name, isDirectory: () => false };
+  }
+
+  it('removes orphaned .part files but keeps finished downloads', async () => {
+    mockReaddir.mockResolvedValue([
+      entry('Episode 1.mp3.part'), // stale partial
+      entry('Episode 2.mp3'),      // finished download — keep
+      entry('feed.opml'),          // unrelated file — keep
+      entry('Episode 3.mp3.part'), // stale partial
+    ]);
+    mockUnlink.mockResolvedValue(undefined);
+
+    const removed = await cleanupPartialDownloads();
+
+    expect(removed).toBe(2);
+    expect(mockUnlink).toHaveBeenCalledWith('/users/test/Downloads/Aaron-RSS-Podcasts/Episode 1.mp3.part');
+    expect(mockUnlink).toHaveBeenCalledWith('/users/test/Downloads/Aaron-RSS-Podcasts/Episode 3.mp3.part');
+    // Finished media must never be touched by the sweep.
+    expect(mockUnlink).not.toHaveBeenCalledWith('/users/test/Downloads/Aaron-RSS-Podcasts/Episode 2.mp3');
+    expect(mockUnlink).not.toHaveBeenCalledWith('/users/test/Downloads/Aaron-RSS-Podcasts/feed.opml');
+  });
+
+  it('tolerates a missing download directory', async () => {
+    mockReaddir.mockRejectedValue(Object.assign(new Error('no dir'), { code: 'ENOENT' }));
+
+    expect(await cleanupPartialDownloads()).toBe(0);
+    expect(mockUnlink).not.toHaveBeenCalled();
+  });
+
+  it('continues past a file it cannot delete', async () => {
+    mockReaddir.mockResolvedValue([entry('a.mp3.part'), entry('b.mp3.part')]);
+    mockUnlink.mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }));
+    mockUnlink.mockResolvedValueOnce(undefined);
+
+    expect(await cleanupPartialDownloads()).toBe(1);
+    expect(mockUnlink).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -188,6 +188,22 @@ body.distraction-free
 }
 
 /*
+  Exception: while the viewer shows the original website, the guest page
+  takes keyboard focus and can swallow Escape (cross-origin guests
+  refuse the Escape-forwarder injection; see src/lib/original-embed.js),
+  so the header with the back and close buttons — and the "Show Article"
+  toggle — stay visible as a way back into the app.
+*/
+body.distraction-free
+  .rss-article-viewer-overlay.rss-viewer-mode-original
+  .rss-article-viewer-header,
+body.distraction-free
+  .rss-article-viewer-overlay.rss-viewer-mode-original
+  .rss-article-viewer-actions {
+  display: flex;
+}
+
+/*
   Windowed rendering placeholder. Its height is set from JavaScript to
   stand in for article rows that are outside the rendered window, so the
   document keeps its total height when rows above the viewport are

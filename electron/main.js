@@ -584,6 +584,24 @@ app.on('web-contents-created', (event, webContents) => {
     }
     return { action: 'deny' }; // Never a window from guest content.
   });
+  // Forward Escape from inside the "Open Original" guest page. The
+  // before-input-event listener on the main window's webContents never
+  // sees keystrokes aimed at a webview (the guest is its own
+  // webContents), so without this Escape would stop closing the article
+  // viewer as soon as the user clicked into the original website —
+  // fatal in Distraction Free Mode, where Escape is the only exit. The
+  // press is not prevented, so the guest page keeps its own Escape
+  // behavior; the renderer deduplicates via the timestamp guard in
+  // _runEscapeAction().
+  webContents.on('before-input-event', (inputEvent, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'Escape') {
+      return;
+    }
+    const host = webContents.getHostWebContents();
+    if (host && !host.isDestroyed()) {
+      host.send('escape-pressed');
+    }
+  });
 });
 
 /**

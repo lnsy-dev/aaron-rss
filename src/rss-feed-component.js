@@ -109,6 +109,7 @@ import { isYouTubeURL, isYouTubeStream, isYouTubeHostURL, extractYouTubeVideoID,
 import {
   createOriginalSiteEmbed,
   navigateOriginalSiteEmbed,
+  isOriginalEmbedEscapeMessage,
   ORIGINAL_EMBED_BLOCKED_EVENT,
 } from './lib/original-embed.js';
 import { isElectronAvailable, buildVideoMediaUrl } from './lib/youtube-bridge.js';
@@ -265,6 +266,7 @@ class RSSFeedComponent extends DataroomElement {
     this._renderFrame = null;
     this._keyboardHandler = null;
     this._fullScreenChangeHandler = null;
+    this._originalEmbedMessageHandler = null;
     this._escapeCaptured = false;
     this._selectedArticle = null;
     this._lastViewedArticle = null;
@@ -6177,6 +6179,10 @@ class RSSFeedComponent extends DataroomElement {
 
     overlay._originalFrame = frame;
     overlay._viewerMode = 'original';
+    // Marks the overlay for CSS: in Distraction Free Mode the viewer
+    // header stays visible while the original website is shown, because
+    // the guest page can swallow Escape (see original-embed.js).
+    overlay.classList.add('rss-viewer-mode-original');
 
     this.activeModal = overlay;
     this.lockBackgroundScroll();
@@ -7813,6 +7819,7 @@ class RSSFeedComponent extends DataroomElement {
    */
   _showOriginalView(overlay, url) {
     overlay._viewerMode = 'original';
+    overlay.classList.add('rss-viewer-mode-original');
     overlay._articleBody.style.display = 'none';
     overlay._originalFrameContainer.style.display = 'block';
     this._navigateOriginalFrame(overlay._originalFrame, url, () => {
@@ -7842,6 +7849,7 @@ class RSSFeedComponent extends DataroomElement {
    */
   _showArticleView(overlay) {
     overlay._viewerMode = 'article';
+    overlay.classList.remove('rss-viewer-mode-original');
     overlay._originalFrameContainer.style.display = 'none';
     overlay._articleBody.style.display = '';
     overlay._articleBody.focus();
@@ -8267,6 +8275,20 @@ class RSSFeedComponent extends DataroomElement {
     if (window.electron?.onEscapePressed) {
       window.electron.onEscapePressed(() => this._runEscapeAction());
     }
+
+    // Escape pressed inside a same-origin "Open Original" guest page
+    // arrives as a postMessage from the forwarder injected by
+    // src/lib/original-embed.js (cross-origin guests refuse injection
+    // and rely on the Electron IPC path above instead). event.source
+    // is pinned to the active modal's embed so forged or stale
+    // messages from other frames are ignored.
+    this._originalEmbedMessageHandler = (event) => {
+      const frame = this.activeModal?._originalFrame;
+      if (frame && event.source === frame.contentWindow && isOriginalEmbedEscapeMessage(event.data)) {
+        this._runEscapeAction();
+      }
+    };
+    window.addEventListener('message', this._originalEmbedMessageHandler);
 
     // The native menu's "Quick Keys" item (Help menu) carries the
     // Cmd+?/Ctrl+? accelerator, so Electron consumes the keystroke before
@@ -9448,6 +9470,11 @@ class RSSFeedComponent extends DataroomElement {
     if (this._fullScreenChangeHandler) {
       document.removeEventListener('fullscreenchange', this._fullScreenChangeHandler);
       this._fullScreenChangeHandler = null;
+    }
+
+    if (this._originalEmbedMessageHandler) {
+      window.removeEventListener('message', this._originalEmbedMessageHandler);
+      this._originalEmbedMessageHandler = null;
     }
     if (this._escapeCaptured) {
       navigator.keyboard?.unlock();

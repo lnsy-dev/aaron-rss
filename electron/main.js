@@ -550,6 +550,16 @@ async function createWindow() {
       sendToMainWindow('show-quick-keys');
       return;
     }
+    // Quit the application completely with Ctrl+Q (Cmd+Q on macOS, where
+    // the accelerator also exists in the app menu; handling the keystroke
+    // here keeps Linux/Windows — which run without an application menu —
+    // covered too). app.quit() runs the before-quit cleanup that aborts
+    // in-flight downloads and sweeps partial files.
+    if ((input.control || input.meta) && input.key.toLowerCase() === 'q') {
+      event.preventDefault();
+      app.quit();
+      return;
+    }
     // Dev conveniences previously provided by the menu roles; kept only
     // in unpackaged runs so end-user builds have no hidden menu keys.
     if (!app.isPackaged) {

@@ -6171,8 +6171,8 @@ class RSSFeedComponent extends DataroomElement {
     overlay._originalFrameContainer = frameContainer;
 
     // Sites such as Slashdot send CSP frame-ancestors 'self', which blocks
-    // the iframe. Detect a blank load and fall back to the default browser
-    // so the user is not left staring at an error.
+    // the iframe. Detect a blank load and fail silently back to the feed
+    // (no external window for a page that cannot be shown).
     this._navigateOriginalFrame(frame, article.url);
     overlay.appendChild(dialog);
     this.appendChild(overlay);
@@ -7784,9 +7784,9 @@ class RSSFeedComponent extends DataroomElement {
    * elsewhere (see src/lib/original-embed.js). When the site cannot be
    * shown in-app — a load failure in the webview case, or a framing
    * refusal (CSP frame-ancestors) in the iframe case — `onBlocked`
-   * decides the fallback; the default closes the viewer and opens the
-   * URL in the system browser (used by the standalone original viewer,
-   * which has no article body to revert to).
+   * decides the fallback; the default fails silently (toast, viewer
+   * closed, no external window: a dead page must not pop a browser
+   * tab showing "site not found").
    *
    * @param {HTMLElement} embed - Embed from createOriginalSiteEmbed
    * @param {string} url - The original article URL
@@ -7799,9 +7799,12 @@ class RSSFeedComponent extends DataroomElement {
         onBlocked();
         return;
       }
-      this.showToast('This site blocks in-app viewing — opened in your browser instead', 'info');
+      // Fail silently: the page cannot be shown in-app (dead link, 404,
+      // framing refusal). Close the viewer back to the feed without
+      // opening a browser window — popping an external tab for a page
+      // that no longer exists just shows a "site not found" error.
+      this.showToast('This page cannot be shown in-app', 'info');
       this.closeModal();
-      this.openExternalURL(url);
     });
     navigateOriginalSiteEmbed(embed, url);
   }
@@ -7823,12 +7826,11 @@ class RSSFeedComponent extends DataroomElement {
     overlay._articleBody.style.display = 'none';
     overlay._originalFrameContainer.style.display = 'block';
     this._navigateOriginalFrame(overlay._originalFrame, url, () => {
-      // The site refused to render in-app: return to the extracted
-      // article instead of leaving a blank embed, and hand the page to
-      // the system browser so the user still gets the content.
+      // The site refused to render in-app (dead link, 404, framing
+      // refusal): fail silently back to the extracted article instead
+      // of opening a browser window for a page that is not there.
       this._showArticleView(overlay);
-      this.openExternalURL(url);
-      this.showToast('This site blocks in-app viewing — opened in your browser instead', 'info');
+      this.showToast('This page cannot be shown in-app', 'info');
     });
 
     // The back button now always closes the viewer, so expose a way back

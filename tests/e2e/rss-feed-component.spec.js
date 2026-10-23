@@ -1120,7 +1120,7 @@ test.describe('Aaron RSS', () => {
     expect(opened).toEqual([]);
   });
 
-  test('blocked original embed closes the viewer and opens the browser', async ({ page }) => {
+  test('blocked original embed closes the viewer and fails silently', async ({ page }) => {
     const component = page.locator('rss-feed-component');
     await expect(component).toHaveJSProperty('initialized', true);
 
@@ -1151,9 +1151,12 @@ test.describe('Aaron RSS', () => {
       );
     });
 
+    // Fail silently: the viewer closes back to the main feed and NO
+    // browser window opens for the dead page.
     await expect(viewer).not.toBeVisible();
+    await expect(component).toBeVisible();
     const opened = await page.evaluate(() => window.__openedExternalUrls);
-    expect(opened).toEqual(['https://blocked.example/post']);
+    expect(opened).toEqual([]);
   });
 
   test('article viewer reverts to the extracted article when the site blocks in-app rendering', async ({ page }) => {
@@ -1189,11 +1192,12 @@ test.describe('Aaron RSS', () => {
       );
     });
 
-    // Back to the extracted article; browser gets the URL too.
+    // Back to the extracted article; no browser window opens for the
+    // page that cannot be shown in-app.
     await expect(viewer.locator('.rss-article-viewer-body')).toBeVisible();
     await expect(frame).not.toBeVisible();
     const opened = await page.evaluate(() => window.__openedExternalUrls);
-    expect(opened).toEqual(['https://blocked.example/post']);
+    expect(opened).toEqual([]);
   });
 
   test('original viewer has an Open in Browser button', async ({ page }) => {

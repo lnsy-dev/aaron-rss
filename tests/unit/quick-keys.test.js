@@ -142,6 +142,11 @@ describe('getQuickKeyGroups', () => {
     expect(formatKeyCombo('F11', 'mac')).toEqual(['F11']);
   });
 
+  it('includes the quit shortcut', () => {
+    const combos = groups.flatMap((group) => group.items.map((item) => item.combo));
+    expect(combos).toContain('Mod+Q');
+  });
+
   it('formats the Plus and Minus tokens into key caps', () => {
     expect(formatKeyCombo('Mod+Plus', 'mac')).toEqual(['⌘', '+']);
     expect(formatKeyCombo('Mod+Plus', 'pc')).toEqual(['Ctrl', '+']);

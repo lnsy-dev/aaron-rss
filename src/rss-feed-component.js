@@ -8313,9 +8313,12 @@ class RSSFeedComponent extends DataroomElement {
 
     // In Electron, key events targeting a cross-origin iframe never reach
     // this document, so Escape would stop working while focus sits inside
-    // the "Open Original" website viewer. The main process forwards those
-    // presses over IPC instead (see electron/main.js); a timestamp guard
-    // in _runEscapeAction() keeps the two delivery paths from double-firing.
+    // the "Open Original" website viewer — and inside its <webview> guest
+    // they never even reach the main window's webContents. The main
+    // process therefore relays Escape from both the window and every
+    // webview guest over IPC (see electron/main.js and
+    // electron/escape-forwarding.js); a timestamp guard in
+    // _runEscapeAction() keeps the two delivery paths from double-firing.
     if (window.electron?.onEscapePressed) {
       window.electron.onEscapePressed(() => this._runEscapeAction());
     }

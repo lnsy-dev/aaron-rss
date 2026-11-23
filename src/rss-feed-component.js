@@ -3624,14 +3624,14 @@ class RSSFeedComponent extends DataroomElement {
       menu.appendChild(menuItem);
     }
 
-    const deleteItem = document.createElement('div');
-    deleteItem.className = 'rss-menu-item rss-menu-item-danger';
-    deleteItem.textContent = 'Delete';
-    deleteItem.addEventListener('click', () => {
+    const unsubscribeItem = document.createElement('div');
+    unsubscribeItem.className = 'rss-menu-item rss-menu-item-danger';
+    unsubscribeItem.textContent = 'Unsubscribe';
+    unsubscribeItem.addEventListener('click', () => {
       menu.remove();
       this.confirmDeleteFeed(feedID);
     });
-    menu.appendChild(deleteItem);
+    menu.appendChild(unsubscribeItem);
 
     this.appendChild(menu);
   }

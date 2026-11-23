@@ -35,6 +35,8 @@ import {
   deleteDownloadedVideoRecordsForArticleID as dbDeleteDownloadedVideoRecordsForArticleID,
   listFeedIDsInResearchTopics as dbListFeedIDsInResearchTopics,
   saveArticleMarkdown as dbSaveArticleMarkdown,
+  getArticleMarkdown as dbGetArticleMarkdown,
+  deleteArticleMarkdown as dbDeleteArticleMarkdown,
   listClearedUniqueIDs as dbListClearedUniqueIDs,
   listTopicDownloadedVideos as dbListTopicDownloadedVideos,
   clearResearchTopicArticles as dbClearResearchTopicArticles,
@@ -1220,4 +1222,70 @@ export function setArticleReadLaterScroll(feedID, articleID, scrollPosition) {
  */
 export function loadReadLaterArticles() {
   return dbLoadReadLaterArticles();
+}
+
+/**
+ * Extract an article immediately and store the full markdown offline.
+ *
+ * Saving an article to the Read Later archive is a request to keep it
+ * readable: the full page is fetched and extracted right away (the same
+ * Defuddle pipeline the article viewer uses, including PDF handling) and
+ * the markdown is stored in the article_markdown table, so the saved
+ * article can be opened instantly and read with no network.
+ *
+ * YouTube pages, social posts, and podcast episodes are skipped — they
+ * have dedicated viewers and generic extraction does not apply to them.
+ * Failures are swallowed (the article stays saved; the viewer simply
+ * extracts live the first time it is opened); the boolean return is for
+ * callers that want to report the outcome.
+ *
+ * @param {string} feedID
+ * @param {object} article - Must carry articleID and url
+ * @returns {Promise<boolean>} Whether an offline copy was stored
+ */
+export async function saveOfflineArticleCopy(feedID, article) {
+  if (!feedID || !article?.articleID || !article.url || article.skipPersist) {
+    return false;
+  }
+  if (isYouTubeURL(article.url)) {
+    return false;
+  }
+
+  try {
+    const extracted = await extractArticle(article.url);
+    if (!extracted?.markdown) {
+      return false;
+    }
+    await dbSaveArticleMarkdown(feedID, article.articleID, article.url, extracted.markdown);
+    return true;
+  } catch (error) {
+    console.error('Failed to extract an offline copy of the article:', article.url, error);
+    return false;
+  }
+}
+
+/**
+ * Load an article's stored offline copy, if one exists.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<{feedID: string, articleID: string, url: string|null, markdown: string, scrapedAt: string}|null>}
+ */
+export function loadOfflineArticleCopy(feedID, articleID) {
+  return dbGetArticleMarkdown(feedID, articleID);
+}
+
+/**
+ * Delete an article's stored offline copy.
+ *
+ * Un-saving an article from the Read Later archive removes the content
+ * extracted for it immediately — the archive membership and its offline
+ * copy live and die together.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteOfflineArticleCopy(feedID, articleID) {
+  await dbDeleteArticleMarkdown(feedID, articleID);
 }

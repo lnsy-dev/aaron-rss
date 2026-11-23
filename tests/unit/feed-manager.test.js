@@ -33,6 +33,8 @@ vi.mock('../../src/lib/database.js', () => ({
   deleteDownloadedVideoRecordsForArticleID: vi.fn(),
   listFeedIDsInResearchTopics: vi.fn(),
   saveArticleMarkdown: vi.fn(),
+  getArticleMarkdown: vi.fn(),
+  deleteArticleMarkdown: vi.fn(),
   listClearedUniqueIDs: vi.fn(),
   listTopicDownloadedVideos: vi.fn(),
   clearResearchTopicArticles: vi.fn(),
@@ -102,6 +104,8 @@ import { extractArticle } from '../../src/lib/article-extractor.js';
 import {
   listFeedIDsInResearchTopics,
   saveArticleMarkdown,
+  getArticleMarkdown,
+  deleteArticleMarkdown,
   listClearedUniqueIDs,
   listTopicDownloadedVideos,
   clearResearchTopicArticles as dbClearResearchTopicArticles,
@@ -1561,6 +1565,103 @@ describe('feed manager', () => {
       );
 
       expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Read Later offline copies', () => {
+    beforeEach(() => {
+      extractArticle.mockResolvedValue({ url: '', markdown: '# Extracted', title: 'T' });
+      saveArticleMarkdown.mockResolvedValue(undefined);
+      getArticleMarkdown.mockResolvedValue(null);
+      deleteArticleMarkdown.mockResolvedValue(undefined);
+    });
+
+    it('saveOfflineArticleCopy extracts immediately and stores the markdown', async () => {
+      const { saveOfflineArticleCopy } = await importFeedManager();
+      const saved = await saveOfflineArticleCopy('feed-1', {
+        articleID: 'art-1',
+        url: 'https://example.com/posts/1',
+      });
+
+      // Extraction runs at save time, with the article's own URL.
+      expect(extractArticle).toHaveBeenCalledTimes(1);
+      expect(extractArticle).toHaveBeenCalledWith('https://example.com/posts/1');
+      expect(saveArticleMarkdown).toHaveBeenCalledWith(
+        'feed-1',
+        'art-1',
+        'https://example.com/posts/1',
+        '# Extracted'
+      );
+      expect(saved).toBe(true);
+    });
+
+    it('saveOfflineArticleCopy skips articles without a URL', async () => {
+      const { saveOfflineArticleCopy } = await importFeedManager();
+      expect(await saveOfflineArticleCopy('feed-1', { articleID: 'art-1' })).toBe(false);
+      expect(await saveOfflineArticleCopy(null, { articleID: 'art-1', url: 'https://example.com' }))
+        .toBe(false);
+      expect(extractArticle).not.toHaveBeenCalled();
+      expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+
+    it('saveOfflineArticleCopy skips YouTube pages (dedicated viewer)', async () => {
+      const { saveOfflineArticleCopy } = await importFeedManager();
+      const saved = await saveOfflineArticleCopy('feed-1', {
+        articleID: 'yt-1',
+        url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      });
+
+      expect(saved).toBe(false);
+      expect(extractArticle).not.toHaveBeenCalled();
+    });
+
+    it('saveOfflineArticleCopy swallows extraction failures', async () => {
+      extractArticle.mockRejectedValue(new Error('Failed to fetch article: 0'));
+
+      const { saveOfflineArticleCopy } = await importFeedManager();
+      const saved = await saveOfflineArticleCopy('feed-1', {
+        articleID: 'art-1',
+        url: 'https://example.com/posts/broken',
+      });
+
+      expect(saved).toBe(false);
+      expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+
+    it('saveOfflineArticleCopy skips empty extraction results', async () => {
+      extractArticle.mockResolvedValue({ url: '', markdown: '' });
+
+      const { saveOfflineArticleCopy } = await importFeedManager();
+      expect(
+        await saveOfflineArticleCopy('feed-1', {
+          articleID: 'art-1',
+          url: 'https://example.com/posts/empty',
+        })
+      ).toBe(false);
+      expect(saveArticleMarkdown).not.toHaveBeenCalled();
+    });
+
+    it('loadOfflineArticleCopy returns the stored copy', async () => {
+      const stored = {
+        feedID: 'feed-1',
+        articleID: 'art-1',
+        url: 'https://example.com/posts/1',
+        markdown: '# Extracted',
+        scrapedAt: '2026-11-23T00:00:00.000Z',
+      };
+      getArticleMarkdown.mockResolvedValue(stored);
+
+      const { loadOfflineArticleCopy } = await importFeedManager();
+      await expect(loadOfflineArticleCopy('feed-1', 'art-1')).resolves.toBe(stored);
+      expect(getArticleMarkdown).toHaveBeenCalledWith('feed-1', 'art-1');
+    });
+
+    it('deleteOfflineArticleCopy removes the stored copy', async () => {
+      const { deleteOfflineArticleCopy } = await importFeedManager();
+      await deleteOfflineArticleCopy('feed-1', 'art-1');
+
+      expect(deleteArticleMarkdown).toHaveBeenCalledTimes(1);
+      expect(deleteArticleMarkdown).toHaveBeenCalledWith('feed-1', 'art-1');
     });
   });
 

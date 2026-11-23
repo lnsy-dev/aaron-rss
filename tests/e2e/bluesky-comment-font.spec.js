@@ -97,6 +97,76 @@ async function stubBlueskyAPI(page) {
   });
 }
 
+/**
+ * Build the social viewer DOM directly: createArticleViewer +
+ * renderSocialViewerContent, the pattern the social viewer specs use
+ * (openArticleViewer would need the network to resolve the post).
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} component
+ * @returns {Promise<void>}
+ */
+async function openSocialViewer(page, component, { fontStep = 0 } = {}) {
+  await component.evaluate((el, step) => {
+    el.settings.articleFontStep = step;
+    el._applyArticleFontStep();
+
+    const article = {
+      articleID: 'bsky-font-1',
+      title: 'Thread',
+      url: 'https://bsky.app/profile/alice/post/3fontsize1',
+      contentText: 'Hello thread',
+      summary: 'Hello thread',
+      datePublished: new Date('2026-08-20T12:00:00Z'),
+      read: false,
+      starred: false,
+    };
+    const feed = {
+      feedID: 'feed-bsky-font',
+      url: 'https://bsky.app/profile/alice/rss',
+      name: 'Alice',
+      homePageURL: 'https://bsky.app/profile/alice',
+      articles: [article],
+    };
+    el.feeds = [feed];
+    el.settings.maxArticlesPerFeed = 50;
+
+    const post = {
+      platform: 'bluesky',
+      author: 'Alice',
+      handle: 'alice.bsky.social',
+      date: '2026-08-20T12:00:00.000Z',
+      text: 'Hello thread',
+      comments: [
+        {
+          author: 'Bob',
+          handle: 'bob.example',
+          date: '2026-08-20T13:00:00.000Z',
+          text: 'What a great thread',
+          depth: 0,
+        },
+        {
+          author: 'Carol',
+          handle: 'carol.example',
+          date: '2026-08-20T13:05:00.000Z',
+          text: 'Agreed, wonderful',
+          depth: 1,
+        },
+      ],
+    };
+
+    const { overlay, body } = el.createArticleViewer(article, feed);
+    el.renderSocialViewerContent(body, post);
+    el.appendChild(overlay);
+    el.activeModal = overlay;
+    el.renderFeeds();
+  }, fontStep);
+
+  const viewer = page.locator('.rss-article-viewer-overlay');
+  await expect(viewer).toBeVisible();
+  return viewer;
+}
+
 test.describe('Bluesky comment font size', () => {
   test.use({ bypassCSP: true });
 
@@ -147,6 +217,9 @@ test.describe('Bluesky comment font size', () => {
     await page.keyboard.press('Control+=');
     await expect(component).toHaveAttribute('data-article-font-step', 'step2');
     await page.keyboard.press('Control+=');
+    // The step application follows an async settings save, so wait for
+    // the attribute before reading the rendered size.
+    await expect(component).toHaveAttribute('data-article-font-step', 'step3');
     const step3CommentSize = parseFloat(await comment.evaluate((el) => getComputedStyle(el).fontSize));
     expect(step3CommentSize).toBeGreaterThan(step1CommentSize);
 
@@ -168,66 +241,7 @@ test.describe('Bluesky comment font size', () => {
     await expect(component).toBeVisible();
     await expect(component).toHaveJSProperty('initialized', true);
 
-    // Build the social viewer DOM directly: createArticleViewer +
-    // renderSocialViewerContent, the pattern the social viewer specs use
-    // (openArticleViewer would need the network to resolve the post).
-    await component.evaluate((el) => {
-      el.settings.articleFontStep = 0;
-      el._applyArticleFontStep();
-
-      const article = {
-        articleID: 'bsky-font-1',
-        title: 'Thread',
-        url: 'https://bsky.app/profile/alice/post/3fontsize1',
-        contentText: 'Hello thread',
-        summary: 'Hello thread',
-        datePublished: new Date('2026-08-20T12:00:00Z'),
-        read: false,
-        starred: false,
-      };
-      const feed = {
-        feedID: 'feed-bsky-font',
-        url: 'https://bsky.app/profile/alice/rss',
-        name: 'Alice',
-        homePageURL: 'https://bsky.app/profile/alice',
-        articles: [article],
-      };
-      el.feeds = [feed];
-      el.settings.maxArticlesPerFeed = 50;
-
-      const post = {
-        platform: 'bluesky',
-        author: 'Alice',
-        handle: 'alice.bsky.social',
-        date: '2026-08-20T12:00:00.000Z',
-        text: 'Hello thread',
-        comments: [
-          {
-            author: 'Bob',
-            handle: 'bob.example',
-            date: '2026-08-20T13:00:00.000Z',
-            text: 'What a great thread',
-            depth: 0,
-          },
-          {
-            author: 'Carol',
-            handle: 'carol.example',
-            date: '2026-08-20T13:05:00.000Z',
-            text: 'Agreed, wonderful',
-            depth: 1,
-          },
-        ],
-      };
-
-      const { overlay, body } = el.createArticleViewer(article, feed);
-      el.renderSocialViewerContent(body, post);
-      el.appendChild(overlay);
-      el.activeModal = overlay;
-      el.renderFeeds();
-    });
-
-    const viewer = page.locator('.rss-article-viewer-overlay');
-    await expect(viewer).toBeVisible();
+    const viewer = await openSocialViewer(page, component);
 
     const comment = viewer.locator('.rss-social-comment', { hasText: 'Agreed, wonderful' });
     await expect(comment).toBeVisible();
@@ -241,5 +255,96 @@ test.describe('Bluesky comment font size', () => {
     const step2Size = parseFloat(await comment.evaluate((el) => getComputedStyle(el).fontSize));
 
     expect(step2Size).toBeCloseTo(defaultSize * 1.3, 1);
+  });
+
+  test('root post fills the viewer width; replies stay indented and narrower at every zoom', async ({ page }) => {
+    const component = page.locator('rss-feed-component');
+    await page.goto('/');
+    await expect(component).toBeVisible();
+    await expect(component).toHaveJSProperty('initialized', true);
+
+    // Start zoomed OUT (step-1), then walk through the default and two
+    // steps in — the layout contract must hold at every zoom level.
+    const viewer = await openSocialViewer(page, component, { fontStep: -1 });
+
+    const post = viewer.locator('.rss-social-post');
+    const topLevelComment = viewer.locator('.rss-social-comment', { hasText: 'What a great thread' });
+    const nestedComment = viewer.locator('.rss-social-comment', { hasText: 'Agreed, wonderful' });
+    await expect(post).toBeVisible();
+    await expect(topLevelComment).toBeVisible();
+    await expect(nestedComment).toBeVisible();
+
+    /**
+     * Read the layout facts for one zoom level.
+     *
+     * @returns {Promise<object>} widths, indentation and overflow info.
+     */
+    const readLayout = () =>
+      Promise.all([
+        post.evaluate((el) => el.getBoundingClientRect().width),
+        viewer.locator('.rss-article-viewer-body').evaluate((el) => el.clientWidth),
+        topLevelComment.evaluate((el) => el.getBoundingClientRect().width),
+        nestedComment.evaluate((el) => ({
+          width: el.getBoundingClientRect().width,
+          left: el.getBoundingClientRect().left,
+          marginLeft: parseFloat(getComputedStyle(el).marginLeft),
+          overflows: el.scrollWidth > el.clientWidth,
+        })),
+        topLevelComment.evaluate((el) => el.getBoundingClientRect().left),
+      ]).then(
+        ([postWidth, bodyWidth, topLevelWidth, nested, topLevelLeft]) => ({
+          postWidth,
+          bodyWidth,
+          topLevelWidth,
+          nestedWidth: nested.width,
+          nestedLeft: nested.left,
+          nestedMarginLeft: nested.marginLeft,
+          nestedOverflows: nested.overflows,
+          topLevelLeft,
+        })
+      );
+
+    const zoomedOut = await readLayout();
+
+    // The root post fills the article body's content box (1rem padding
+    // each side) — the text uses the full viewer width.
+    expect(zoomedOut.postWidth).toBeCloseTo(zoomedOut.bodyWidth - 32, 0);
+
+    // Both replies are narrower than the root post.
+    expect(zoomedOut.topLevelWidth).toBeLessThan(zoomedOut.postWidth);
+    expect(zoomedOut.nestedWidth).toBeLessThan(zoomedOut.postWidth);
+
+    // The depth-1 reply is indented: it starts right of the top-level
+    // reply and carries the 1.5rem margin-left from the CSS rule.
+    expect(zoomedOut.nestedMarginLeft).toBeCloseTo(24, 0);
+    expect(zoomedOut.nestedLeft).toBeGreaterThan(zoomedOut.topLevelLeft);
+
+    // Nothing overflows its column at this size.
+    expect(zoomedOut.nestedOverflows).toBe(false);
+
+    // Two ctrl+= presses: step-1 → step0 → step1. The root post keeps
+    // filling the viewer width; the replies keep their narrower column
+    // and their indent.
+    await page.keyboard.press('Control+=');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step0');
+    await page.keyboard.press('Control+=');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step1');
+    const zoomedIn = await readLayout();
+
+    expect(zoomedIn.postWidth).toBeCloseTo(zoomedIn.bodyWidth - 32, 0);
+    expect(zoomedIn.topLevelWidth).toBeLessThan(zoomedIn.postWidth);
+    expect(zoomedIn.nestedWidth).toBeLessThan(zoomedIn.postWidth);
+    expect(zoomedIn.nestedMarginLeft).toBeCloseTo(24, 0);
+    expect(zoomedIn.nestedLeft).toBeGreaterThan(zoomedIn.topLevelLeft);
+    expect(zoomedIn.nestedOverflows).toBe(false);
+
+    // Zooming back out to the default step keeps the same contract.
+    await page.keyboard.press('Control+-');
+    await expect(component).toHaveAttribute('data-article-font-step', 'step0');
+    const defaultStep = await readLayout();
+    expect(defaultStep.postWidth).toBeCloseTo(defaultStep.bodyWidth - 32, 0);
+    expect(defaultStep.topLevelWidth).toBeLessThan(defaultStep.postWidth);
+    expect(defaultStep.nestedWidth).toBeLessThan(defaultStep.postWidth);
+    expect(defaultStep.nestedOverflows).toBe(false);
   });
 });

@@ -7613,8 +7613,10 @@ class RSSFeedComponent extends DataroomElement {
       for (const comment of post.comments) {
         const commentBlock = document.createElement('div');
         commentBlock.className = 'rss-social-comment';
+        // Indentation is CSS-driven (see the data-depth rules in
+        // rss-feed-component.css); depth 0 stays flush with the column.
         if (comment.depth > 0) {
-          commentBlock.style.marginLeft = `${comment.depth * 1.5}rem`;
+          commentBlock.dataset.depth = String(comment.depth);
         }
 
         const commentHeader = document.createElement('div');

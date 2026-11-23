@@ -49,6 +49,7 @@ import { buildWindowMenu } from './window-menu.js';
 import { readUserThemeCss } from './user-theme.js';
 import { isCloudflareChallenge } from './challenge-detect.js';
 import { resolveCloudflareChallenge } from './challenge-bypass.js';
+import { isEscapeKeyDown, attachGuestEscapeForwarding } from './escape-forwarding.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -525,8 +526,10 @@ async function createWindow() {
   // Escape goes over IPC so it works even when keyboard focus sits
   // inside a cross-origin iframe (e.g. the "Open Original" website
   // viewer), where document keydown events never arrive; the renderer
-  // deduplicates via a timestamp guard in _runEscapeAction(). Ctrl+?
-  // opens the Quick Keys reference — previously the Help menu's
+  // deduplicates via a timestamp guard in _runEscapeAction(). Guest
+  // webviews get the same relay through web-contents-created above,
+  // because their key events never reach this listener at all.
+  // Ctrl+? opens the Quick Keys reference — previously the Help menu's
   // accelerator, re-registered here because Linux/Windows have no
   // application menu (see window-chrome.js). The event is NOT prevented
   // on Escape so in-page handlers (command panel, modal inputs) still
@@ -535,8 +538,8 @@ async function createWindow() {
     if (input.type !== 'keyDown') {
       return;
     }
-    if (input.key === 'Escape') {
-      win.webContents.send('escape-pressed');
+    if (isEscapeKeyDown(input)) {
+      forwardEscapeToMainWindow();
       return;
     }
     // The produced character for Ctrl+Shift+/ is "?" on most layouts;
@@ -580,7 +583,26 @@ app.on('web-contents-created', (event, webContents) => {
     }
     return { action: 'deny' }; // Never a window from guest content.
   });
+  // Escape pressed while the embedded "Open Original" site has keyboard
+  // focus arrives at the guest's own webContents, so the main window's
+  // before-input-event listener never sees it. Relay it to the renderer
+  // over the same 'escape-pressed' channel; the renderer's timestamp
+  // guard deduplicates the two delivery paths. See escape-forwarding.js
+  // for why only Escape is relayed.
+  attachGuestEscapeForwarding(webContents, forwardEscapeToMainWindow);
 });
+
+/**
+ * Send one 'escape-pressed' IPC message to the main window's renderer.
+ *
+ * @returns {void}
+ */
+function forwardEscapeToMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('escape-pressed');
+}
 
 /**
  * Fetch a URL from the main process on behalf of the renderer.

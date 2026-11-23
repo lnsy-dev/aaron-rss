@@ -59,6 +59,9 @@ import {
   loadReadLaterArticles,
   setArticleReadLater,
   setArticleReadLaterScroll,
+  saveOfflineArticleCopy,
+  loadOfflineArticleCopy,
+  deleteOfflineArticleCopy,
   deleteArticle,
   loadDownloadedPodcastArticles,
   ensureFeedSubscribed,
@@ -208,6 +211,7 @@ class RSSFeedComponent extends DataroomElement {
     this._readLaterRenderGeneration = 0;
     this._readLaterUnreadCount = 0;
     this._readLaterBadgeEl = null;
+    this._pendingOfflineSave = null;
     this.podcastsButton = null;
     // Research Topic view state: which topic is open in the topic view.
     this._topicView = null;
@@ -5458,6 +5462,17 @@ class RSSFeedComponent extends DataroomElement {
       // Unflagging erases the reading memory along with the archive
       // membership; flagging starts fresh from the top.
       await setArticleReadLaterScroll(feedID, article.articleID, null);
+      if (nextState) {
+        // Saving extracts the full article immediately in the background
+        // and stores it, so the saved copy opens instantly and reads
+        // offline. The promise is kept on the element so callers (and
+        // tests) can wait for the copy to land.
+        this._pendingOfflineSave = this._saveOfflineArticleCopy(article, feed);
+      } else {
+        // Un-saving removes the stored content immediately — archive
+        // membership and its offline copy live and die together.
+        await deleteOfflineArticleCopy(feedID, article.articleID);
+      }
     } catch (error) {
       console.error('Failed to update Read Later flag:', error);
       this.showToast(`Could not update Read Later: ${error.message}`, 'error');
@@ -5477,6 +5492,61 @@ class RSSFeedComponent extends DataroomElement {
     }
     this.showToast(nextState ? 'Saved for later' : 'Removed from Read Later');
     this._refreshReadLaterBadge();
+  }
+
+  /**
+   * Extract and store a full offline copy of a saved article.
+   *
+   * Runs right after an article is saved to the Read Later archive: the
+   * page is fetched and extracted immediately (not lazily on first open)
+   * so the article reads offline and opens without waiting for the
+   * network. Extraction runs in the background — a slow or failing site
+   * never blocks the save toggle — and YouTube pages, social posts, and
+   * podcast episodes are skipped (their viewers do not use generic
+   * extraction).
+   *
+   * @param {object} article - The saved article
+   * @param {object|null} feed - The article's feed (null for dangling rows)
+   * @returns {Promise<boolean>} Whether an offline copy was stored
+   */
+  async _saveOfflineArticleCopy(article, feed) {
+    const feedID = feed?.feedID || article?.feedID || null;
+    if (!feedID || !article?.articleID || !article.url) {
+      return false;
+    }
+    if (isYouTubeURL(article.url) || isYouTubeHostURL(article.url)
+        || this.isSocialArticle(article) || isPodcastEpisode(article)) {
+      return false;
+    }
+
+    const saved = await saveOfflineArticleCopy(feedID, article);
+    if (saved) {
+      this.showToast('Offline copy saved');
+    }
+    return saved;
+  }
+
+  /**
+   * Load an article's stored offline copy, if one exists.
+   *
+   * Used by the article viewer to open saved articles from the copy
+   * extracted at save time, and available to tests for asserting what is
+   * (or is no longer) stored.
+   *
+   * @param {string|null} feedID
+   * @param {string|null} articleID
+   * @returns {Promise<{markdown: string, scrapedAt: string}|null>}
+   */
+  async _loadStoredArticleContent(feedID, articleID) {
+    if (!feedID || !articleID) {
+      return null;
+    }
+    try {
+      return await loadOfflineArticleCopy(feedID, articleID);
+    } catch (error) {
+      console.error('Failed to load the stored article copy:', error);
+      return null;
+    }
   }
 
   /**
@@ -5898,6 +5968,22 @@ class RSSFeedComponent extends DataroomElement {
 
     const { overlay, body } = this.createArticleViewer(article, feed);
 
+    // A saved (Read Later) article keeps a full copy extracted at save
+    // time: open it straight from the stored copy — instant, and
+    // readable with no network at all.
+    if (article.readLater) {
+      const stored = await this._loadStoredArticleContent(feed?.feedID, article.articleID);
+      if (stored?.markdown) {
+        this.renderArticleViewerContent(body, article, feed, { markdown: stored.markdown });
+        this._maybeRestoreReadLaterScroll(overlay, body, article, feed);
+        // Dangling Videos-view entries (feed row gone) cannot be marked read.
+        if (feed?.feedID) {
+          await this.markAsRead(feed.feedID, article.articleID);
+        }
+        return;
+      }
+    }
+
     try {
       this.showToast('Extracting article…');
       const extracted = await extractArticle(article.url);
@@ -5978,6 +6064,36 @@ class RSSFeedComponent extends DataroomElement {
    * @returns {Promise<boolean>} Whether cached content was rendered
    */
   async _renderCachedArticleFallback(body, article, feed, error, label) {
+    // A fully extracted copy (stored when an article is saved to the
+    // Read Later archive, or scraped for a research topic) beats the
+    // feed's raw content columns: it is the complete article body.
+    if (feed?.feedID && article.articleID) {
+      try {
+        const stored = await this._loadStoredArticleContent(feed.feedID, article.articleID);
+        if (stored?.markdown) {
+          body.innerHTML = '';
+
+          const notice = document.createElement('p');
+          notice.className = 'rss-article-viewer-cached-notice';
+          notice.textContent =
+            `Showing the saved copy — the live ${label} could not be fetched (${error.message}).`;
+          body.appendChild(notice);
+
+          const content = document.createElement('article');
+          content.className = 'rss-markdown-content';
+          content.innerHTML = renderMarkdown(stored.markdown);
+          body.appendChild(content);
+
+          if (this._findBar?.classList.contains('rss-find-bar--visible')) {
+            this._runFind({ selectFirst: true });
+          }
+          return true;
+        }
+      } catch (storedError) {
+        console.error('Failed to load the stored article copy:', storedError);
+      }
+    }
+
     let cachedHTML = article.contentHTML || '';
     let cachedText = article.contentText || '';
 

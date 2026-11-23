@@ -661,6 +661,18 @@ describe('research topics', () => {
     expect(await db2.getArticleMarkdown('feed-1', 'missing')).toBeNull();
   });
 
+  it('deleteArticleMarkdown removes one article row with bound parameters', async () => {
+    FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [] });
+
+    const db = await importDatabaseModule();
+    await db.deleteArticleMarkdown('feed-1', 'art-1');
+
+    const message = FakeWorker.instance.messages[0];
+    expect(message.action).toBe('exec');
+    expect(message.params.sql).toBe('DELETE FROM article_markdown WHERE feed_id = ? AND article_id = ?');
+    expect(message.params.params).toEqual(['feed-1', 'art-1']);
+  });
+
   it('getFeedName returns the display name or null for unknown feeds', async () => {
     FakeWorker.onMessage = (m) => ({ id: m.id, ok: true, result: [{ name: 'Example Feed' }] });
 

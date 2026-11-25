@@ -68,6 +68,7 @@ import {
   clearResearchTopicArticles,
 } from './lib/feed-manager.js';
 import { showVideoDownloadToast } from './lib/video-download-toast.js';
+import { stopMediaElement, stopMediaPlayback } from './lib/media-cleanup.js';
 import { FFMPEG_INSTALL_URL } from './lib/ffmpeg-notice.js';
 import { showToast as showAppToast, showProgressToast } from './lib/toast.js';
 import { isFullScreen, toggleFullScreen as toggleDocumentFullScreen } from './lib/fullscreen.js';
@@ -252,6 +253,11 @@ class RSSFeedComponent extends DataroomElement {
   this._playAllQueue = [];
   this._playAllActive = false;
   this._playAllKind = 'videos';
+  // Video players created for embedded downloaded-video playback (see
+  // _embeddedDownloadedVideo). Tracked so closing a viewer can stop
+  // them deterministically and a re-open cannot end up with two
+  // overlapping playbacks.
+  this._videoPlayers = new Set();
     this._scrollLockCount = 0;
     this._previousBodyOverflow = '';
     this._previousHtmlOverflow = '';
@@ -4929,6 +4935,16 @@ class RSSFeedComponent extends DataroomElement {
       overlay._videoPositionFlush = null;
     }
 
+    // Stop every media element playing inside the overlay (the embedded
+    // downloaded video, the podcast audio player). Removing the overlay
+    // from the DOM is not enough on every platform: detached media
+    // elements can keep playing until they are garbage collected, which
+    // let audio keep running after the viewer was closed and doubled up
+    // with the playback of the next video. Stopping explicitly makes
+    // the close deterministic.
+    stopMediaPlayback(overlay);
+    this._forgetOverlayVideoPlayers(overlay);
+
     // A Play All chain lives only as long as its video viewer: closing
     // the viewer stops the chain. An auto-advance restores the state
     // right after closing the outgoing video (see _advancePlayAll).
@@ -6538,6 +6554,10 @@ class RSSFeedComponent extends DataroomElement {
       return false;
     }
 
+    // At most one video plays at a time: stop any player an earlier
+    // viewer left behind before a new one exists.
+    this._stopPreviousVideoPlayers();
+
     const video = document.createElement('video');
     video.className = 'rss-youtube-external-video';
     video.controls = true;
@@ -6558,7 +6578,66 @@ class RSSFeedComponent extends DataroomElement {
     // Watching the downloaded copy clears its ready state so the Videos
     // button badge stays accurate.
     this._markDownloadedVideoSeen(feed?.feedID, article.articleID);
+
+    // Track the player so closing its viewer (or opening another video)
+    // can stop it deterministically.
+    this._videoPlayers.add(video);
     return true;
+  }
+
+  /**
+   * Stop every video player this component created except one.
+   *
+   * At most one video may play at a time. When an earlier viewer's
+   * player somehow survives its close (a teardown path that never ran,
+   * or an engine that keeps detached media playing until garbage
+   * collection), a newly opened video would otherwise double up with
+   * the old one — both audible at once. Called before a fresh player is
+   * created so the new video starts as the single playing one.
+   *
+   * @param {HTMLVideoElement|null} [exceptVideo=null] - A player to
+   *   leave untouched (e.g. one being re-attached)
+   * @returns {void}
+   */
+  _stopPreviousVideoPlayers(exceptVideo = null) {
+    for (const video of this._videoPlayers) {
+      if (video === exceptVideo) {
+        continue;
+      }
+      stopMediaElement(video);
+      this._videoPlayers.delete(video);
+    }
+
+    // Belt and braces: pause any other embedded video still attached to
+    // the component (tracked or not) so at most one video ever plays.
+    for (const video of this.querySelectorAll('video.rss-youtube-external-video')) {
+      if (video === exceptVideo || video.paused) {
+        continue;
+      }
+      try {
+        video.pause();
+      } catch (error) {
+        console.error('Failed to pause running video:', error);
+      }
+    }
+  }
+
+  /**
+   * Drop tracked video players that lived in a closing overlay.
+   *
+   * Their elements were already stopped by stopMediaPlayback(); this
+   * only clears the bookkeeping so the set cannot grow across viewer
+   * lifetimes.
+   *
+   * @param {HTMLElement|null} overlay - The overlay being closed
+   * @returns {void}
+   */
+  _forgetOverlayVideoPlayers(overlay) {
+    for (const video of this._videoPlayers) {
+      if (!overlay || overlay.contains(video)) {
+        this._videoPlayers.delete(video);
+      }
+    }
   }
 
   /**

@@ -35,6 +35,14 @@ test.describe('security', () => {
     expect(scriptSrc).toContain("https://s.ytimg.com");
   });
 
+  test('CSP allows media playback from the app origin, media: protocol and same-origin blobs', async ({ page }) => {
+    const content = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
+    const mediaSrc = content.split(';').find((d) => d.trim().startsWith('media-src'));
+    expect(mediaSrc).toContain("'self'");
+    expect(mediaSrc).toContain('media:');
+    expect(mediaSrc).toContain('blob:');
+  });
+
   test('loads without CSP violations', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (err) => errors.push(err.message));

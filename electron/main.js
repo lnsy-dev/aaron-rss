@@ -76,8 +76,9 @@ const PRODUCTION_CSP = [
   "img-src 'self' https: http: data:",
   // Mastodon (and other fediverse) media attachments stream straight
   // from their instance CDNs over https, alongside locally downloaded
-  // videos served over media:.
-  "media-src 'self' media: https:",
+  // videos served over media:. blob: covers media the page itself
+  // builds (blob URLs can only be constructed from same-origin data).
+  "media-src 'self' media: https: blob:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   "connect-src 'self'",

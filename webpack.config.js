@@ -249,8 +249,9 @@ export default {
           // Downloaded videos are served to <video> elements over the
           // app's media:// protocol (see electron/media-protocol.js);
           // Mastodon/fediverse media streams from instance CDNs over
-          // https.
-          "media-src 'self' media: https:",
+          // https. blob: covers media the page itself builds (blob
+          // URLs can only be constructed from same-origin data).
+          "media-src 'self' media: https: blob:",
           "frame-src https: http:",
           "worker-src 'self' blob:",
           `connect-src 'self' ws://localhost:${port} http://localhost:${port}`,

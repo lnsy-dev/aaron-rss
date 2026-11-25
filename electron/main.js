@@ -50,6 +50,7 @@ import { readUserThemeCss } from './user-theme.js';
 import { isCloudflareChallenge } from './challenge-detect.js';
 import { resolveCloudflareChallenge } from './challenge-bypass.js';
 import { isEscapeKeyDown, attachGuestEscapeForwarding } from './escape-forwarding.js';
+import { isQuitKeyDown } from './quit-shortcut.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -548,6 +549,17 @@ async function createWindow() {
     if (input.control && input.key === '?') {
       event.preventDefault();
       sendToMainWindow('show-quick-keys');
+      return;
+    }
+    // Ctrl+Q quits the application. macOS already gets Cmd+Q from the
+    // stock appMenu role; Linux and Windows run without an application
+    // menu (see window-chrome.js), so the accelerator is re-registered
+    // here exactly like Ctrl+? above. app.quit() takes the normal
+    // shutdown path (before-quit, closing windows, window-all-closed),
+    // the same as closing the last window by hand.
+    if (isQuitKeyDown(input, process.platform)) {
+      event.preventDefault();
+      app.quit();
       return;
     }
     // Dev conveniences previously provided by the menu roles; kept only

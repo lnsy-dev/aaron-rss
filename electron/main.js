@@ -53,6 +53,8 @@ import { buildWindowMenu } from './window-menu.js';
 import { readUserThemeCss } from './user-theme.js';
 import { isCloudflareChallenge } from './challenge-detect.js';
 import { resolveCloudflareChallenge } from './challenge-bypass.js';
+import { isEscapeKeyDown, attachGuestEscapeForwarding } from './escape-forwarding.js';
+import { isQuitKeyDown } from './quit-shortcut.js';
 
 // Install the crash guards before anything else can reject: a transient
 // network failure (ad blocker / yt-dlp TLS downloads, undici keep-alive
@@ -79,8 +81,9 @@ const PRODUCTION_CSP = [
   "img-src 'self' https: http: data:",
   // Mastodon (and other fediverse) media attachments stream straight
   // from their instance CDNs over https, alongside locally downloaded
-  // videos served over media:.
-  "media-src 'self' media: https:",
+  // videos served over media:. blob: covers media the page itself
+  // builds (blob URLs can only be constructed from same-origin data).
+  "media-src 'self' media: https: blob:",
   "frame-src https: http:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
@@ -529,8 +532,10 @@ async function createWindow() {
   // Escape goes over IPC so it works even when keyboard focus sits
   // inside a cross-origin iframe (e.g. the "Open Original" website
   // viewer), where document keydown events never arrive; the renderer
-  // deduplicates via a timestamp guard in _runEscapeAction(). Ctrl+?
-  // opens the Quick Keys reference — previously the Help menu's
+  // deduplicates via a timestamp guard in _runEscapeAction(). Guest
+  // webviews get the same relay through web-contents-created above,
+  // because their key events never reach this listener at all.
+  // Ctrl+? opens the Quick Keys reference — previously the Help menu's
   // accelerator, re-registered here because Linux/Windows have no
   // application menu (see window-chrome.js). The event is NOT prevented
   // on Escape so in-page handlers (command panel, modal inputs) still
@@ -539,8 +544,8 @@ async function createWindow() {
     if (input.type !== 'keyDown') {
       return;
     }
-    if (input.key === 'Escape') {
-      win.webContents.send('escape-pressed');
+    if (isEscapeKeyDown(input)) {
+      forwardEscapeToMainWindow();
       return;
     }
     // The produced character for Ctrl+Shift+/ is "?" on most layouts;
@@ -550,12 +555,13 @@ async function createWindow() {
       sendToMainWindow('show-quick-keys');
       return;
     }
-    // Quit the application completely with Ctrl+Q (Cmd+Q on macOS, where
-    // the accelerator also exists in the app menu; handling the keystroke
-    // here keeps Linux/Windows — which run without an application menu —
-    // covered too). app.quit() runs the before-quit cleanup that aborts
-    // in-flight downloads and sweeps partial files.
-    if ((input.control || input.meta) && input.key.toLowerCase() === 'q') {
+    // Ctrl+Q quits the application. macOS already gets Cmd+Q from the
+    // stock appMenu role; Linux and Windows run without an application
+    // menu (see window-chrome.js), so the accelerator is re-registered
+    // here exactly like Ctrl+? above. app.quit() takes the normal
+    // shutdown path (before-quit, closing windows, window-all-closed),
+    // the same as closing the last window by hand.
+    if (isQuitKeyDown(input, process.platform)) {
       event.preventDefault();
       app.quit();
       return;
@@ -594,25 +600,26 @@ app.on('web-contents-created', (event, webContents) => {
     }
     return { action: 'deny' }; // Never a window from guest content.
   });
-  // Forward Escape from inside the "Open Original" guest page. The
-  // before-input-event listener on the main window's webContents never
-  // sees keystrokes aimed at a webview (the guest is its own
-  // webContents), so without this Escape would stop closing the article
-  // viewer as soon as the user clicked into the original website —
-  // fatal in Distraction Free Mode, where Escape is the only exit. The
-  // press is not prevented, so the guest page keeps its own Escape
-  // behavior; the renderer deduplicates via the timestamp guard in
-  // _runEscapeAction().
-  webContents.on('before-input-event', (inputEvent, input) => {
-    if (input.type !== 'keyDown' || input.key !== 'Escape') {
-      return;
-    }
-    const host = webContents.getHostWebContents();
-    if (host && !host.isDestroyed()) {
-      host.send('escape-pressed');
-    }
-  });
+  // Escape pressed while the embedded "Open Original" site has keyboard
+  // focus arrives at the guest's own webContents, so the main window's
+  // before-input-event listener never sees it. Relay it to the renderer
+  // over the same 'escape-pressed' channel; the renderer's timestamp
+  // guard deduplicates the two delivery paths. See escape-forwarding.js
+  // for why only Escape is relayed.
+  attachGuestEscapeForwarding(webContents, forwardEscapeToMainWindow);
 });
+
+/**
+ * Send one 'escape-pressed' IPC message to the main window's renderer.
+ *
+ * @returns {void}
+ */
+function forwardEscapeToMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('escape-pressed');
+}
 
 /**
  * Fetch a URL from the main process on behalf of the renderer.

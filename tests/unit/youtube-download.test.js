@@ -471,48 +471,62 @@ describe('youtube download backend', () => {
       expect(downloadArgs).toContain('deno:/mock/userData/provisioned-binaries/deno');
     });
 
-    it('auto-downloads ffmpeg when none is installed and switches to merge mode', async () => {
-      process.env.PATH = '';
-      // A system deno exists so only ffmpeg needs provisioning.
-      mockAccess.mockImplementation(async (candidate) => {
-        if (String(candidate) === '/opt/homebrew/bin/deno') {
-          return undefined;
-        }
-        throw new Error('not found');
-      });
-      setupSuccessfulDownload();
-      mockFetch.mockImplementation(async (url) => {
-        if (String(url).includes('api.github.com/repos/eugeneware/ffmpeg-static')) {
-          return jsonResponse({
-            assets: [
-              { name: 'ffmpeg-darwin-arm64.gz', browser_download_url: 'https://example.com/ffmpeg.gz' },
-              { name: 'ffprobe-darwin-arm64.gz', browser_download_url: 'https://example.com/ffprobe.gz' },
-            ],
-          });
-        }
-        return binaryResponse();
-      });
+    it.skipIf(!['darwin', 'linux', 'win32'].includes(process.platform))(
+      'auto-downloads ffmpeg when none is installed and switches to merge mode',
+      async () => {
+        process.env.PATH = '';
+        // A system deno exists so only ffmpeg needs provisioning.
+        mockAccess.mockImplementation(async (candidate) => {
+          if (String(candidate) === '/opt/homebrew/bin/deno') {
+            return undefined;
+          }
+          throw new Error('not found');
+        });
+        setupSuccessfulDownload();
 
-      const { downloadYouTubeVideo } = await importYoutubeDownload();
-      await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
+        const { downloadYouTubeVideo, getFFmpegStaticPlatformKey } = await importYoutubeDownload();
+        // The suite may run on any desktop platform, so the mocked
+        // release must carry the asset the code probes for here.
+        const platformKey = getFFmpegStaticPlatformKey();
+        expect(platformKey).toBeTruthy();
+        const exeSuffix = process.platform === 'win32' ? '.exe' : '';
+        mockFetch.mockImplementation(async (url) => {
+          if (String(url).includes('api.github.com/repos/eugeneware/ffmpeg-static')) {
+            return jsonResponse({
+              assets: [
+                { name: `ffmpeg-${platformKey}.gz`, browser_download_url: `https://example.com/ffmpeg-${platformKey}.gz` },
+                { name: `ffprobe-${platformKey}.gz`, browser_download_url: `https://example.com/ffprobe-${platformKey}.gz` },
+              ],
+            });
+          }
+          return binaryResponse();
+        });
 
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        '/mock/userData/provisioned-binaries/ffmpeg',
-        expect.any(Buffer)
-      );
-      expect(mockWriteFile).toHaveBeenCalledWith(
-        '/mock/userData/provisioned-binaries/ffprobe',
-        expect.any(Buffer)
-      );
-      const downloadArgs = downloadCallArgs();
-      const idx = downloadArgs.indexOf('--ffmpeg-location');
-      expect(idx).toBeGreaterThan(-1);
-      expect(downloadArgs[idx + 1]).toBe('/mock/userData/provisioned-binaries/ffmpeg');
-      const formatIndex = downloadArgs.indexOf('-f');
-      expect(downloadArgs[formatIndex + 1]).toBe(
-        'bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[ext=mp4]/bv*+ba/b'
-      );
-    });
+        await downloadYouTubeVideo('https://www.youtube.com/watch?v=abc12345678');
+
+        // Provisioning fetched the asset matching this platform.
+        expect(mockFetch).toHaveBeenCalledWith(
+          `https://example.com/ffmpeg-${platformKey}.gz`,
+          expect.anything()
+        );
+        expect(mockWriteFile).toHaveBeenCalledWith(
+          `/mock/userData/provisioned-binaries/ffmpeg${exeSuffix}`,
+          expect.any(Buffer)
+        );
+        expect(mockWriteFile).toHaveBeenCalledWith(
+          `/mock/userData/provisioned-binaries/ffprobe${exeSuffix}`,
+          expect.any(Buffer)
+        );
+        const downloadArgs = downloadCallArgs();
+        const idx = downloadArgs.indexOf('--ffmpeg-location');
+        expect(idx).toBeGreaterThan(-1);
+        expect(downloadArgs[idx + 1]).toBe(`/mock/userData/provisioned-binaries/ffmpeg${exeSuffix}`);
+        const formatIndex = downloadArgs.indexOf('-f');
+        expect(downloadArgs[formatIndex + 1]).toBe(
+          'bv*[vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/b[ext=mp4]/bv*+ba/b'
+        );
+      }
+    );
 
     it('reuses previously provisioned binaries without downloading again', async () => {
       process.env.PATH = '';
@@ -627,6 +641,18 @@ describe('youtube download backend', () => {
       expect(platformTriple('linux', 'arm64')).toBe('aarch64-unknown-linux-gnu');
       expect(platformTriple('linux', 'x64')).toBe('x86_64-unknown-linux-gnu');
       expect(platformTriple('freebsd', 'x64')).toBeNull();
+    });
+
+    it('getFFmpegStaticPlatformKey maps platform/arch pairs to ffmpeg-static asset keys', async () => {
+      const { getFFmpegStaticPlatformKey } = await importYoutubeDownload();
+
+      expect(getFFmpegStaticPlatformKey('darwin', 'arm64')).toBe('darwin-arm64');
+      expect(getFFmpegStaticPlatformKey('darwin', 'x64')).toBe('darwin-x64');
+      expect(getFFmpegStaticPlatformKey('linux', 'x64')).toBe('linux-x64');
+      expect(getFFmpegStaticPlatformKey('linux', 'arm64')).toBe('linux-arm64');
+      expect(getFFmpegStaticPlatformKey('win32', 'x64')).toBe('win32-x64');
+      expect(getFFmpegStaticPlatformKey('win32', 'arm64')).toBeNull();
+      expect(getFFmpegStaticPlatformKey('freebsd', 'x64')).toBeNull();
     });
 
     it('pickAsset requires every pattern to match the asset name', async () => {

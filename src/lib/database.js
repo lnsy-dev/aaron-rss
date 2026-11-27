@@ -2031,6 +2031,23 @@ export async function saveArticleMarkdown(feedID, articleID, url, markdown) {
 }
 
 /**
+ * Delete the scraped markdown stored for one article.
+ *
+ * Used when an article leaves the Read Later archive: the offline copy
+ * extracted at save time is purged immediately along with the flag.
+ *
+ * @param {string} feedID
+ * @param {string} articleID
+ * @returns {Promise<void>}
+ */
+export async function deleteArticleMarkdown(feedID, articleID) {
+  await callWorker('exec', {
+    sql: 'DELETE FROM article_markdown WHERE feed_id = ? AND article_id = ?',
+    params: [feedID, articleID],
+  });
+}
+
+/**
  * Load the scraped markdown for an article.
  *
  * @param {string} feedID

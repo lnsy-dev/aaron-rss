@@ -883,7 +883,7 @@ test.describe('Aaron RSS', () => {
       'Open Original by Default',
       'Download Videos Automatically',
       'Visit Website',
-      'Delete',
+      'Unsubscribe',
     ]);
 
     const [newPage] = await Promise.all([
@@ -892,6 +892,78 @@ test.describe('Aaron RSS', () => {
     ]);
     await expect(newPage).toHaveURL('https://example.com/');
     await newPage.close();
+  });
+
+  test.describe('subscriptions feed menu (bypasses dev CSP for feed fetch stubs)', () => {
+    test.use({ bypassCSP: true });
+
+    test('feed kebab menu shows Unsubscribe instead of Delete and still removes the feed', async ({ page }) => {
+      test.setTimeout(30000);
+
+      // Serve a real feed so the removal runs through the actual delete
+      // path (database + refresh), not just the in-memory seeded state.
+      const feedXML = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        '<title>Unsubscribe Test Feed</title>',
+        '<link>https://unsubscribe.example.com/</link>',
+        '<description>test</description>',
+        '<item><title>Unsubscribe Test Post</title>',
+        '<link>https://unsubscribe.example.com/post-1</link>',
+        '<guid>unsub-1</guid><pubDate>Mon, 01 Jan 2024 00:00:00 GMT</pubDate></item>',
+        '</channel></rss>',
+      ].join('');
+
+      await page.route('https://unsubscribe.example.com/**', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/rss+xml',
+          headers: { 'Access-Control-Allow-Origin': '*' },
+          body: feedXML,
+        });
+      });
+
+      await page.goto('/');
+      const component = page.locator('rss-feed-component');
+      await expect(component).toBeVisible();
+      await expect(component).toHaveJSProperty('initialized', true);
+      await component.evaluate((el) => {
+        el.viewMode = 'feeds';
+        el._syncViewToggle();
+      });
+
+      await component.evaluate((el) => el.addFeedInBackground('https://unsubscribe.example.com/feed.xml'));
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(1);
+
+      // The subscriptions (grouped Feeds) view renders a kebab per feed.
+      const kebabButton = page.locator('.rss-kebab-button').first();
+      await expect(kebabButton).toBeVisible();
+      await kebabButton.click();
+
+      const menu = page.locator('.rss-kebab-menu');
+      await expect(menu).toBeVisible();
+
+      // The danger action is named Unsubscribe, not Delete.
+      const unsubscribeItem = menu.locator('.rss-menu-item-danger');
+      await expect(unsubscribeItem).toHaveText('Unsubscribe');
+
+      await unsubscribeItem.click();
+
+      // The rename only affects the menu label; the confirmation flow is
+      // unchanged and removing the feed still works.
+      const modal = page.locator('.rss-modal-overlay');
+      await expect(modal).toBeVisible();
+      await expect(modal.locator('h2')).toHaveText('Delete Feed');
+
+      await modal.locator('.rss-modal-buttons button', { hasText: 'Delete' }).click();
+
+      await expect
+        .poll(async () => component.evaluate((el) => el.feeds.length), { timeout: 15000 })
+        .toBe(0);
+      await expect(menu).toHaveCount(0);
+    });
   });
 
   test('feed kebab menu has an Open Original by Default checkbox', async ({ page }) => {

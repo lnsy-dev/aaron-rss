@@ -1191,9 +1191,11 @@ webview.rss-article-viewer-frame {
 }
 
 /* Social post viewer */
+/* The root post fills the article body's full width, like a zoomed
+   regular article: a fixed ch cap measured at the unzoomed size kept
+   the text in a narrow column once ctrl+plus scaled the font. */
 .rss-social-post {
-  max-width: 66ch;
-  margin: 0 auto;
+  width: 100%;
   color: var(--foreground-color);
   line-height: 1.6;
 }
@@ -1251,9 +1253,47 @@ webview.rss-article-viewer-frame {
 
 .rss-social-comment {
   font-size: calc(var(--type-body) * 0.8);
+  /* Comments stay a narrower column than the full-width root post; the
+     ch cap is measured against the comment's own font, so it scales
+     with the article font steps too. */
+  max-width: 66ch;
   margin-bottom: 1rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--quaternary-color);
+}
+
+/* Nested replies indent by one step per depth level (the renderer sets
+   data-depth; depth 0 is a top-level reply and stays flush). */
+.rss-social-comment[data-depth="1"] {
+  margin-left: 1.5rem;
+}
+
+.rss-social-comment[data-depth="2"] {
+  margin-left: 3rem;
+}
+
+.rss-social-comment[data-depth="3"] {
+  margin-left: 4.5rem;
+}
+
+.rss-social-comment[data-depth="4"] {
+  margin-left: 6rem;
+}
+
+.rss-social-comment[data-depth="5"] {
+  margin-left: 7.5rem;
+}
+
+.rss-social-comment[data-depth="6"] {
+  margin-left: 9rem;
+}
+
+.rss-social-comment[data-depth="7"] {
+  margin-left: 10.5rem;
+}
+
+.rss-social-comment[data-depth="8"] {
+  margin-left: 12rem;
 }
 
 .rss-social-comment:last-child {

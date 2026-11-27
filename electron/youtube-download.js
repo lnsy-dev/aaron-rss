@@ -819,10 +819,15 @@ async function provisionQuickjs() {
 /**
  * Map the current platform/arch to an ffmpeg-static asset suffix.
  *
+ * Exported for the unit tests, which build release-asset lists for
+ * whatever platform the suite is running on.
+ *
+ * @param {string} [platform] Defaults to process.platform
+ * @param {string} [arch] Defaults to process.arch
  * @returns {string|null} Suffix such as "darwin-arm64", or null when the
  *   platform has no prebuilt ffmpeg-static binary.
  */
-function getFFmpegStaticPlatformKey(platform = process.platform, arch = process.arch) {
+export function getFFmpegStaticPlatformKey(platform = process.platform, arch = process.arch) {
   if (platform === 'darwin') {
     return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
   }
